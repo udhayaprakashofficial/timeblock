@@ -1,4 +1,4 @@
-import type { CreateTaskDto, ScheduleBacklogTaskDto, TaskDto, UpdateTaskDto } from '@timeblock/shared-types';
+import type { CreateTaskDto, ScheduleBacklogTaskDto, TaskDto, UpdateTaskDto } from "../shared-types/index.ts";
 import { PrismaService } from '../prisma/prisma.service';
 import { SchedulerService } from './scheduler.service';
 import { LocalDataStore } from '../auth/local-data.store';

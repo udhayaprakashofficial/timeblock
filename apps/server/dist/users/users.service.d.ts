@@ -1,4 +1,4 @@
-import type { AuthConfigDto, ThemePreference, UserDto } from '@timeblock/shared-types';
+import type { AuthConfigDto, ThemePreference, UserDto } from "../shared-types/index.ts";
 import { PrismaService } from '../prisma/prisma.service';
 import { LocalUserStore } from '../auth/local-user.store';
 import { LocalDataStore } from '../auth/local-data.store';

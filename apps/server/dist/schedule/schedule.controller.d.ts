@@ -1,4 +1,4 @@
-import type { UpsertScheduleTemplateDto } from '@timeblock/shared-types';
+import type { UpsertScheduleTemplateDto } from "../shared-types/index.ts";
 import { ScheduleTemplatesService } from './schedule.service';
 export declare class ScheduleTemplatesController {
     private readonly service;

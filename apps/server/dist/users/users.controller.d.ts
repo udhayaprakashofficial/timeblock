@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import type { ThemePreference } from '@timeblock/shared-types';
+import type { ThemePreference } from "../shared-types/index.ts";
 import { UsersService } from './users.service';
 export declare class UsersController {
     private readonly usersService;

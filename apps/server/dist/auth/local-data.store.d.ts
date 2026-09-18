@@ -1,4 +1,4 @@
-import type { CreateTaskDto, DailyScheduleTemplateDto, StatsOverviewDto, TaskDto, UpsertScheduleTemplateDto, WeeklyReportDto } from '@timeblock/shared-types';
+import type { CreateTaskDto, DailyScheduleTemplateDto, StatsOverviewDto, TaskDto, UpsertScheduleTemplateDto, WeeklyReportDto } from "../shared-types/index.ts";
 export declare class LocalDataStore {
     private readonly dir;
     private readonly file;

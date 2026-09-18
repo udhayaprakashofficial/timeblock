@@ -1,4 +1,4 @@
-import type { EffortSummaryDto } from '@timeblock/shared-types';
+import type { EffortSummaryDto } from "../shared-types/index.ts";
 type TaskLike = {
     date: string;
     name?: string;

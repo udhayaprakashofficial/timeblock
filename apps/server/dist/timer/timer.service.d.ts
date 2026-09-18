@@ -10,7 +10,7 @@ export declare class TimerService {
     private readonly supabase;
     private readonly db;
     constructor(prisma: PrismaService, tasksService: TasksService, local: LocalDataStore, supabase: SupabaseRestService, db: DbBridgeService);
-    start(userId: string, taskId: string): Promise<import("@timeblock/shared-types").TaskDto | undefined>;
-    stop(userId: string, taskId: string): Promise<import("@timeblock/shared-types").TaskDto | undefined>;
+    start(userId: string, taskId: string): Promise<import("../shared-types").TaskDto | undefined>;
+    stop(userId: string, taskId: string): Promise<import("../shared-types").TaskDto | undefined>;
     private stopOtherOpenTimersPrisma;
 }

@@ -1,4 +1,4 @@
-import type { CreateTaskDto, ReorderTasksDto, ScheduleBacklogTaskDto, UpdateTaskDto } from '@timeblock/shared-types';
+import type { CreateTaskDto, ReorderTasksDto, ScheduleBacklogTaskDto, UpdateTaskDto } from "../shared-types/index.ts";
 import { TasksService } from './tasks.service';
 export declare class TasksController {
     private readonly tasksService;

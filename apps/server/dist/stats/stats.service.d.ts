@@ -1,4 +1,4 @@
-import type { DayUtilizationDto, EodSheetDto, StatsOverviewDto, WeeklyReportDto } from '@timeblock/shared-types';
+import type { DayUtilizationDto, EodSheetDto, StatsOverviewDto, WeeklyReportDto } from "../shared-types/index.ts";
 import { PrismaService } from '../prisma/prisma.service';
 import { SchedulerService } from '../tasks/scheduler.service';
 import { LocalDataStore } from '../auth/local-data.store';
