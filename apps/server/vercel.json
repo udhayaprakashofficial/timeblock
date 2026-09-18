@@ -2,7 +2,9 @@
   "framework": null,
   "installCommand": "cd ../.. && npm install --include=dev",
   "buildCommand": "cd ../.. && npm run build -w @timeblock/server",
+  "outputDirectory": "public",
   "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api" },
     { "source": "/(.*)", "destination": "/api" }
   ],
   "functions": {
