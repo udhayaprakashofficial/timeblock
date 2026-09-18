@@ -5,7 +5,7 @@ import { config as loadEnv } from 'dotenv';
 import { existsSync } from 'fs';
 import { join, resolve } from 'path';
 
-loadEnv({ path: resolve(__dirname, '../.env'), override: true });
+loadEnv({ path: resolve(__dirname, '../.env'), override: false });
 loadEnv({ path: resolve(__dirname, '../../../.env'), override: false });
 
 import { NestFactory } from '@nestjs/core';

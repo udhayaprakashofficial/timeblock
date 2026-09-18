@@ -2,8 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { createNestApp } from './app-factory';
 
 /**
- * Vercel Nest zero-config entrypoint.
- * Must import @nestjs/core and call app.listen(PORT).
+ * Local / non-serverless entry. Vercel uses api/index.js instead.
  */
 async function bootstrap() {
   const app = await createNestApp();
@@ -26,9 +25,7 @@ async function bootstrap() {
 
 bootstrap().catch((err) => {
   console.error('[bootstrap] failed', err);
-  // Re-throw so Vercel logs the real cause
-  throw err;
+  process.exit(1);
 });
 
-// Keep NestFactory referenced for entrypoint detection / tree-shaking edge cases
 export { NestFactory };

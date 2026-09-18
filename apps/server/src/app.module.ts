@@ -18,7 +18,8 @@ import { UsersModule } from './users/users.module';
       isGlobal: true,
       envFilePath: ['.env', '../../.env'],
     }),
-    ScheduleModule.forRoot(),
+    // Cron jobs are not reliable on Vercel serverless cold starts
+    ...(process.env.VERCEL ? [] : [ScheduleModule.forRoot()]),
     PrismaModule,
     CryptoModule,
     SupabaseModule,

@@ -1,4 +1,15 @@
 {
+  "framework": null,
   "installCommand": "cd ../.. && npm install --include=dev",
-  "buildCommand": "cd ../.. && npm run build -w @timeblock/server"
+  "buildCommand": "cd ../.. && npm run build -w @timeblock/server",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api" }
+  ],
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 60,
+      "memory": 1024,
+      "includeFiles": "{dist/**,prisma/**,../../node_modules/.prisma/**,../../node_modules/@prisma/client/**}"
+    }
+  }
 }
