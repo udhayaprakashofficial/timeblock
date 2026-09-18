@@ -1,0 +1,38 @@
+'use client';
+
+import { useState, type ReactNode } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ClerkProvider } from '@clerk/clerk-react';
+import { App } from './AppRoot';
+
+export function Providers({ children }: { children: ReactNode }) {
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            staleTime: 10_000,
+            retry: 1,
+          },
+        },
+      }),
+  );
+
+  const clerkKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim() ?? '';
+
+  const tree = (
+    <QueryClientProvider client={queryClient}>
+      <App>{children}</App>
+    </QueryClientProvider>
+  );
+
+  if (clerkKey) {
+    return (
+      <ClerkProvider publishableKey={clerkKey} afterSignOutUrl="/">
+        {tree}
+      </ClerkProvider>
+    );
+  }
+
+  return tree;
+}

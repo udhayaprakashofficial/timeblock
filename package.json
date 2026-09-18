@@ -1,0 +1,22 @@
+{
+  "name": "timeblock",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,green \"npm run dev -w @timeblock/server\" \"npm run dev -w @timeblock/web\"",
+    "build": "npm run build -w @timeblock/shared-types && npm run build -w @timeblock/server && npm run build -w @timeblock/web",
+    "start:prod": "npm run build && npm run start:prod -w @timeblock/server",
+    "db:up": "docker compose up -d",
+    "db:migrate": "npm run prisma:migrate -w @timeblock/server",
+    "db:generate": "npm run prisma:generate -w @timeblock/server",
+    "db:push": "npm run prisma:push -w @timeblock/server",
+    "web:5173": "bash scripts/use-5173.sh"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  }
+}
