@@ -666,6 +666,15 @@ export class LocalDataStore {
     }
 
     let free = subtractIntervals(intervals, busyFixed);
+    // Don't pack unlocked tasks into the past when scheduling today.
+    const todayLocal = formatDateOnly(new Date());
+    if (dateStr === todayLocal) {
+      const now = new Date();
+      const floor = now.getHours() * 60 + now.getMinutes();
+      free = free
+        .map((i) => ({ start: Math.max(i.start, floor), end: i.end }))
+        .filter((i) => i.end > i.start);
+    }
 
     for (const task of pending) {
       const need = Math.max(5, task.estimatedMinutes);

@@ -1294,6 +1294,42 @@ body:has(.landing) {
   color: var(--text);
 }
 
+.priority-time-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.priority-time-input {
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px 6px;
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.priority-time-sep {
+  opacity: 0.7;
+}
+
+.priority-time-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.priority-time-btn:disabled {
+  cursor: default;
+  text-decoration: none;
+}
+
 .priority-mins-btn {
   border: none;
   background: none;

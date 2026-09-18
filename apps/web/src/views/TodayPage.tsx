@@ -866,6 +866,17 @@ function SortableTask({
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState(task.name);
   const [minsDraft, setMinsDraft] = useState(String(task.estimatedMinutes));
+  const [startDraft, setStartDraft] = useState(() =>
+    task.scheduledStart
+      ? formatHm(minutesOf(task.scheduledStart, timeZone))
+      : '',
+  );
+  const [endDraft, setEndDraft] = useState(() =>
+    task.scheduledEnd
+      ? formatHm(minutesOf(task.scheduledEnd, timeZone))
+      : '',
+  );
+  const [editError, setEditError] = useState<string | null>(null);
   const [draft, setDraft] = useState(task.notes ?? '');
   const [appendText, setAppendText] = useState('');
   const {
@@ -886,7 +897,22 @@ function SortableTask({
     setDraft(task.notes ?? '');
     setNameDraft(task.name);
     setMinsDraft(String(task.estimatedMinutes));
-  }, [task.notes, task.name, task.estimatedMinutes, task.id]);
+    if (task.scheduledStart && task.scheduledEnd) {
+      setStartDraft(formatHm(minutesOf(task.scheduledStart, timeZone)));
+      setEndDraft(formatHm(minutesOf(task.scheduledEnd, timeZone)));
+    } else {
+      setStartDraft('');
+      setEndDraft('');
+    }
+  }, [
+    task.notes,
+    task.name,
+    task.estimatedMinutes,
+    task.scheduledStart,
+    task.scheduledEnd,
+    task.id,
+    timeZone,
+  ]);
 
   const start = useMutation({
     mutationFn: () => api.post<TaskDto>(`/api/timer/${task.id}/start`),
@@ -909,10 +935,15 @@ function SortableTask({
     },
   });
   const saveMeta = useMutation({
-    mutationFn: (body: { name?: string; estimatedMinutes?: number }) =>
-      api.patch<TaskDto>(`/api/tasks/${task.id}`, body),
+    mutationFn: (body: {
+      name?: string;
+      estimatedMinutes?: number;
+      startTime?: string;
+      endTime?: string;
+    }) => api.patch<TaskDto>(`/api/tasks/${task.id}`, body),
     onSuccess: () => {
       setEditing(false);
+      setEditError(null);
       onChanged();
     },
   });
@@ -929,6 +960,7 @@ function SortableTask({
     saveMeta.isPending ||
     toBacklog.isPending;
   const actionError =
+    editError ||
     (start.error as Error | null)?.message ||
     (stop.error as Error | null)?.message ||
     (completeTask.error as Error | null)?.message ||
@@ -957,23 +989,86 @@ function SortableTask({
     saveNotes.mutate(next);
   };
 
+  const resetEditDrafts = () => {
+    setNameDraft(task.name);
+    setMinsDraft(String(task.estimatedMinutes));
+    if (task.scheduledStart && task.scheduledEnd) {
+      setStartDraft(formatHm(minutesOf(task.scheduledStart, timeZone)));
+      setEndDraft(formatHm(minutesOf(task.scheduledEnd, timeZone)));
+    } else {
+      setStartDraft('');
+      setEndDraft('');
+    }
+    setEditError(null);
+    setEditing(false);
+  };
+
   const saveEdits = () => {
     const name = nameDraft.trim();
-    const mins = Number(minsDraft);
-    if (!name) return;
-    const body: { name?: string; estimatedMinutes?: number } = {};
-    if (name !== task.name) body.name = name;
-    if (
-      Number.isFinite(mins) &&
-      mins >= 5 &&
-      Math.round(mins) !== task.estimatedMinutes
-    ) {
-      body.estimatedMinutes = Math.round(mins);
-    }
-    if (!Object.keys(body).length) {
-      setEditing(false);
+    if (!name) {
+      setEditError('Name is required.');
       return;
     }
+
+    const body: {
+      name?: string;
+      estimatedMinutes?: number;
+      startTime?: string;
+      endTime?: string;
+    } = {};
+    if (name !== task.name) body.name = name;
+
+    const hasTimes = Boolean(startDraft && endDraft);
+    if (hasTimes) {
+      const startMin = parseHm(startDraft);
+      const endMin = parseHm(endDraft);
+      if (!(endMin > startMin)) {
+        setEditError('End time must be after start time.');
+        return;
+      }
+      const mins = endMin - startMin;
+      if (mins < 5) {
+        setEditError('Slot must be at least 5 minutes.');
+        return;
+      }
+      const prevStart =
+        task.scheduledStart != null
+          ? formatHm(minutesOf(task.scheduledStart, timeZone))
+          : '';
+      const prevEnd =
+        task.scheduledEnd != null
+          ? formatHm(minutesOf(task.scheduledEnd, timeZone))
+          : '';
+      if (startDraft !== prevStart || endDraft !== prevEnd) {
+        body.startTime = startDraft;
+        body.endTime = endDraft;
+      } else {
+        const minsNum = Number(minsDraft);
+        if (
+          Number.isFinite(minsNum) &&
+          minsNum >= 5 &&
+          Math.round(minsNum) !== task.estimatedMinutes
+        ) {
+          body.estimatedMinutes = Math.round(minsNum);
+        }
+      }
+    } else {
+      const mins = Number(minsDraft);
+      if (
+        Number.isFinite(mins) &&
+        mins >= 5 &&
+        Math.round(mins) !== task.estimatedMinutes
+      ) {
+        body.estimatedMinutes = Math.round(mins);
+      }
+    }
+
+    if (!Object.keys(body).length) {
+      setEditing(false);
+      setEditError(null);
+      return;
+    }
+    setEditError(null);
     saveMeta.mutate(body);
   };
 
@@ -1058,35 +1153,95 @@ function SortableTask({
           )}
         </div>
         <div className="priority-meta">
-          {formatTimeRange(task.scheduledStart, task.scheduledEnd, timeZone)}
-          {!locked && (
+          {editing && !locked ? (
+            <span className="priority-time-edit" aria-label="Task time range">
+              <input
+                className="priority-time-input"
+                type="time"
+                value={startDraft}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setStartDraft(next);
+                  const mins = Number(minsDraft);
+                  if (next && Number.isFinite(mins) && mins >= 5) {
+                    setEndDraft(
+                      formatHm(
+                        Math.min(parseHm(next) + Math.round(mins), 24 * 60 - 1),
+                      ),
+                    );
+                  }
+                }}
+                aria-label="Start time"
+              />
+              <span className="priority-time-sep">–</span>
+              <input
+                className="priority-time-input"
+                type="time"
+                value={endDraft}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setEndDraft(next);
+                  if (startDraft && next) {
+                    const span = parseHm(next) - parseHm(startDraft);
+                    if (span >= 5) setMinsDraft(String(span));
+                  }
+                }}
+                aria-label="End time"
+              />
+              <span className="priority-time-sep">·</span>
+              <input
+                className="priority-mins-input"
+                type="number"
+                min={5}
+                step={5}
+                value={minsDraft}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setMinsDraft(next);
+                  const mins = Number(next);
+                  if (startDraft && Number.isFinite(mins) && mins >= 5) {
+                    setEndDraft(
+                      formatHm(
+                        Math.min(parseHm(startDraft) + Math.round(mins), 24 * 60 - 1),
+                      ),
+                    );
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    saveEdits();
+                  }
+                }}
+                aria-label="Duration minutes"
+              />
+              <span>m</span>
+            </span>
+          ) : (
             <>
-              {' · '}
-              {editing ? (
-                <input
-                  className="priority-mins-input"
-                  type="number"
-                  min={5}
-                  step={5}
-                  value={minsDraft}
-                  onChange={(e) => setMinsDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      saveEdits();
-                    }
-                  }}
-                  aria-label="Duration minutes"
-                />
-              ) : (
-                <button
-                  type="button"
-                  className="priority-mins-btn"
-                  onClick={() => setEditing(true)}
-                  disabled={done}
-                >
-                  {task.estimatedMinutes}m est
-                </button>
+              <button
+                type="button"
+                className="priority-time-btn"
+                onClick={() => {
+                  if (!locked && !done) setEditing(true);
+                }}
+                disabled={locked || done}
+                title={locked ? undefined : 'Edit time'}
+              >
+                {formatTimeRange(task.scheduledStart, task.scheduledEnd, timeZone)}
+              </button>
+              {!locked && (
+                <>
+                  {' · '}
+                  <button
+                    type="button"
+                    className="priority-mins-btn"
+                    onClick={() => setEditing(true)}
+                    disabled={done}
+                  >
+                    {task.estimatedMinutes}m est
+                  </button>
+                </>
               )}
             </>
           )}
@@ -1104,11 +1259,7 @@ function SortableTask({
               <button
                 type="button"
                 className="btn btn-ghost btn-pill btn-sm"
-                onClick={() => {
-                  setNameDraft(task.name);
-                  setMinsDraft(String(task.estimatedMinutes));
-                  setEditing(false);
-                }}
+                onClick={resetEditDrafts}
               >
                 Cancel
               </button>

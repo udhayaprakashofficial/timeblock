@@ -6,6 +6,8 @@ import {
   dateOnly,
   dayBoundsInTimeZone,
   eventToMinutesOnDay,
+  formatDateInTimeZone,
+  minutesInTimeZone,
   normalizeTimeZone,
   parseHm,
   subtractIntervals,
@@ -21,12 +23,26 @@ type PackableTask = {
   scheduleLocked?: boolean;
 };
 
+/** Drop / trim free slots that end at or before `notBefore` (minutes from midnight). */
+function clipFreeAfter(
+  intervals: Interval[],
+  notBefore?: number | null,
+): Interval[] {
+  if (notBefore == null || !Number.isFinite(notBefore)) return intervals;
+  const floor = Math.max(0, Math.ceil(notBefore));
+  return intervals
+    .map((i) => ({ start: Math.max(i.start, floor), end: i.end }))
+    .filter((i) => i.end > i.start);
+}
+
 /** Pure packer: place unlocked tasks into contiguous free slots; keep locked Meet/calendar tasks fixed. */
 export function packTasks(
   tasks: PackableTask[],
   intervals: Interval[],
   day: Date | string,
   timeZone?: string | null,
+  /** When set (typically “now” for today), unlocked tasks pack only into slots at/after this minute. */
+  notBeforeMinutes?: number | null,
 ): Array<{ id: string; scheduledStart: Date | null; scheduledEnd: Date | null }> {
   const locked = tasks.filter(
     (t) => t.scheduleLocked && t.status !== 'completed',
@@ -49,7 +65,10 @@ export function packTasks(
     }
   }
 
-  let free = subtractIntervals(intervals, busyFixed);
+  let free = clipFreeAfter(
+    subtractIntervals(intervals, busyFixed),
+    notBeforeMinutes,
+  );
   const result: Array<{
     id: string;
     scheduledStart: Date | null;
@@ -273,6 +292,15 @@ export class SchedulerService {
     return { intervals: available, availableMinutes };
   }
 
+  /** For “today” in the user TZ, don’t pack unlocked tasks into the past. */
+  private packingFloorMinutes(
+    dateStr: string,
+    timeZone: string,
+  ): number | null {
+    if (dateStr !== formatDateInTimeZone(new Date(), timeZone)) return null;
+    return minutesInTimeZone(new Date(), timeZone);
+  }
+
   private async reschedulePrisma(userId: string, dateStr: string) {
     const day = dateOnly(dateStr);
     const timeZone = await this.resolveTimeZone(userId);
@@ -281,7 +309,13 @@ export class SchedulerService {
       where: { userId, date: day, inBacklog: false },
       orderBy: { order: 'asc' },
     });
-    const packed = packTasks(tasks, intervals, dateStr, timeZone);
+    const packed = packTasks(
+      tasks,
+      intervals,
+      dateStr,
+      timeZone,
+      this.packingFloorMinutes(dateStr, timeZone),
+    );
     for (const p of packed) {
       const task = tasks.find((t) => t.id === p.id);
       const unplaced =
@@ -317,7 +351,13 @@ export class SchedulerService {
     const tasks = (await this.supabase!.listTasks(userId, dateStr)).filter(
       (t) => !t.inBacklog,
     );
-    const packed = packTasks(tasks, intervals, dateStr, timeZone);
+    const packed = packTasks(
+      tasks,
+      intervals,
+      dateStr,
+      timeZone,
+      this.packingFloorMinutes(dateStr, timeZone),
+    );
     const now = new Date().toISOString();
     for (const p of packed) {
       const task = tasks.find((t) => t.id === p.id);
