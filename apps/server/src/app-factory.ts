@@ -18,6 +18,7 @@ import express = require('express');
 import { PrismaClient } from '@prisma/client';
 import { AppModule } from './app.module';
 import { PrismaSessionStore } from './auth/prisma-session.store';
+import { SupabaseSessionStore } from './auth/supabase-session.store';
 
 function isVercelRuntime() {
   return Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
@@ -40,6 +41,48 @@ function sessionSecret(): string {
   return 'dev-session-secret-change-me';
 }
 
+async function createSessionStore(): Promise<session.Store> {
+  // 1) Prefer Prisma/Postgres when reachable
+  try {
+    const sessionPrisma = new PrismaClient();
+    await Promise.race([
+      sessionPrisma.$connect(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('prisma connect timeout')), 4000),
+      ),
+    ]);
+    console.log('[session] Using Postgres session store (Prisma)');
+    return new PrismaSessionStore(sessionPrisma);
+  } catch (err) {
+    console.warn(
+      '[session] Prisma unreachable:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  // 2) Supabase REST (HTTPS) — works on Vercel when :5432 is blocked
+  const base = (process.env.SUPABASE_URL ?? '').replace(/\/$/, '');
+  const key =
+    process.env.SUPABASE_SECRET_KEY?.trim() ||
+    process.env.SUPABASE_PUBLISHABLE_KEY?.trim() ||
+    '';
+  if (base && key) {
+    console.log('[session] Using Supabase REST session store');
+    return new SupabaseSessionStore(base, key);
+  }
+
+  if (isVercelRuntime()) {
+    console.error(
+      '[session] No durable store on Vercel (set DATABASE_URL pooler or SUPABASE_URL + SUPABASE_SECRET_KEY). Falling back to MemoryStore — logins will 401 across cold starts.',
+    );
+    return new session.MemoryStore();
+  }
+
+  throw new Error(
+    'DATABASE_URL must reach Supabase Postgres. File sessions are disabled.',
+  );
+}
+
 export async function createNestApp(): Promise<NestExpressApplication> {
   const isProd = process.env.NODE_ENV === 'production' || isVercelRuntime();
   const server = express();
@@ -52,30 +95,12 @@ export async function createNestApp(): Promise<NestExpressApplication> {
   server.set('trust proxy', 1);
   app.use(cookieParser());
 
-  let sessionStore: session.Store = new session.MemoryStore();
+  const sessionStore = await createSessionStore();
 
-  // On Vercel, skip Prisma TCP at boot (often blocked / engine missing).
-  // Prefer Supabase pooler DATABASE_URL (:6543) for durable sessions later.
-  if (!isVercelRuntime()) {
-    try {
-      const sessionPrisma = new PrismaClient();
-      await sessionPrisma.$connect();
-      sessionStore = new PrismaSessionStore(sessionPrisma);
-      console.log('[session] Using Postgres session store (Supabase)');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[session] DATABASE_URL unreachable:', msg);
-      throw new Error(
-        'DATABASE_URL must reach Supabase Postgres. File sessions are disabled.',
-      );
-    }
-  } else {
-    console.warn(
-      '[session] Vercel: using MemoryStore (set pooler DATABASE_URL for durable sessions)',
-    );
-  }
-
-  const crossSite = Boolean(process.env.WEB_ORIGIN?.includes('vercel.app'));
+  // Cross-site cookies required: web and API are different Vercel hosts
+  const crossSite =
+    isVercelRuntime() ||
+    Boolean(process.env.WEB_ORIGIN?.includes('vercel.app'));
 
   app.use(
     session({
