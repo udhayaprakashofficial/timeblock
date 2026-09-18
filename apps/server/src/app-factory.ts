@@ -15,7 +15,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser = require('cookie-parser');
 import session = require('express-session');
 import express = require('express');
-import type { Express, Request, Response } from 'express';
+import type { Express } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { AppModule } from './app.module';
 import { PrismaSessionStore } from './auth/prisma-session.store';
@@ -158,14 +158,4 @@ export async function createExpressApp(): Promise<Express> {
 
   await app.init();
   return server;
-}
-
-let cached: Express | null = null;
-
-/** Vercel / serverless handler (cached warm instance). */
-export async function handleVercelRequest(req: Request, res: Response) {
-  if (!cached) {
-    cached = await createExpressApp();
-  }
-  return cached(req, res);
 }
