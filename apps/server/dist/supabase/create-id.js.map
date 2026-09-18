@@ -1,1 +1,0 @@
-{"version":3,"file":"create-id.js","sourceRoot":"","sources":["../../src/supabase/create-id.ts"],"names":[],"mappings":";;AAGA,4BAEC;AALD,mCAAqC;AAErC,yEAAyE;AACzE,SAAgB,QAAQ,CAAC,MAAM,GAAG,GAAG;IACnC,OAAO,GAAG,MAAM,GAAG,IAAI,CAAC,GAAG,EAAE,CAAC,QAAQ,CAAC,EAAE,CAAC,GAAG,IAAA,oBAAW,EAAC,CAAC,CAAC,CAAC,QAAQ,CAAC,KAAK,CAAC,EAAE,CAAC;AAChF,CAAC"}
