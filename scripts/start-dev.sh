@@ -14,5 +14,4 @@ for port in 3001 5173; do
   fi
 done
 
-npm run build -w @timeblock/shared-types >/dev/null
 npm run dev

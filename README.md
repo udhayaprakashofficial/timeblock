@@ -17,7 +17,6 @@ npm install
 cp .env.example apps/server/.env   # fill secrets
 npm run db:generate
 npm run db:push
-npm run build -w @timeblock/shared-types
 npm run dev
 ```
 
