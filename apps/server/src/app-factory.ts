@@ -1,6 +1,5 @@
 /**
  * Shared Nest bootstrap for local + Vercel (Fluid / Nest zero-config).
- * Vercel requires src/main.ts to call NestFactory + app.listen().
  */
 import { config as loadEnv } from 'dotenv';
 import { existsSync } from 'fs';
@@ -20,25 +19,25 @@ import { PrismaClient } from '@prisma/client';
 import { AppModule } from './app.module';
 import { PrismaSessionStore } from './auth/prisma-session.store';
 
-function requireProdSecret(
-  name: string,
-  value: string | undefined,
-  fallback: string,
-) {
-  const v = value?.trim();
-  if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
-    if (!v || v === fallback) {
-      throw new Error(
-        `[prod] ${name} must be set to a strong random value (e.g. openssl rand -base64 48)`,
-      );
-    }
-    return v;
-  }
-  return v || fallback;
-}
-
 function isVercelRuntime() {
   return Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+}
+
+function sessionSecret(): string {
+  const v = process.env.SESSION_SECRET?.trim();
+  if (v) return v;
+  if (isVercelRuntime()) {
+    console.error(
+      '[session] SESSION_SECRET is not set — using a temporary secret. Set SESSION_SECRET in Vercel env!',
+    );
+    return `vercel-temp-${process.env.VERCEL_GIT_COMMIT_SHA || 'timeblock'}`;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      '[prod] SESSION_SECRET must be set (e.g. openssl rand -base64 48)',
+    );
+  }
+  return 'dev-session-secret-change-me';
 }
 
 export async function createNestApp(): Promise<NestExpressApplication> {
@@ -54,35 +53,34 @@ export async function createNestApp(): Promise<NestExpressApplication> {
   app.use(cookieParser());
 
   let sessionStore: session.Store = new session.MemoryStore();
-  try {
-    const sessionPrisma = new PrismaClient();
-    await sessionPrisma.$connect();
-    sessionStore = new PrismaSessionStore(sessionPrisma);
-    console.log('[session] Using Postgres session store (Supabase)');
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error('[session] DATABASE_URL unreachable, using MemoryStore:', msg);
-    if (!isVercelRuntime()) {
+
+  // On Vercel, skip Prisma TCP at boot (often blocked / engine missing).
+  // Prefer Supabase pooler DATABASE_URL (:6543) for durable sessions later.
+  if (!isVercelRuntime()) {
+    try {
+      const sessionPrisma = new PrismaClient();
+      await sessionPrisma.$connect();
+      sessionStore = new PrismaSessionStore(sessionPrisma);
+      console.log('[session] Using Postgres session store (Supabase)');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[session] DATABASE_URL unreachable:', msg);
       throw new Error(
-        'DATABASE_URL must reach Supabase Postgres (db.<project>.supabase.co:5432). File sessions are disabled.',
+        'DATABASE_URL must reach Supabase Postgres. File sessions are disabled.',
       );
     }
-    // On Vercel, TCP to Supabase :5432 often fails; MemoryStore keeps the API up.
-    // Prefer DATABASE_URL with the Supabase pooler (:6543) for durable sessions.
+  } else {
+    console.warn(
+      '[session] Vercel: using MemoryStore (set pooler DATABASE_URL for durable sessions)',
+    );
   }
-
-  const sessionSecret = requireProdSecret(
-    'SESSION_SECRET',
-    process.env.SESSION_SECRET,
-    'dev-session-secret-change-me',
-  );
 
   const crossSite = Boolean(process.env.WEB_ORIGIN?.includes('vercel.app'));
 
   app.use(
     session({
       name: 'timeblock.sid',
-      secret: sessionSecret,
+      secret: sessionSecret(),
       resave: false,
       saveUninitialized: false,
       store: sessionStore,
@@ -103,6 +101,9 @@ export async function createNestApp(): Promise<NestExpressApplication> {
       .map((s) => s.trim())
       .filter(Boolean),
   );
+  // Always allow the production web host
+  allowedOrigins.add('https://timeblock-web-ashy.vercel.app');
+
   if (!isProd) {
     for (const o of [
       'http://localhost:5173',

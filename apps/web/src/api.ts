@@ -1,7 +1,15 @@
 'use client';
 
+/** Absolute API host in production (Vercel server). Empty = same-origin / rewrite. */
+const API_ORIGIN = (process.env.NEXT_PUBLIC_API_ORIGIN ?? '').replace(/\/$/, '');
+
+function apiUrl(path: string): string {
+  if (path.startsWith('http://') || path.startsWith('https://')) return path;
+  return `${API_ORIGIN}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(apiUrl(path), {
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
