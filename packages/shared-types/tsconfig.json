@@ -1,11 +1,14 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
     "outDir": "dist",
     "rootDir": "src",
-    "composite": true,
-    "incremental": true,
-    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": false,
+    "incremental": false
   },
   "include": ["src/**/*"]
 }

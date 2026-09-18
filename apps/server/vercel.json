@@ -1,0 +1,4 @@
+{
+  "installCommand": "cd ../.. && npm install",
+  "buildCommand": "cd ../.. && npm run build -w @timeblock/shared-types && cd apps/server && npx prisma generate && npx nest build"
+}

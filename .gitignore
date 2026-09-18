@@ -6,3 +6,9 @@
 # Node modules
 node_modules/
 **/node_modules/
+
+# Build outputs (keep packages/shared-types/dist committed for Vercel)
+apps/server/dist/
+apps/web/.next/
+apps/web/dist/
+*.tsbuildinfo
