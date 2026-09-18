@@ -1,10 +1,14 @@
 import session = require('express-session');
+import { randomBytes } from 'crypto';
 
 type Callback = (err?: unknown, session?: session.SessionData | null) => void;
 
 /**
  * Persist express-session rows via Supabase PostgREST (HTTPS).
  * Works on Vercel where Postgres :5432 is often blocked.
+ *
+ * Session table requires id + updatedAt (no DB defaults for those).
+ * PostgREST PATCH with 0 matches still returns 204 — must check representation.
  */
 export class SupabaseSessionStore extends session.Store {
   constructor(
@@ -28,7 +32,10 @@ export class SupabaseSessionStore extends session.Store {
     fetch(url, { headers: this.headers() })
       .then(async (res) => {
         if (!res.ok) throw new Error(`session get ${res.status}`);
-        const rows = (await res.json()) as Array<{ data: string; expiresAt: string }>;
+        const rows = (await res.json()) as Array<{
+          data: string;
+          expiresAt: string;
+        }>;
         const row = rows[0];
         if (!row) return callback(null, null);
         if (new Date(row.expiresAt).getTime() < Date.now()) {
@@ -48,28 +55,47 @@ export class SupabaseSessionStore extends session.Store {
       typeof sessionData.cookie?.maxAge === 'number'
         ? sessionData.cookie.maxAge
         : 7 * 24 * 60 * 60 * 1000;
+    const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + maxAge).toISOString();
     const userId =
       typeof sessionData.userId === 'string' ? sessionData.userId : null;
     const data = JSON.stringify(sessionData);
-    const body = { sid, data, expiresAt, userId };
+    const updatePayload = { data, expiresAt, userId, updatedAt: now };
+    const finish = (err?: unknown) => callback?.(err);
 
-    // Upsert on unique sid
-    fetch(`${this.baseUrl}/rest/v1/Session?on_conflict=sid`, {
-      method: 'POST',
-      headers: this.headers({
-        Prefer: 'resolution=merge-duplicates,return=minimal',
-      }),
-      body: JSON.stringify(body),
-    })
+    fetch(
+      `${this.baseUrl}/rest/v1/Session?sid=eq.${encodeURIComponent(sid)}`,
+      {
+        method: 'PATCH',
+        headers: this.headers({ Prefer: 'return=representation' }),
+        body: JSON.stringify(updatePayload),
+      },
+    )
       .then(async (res) => {
         if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`session set ${res.status}: ${text}`);
+          throw new Error(`session patch ${res.status}: ${await res.text()}`);
         }
-        callback?.();
+        const rows = (await res.json()) as unknown[];
+        if (Array.isArray(rows) && rows.length > 0) return finish();
+
+        const create = await fetch(`${this.baseUrl}/rest/v1/Session`, {
+          method: 'POST',
+          headers: this.headers({ Prefer: 'return=minimal' }),
+          body: JSON.stringify({
+            id: `ses_${randomBytes(12).toString('hex')}`,
+            sid,
+            createdAt: now,
+            ...updatePayload,
+          }),
+        });
+        if (!create.ok) {
+          throw new Error(
+            `session insert ${create.status}: ${await create.text()}`,
+          );
+        }
+        finish();
       })
-      .catch((err) => callback?.(err));
+      .catch((err) => finish(err));
   }
 
   destroy(sid: string, callback?: (err?: unknown) => void): void {
@@ -96,12 +122,13 @@ export class SupabaseSessionStore extends session.Store {
         ? sessionData.cookie.maxAge
         : 7 * 24 * 60 * 60 * 1000;
     const expiresAt = new Date(Date.now() + maxAge).toISOString();
+    const updatedAt = new Date().toISOString();
     fetch(
       `${this.baseUrl}/rest/v1/Session?sid=eq.${encodeURIComponent(sid)}`,
       {
         method: 'PATCH',
         headers: this.headers({ Prefer: 'return=minimal' }),
-        body: JSON.stringify({ expiresAt }),
+        body: JSON.stringify({ expiresAt, updatedAt }),
       },
     )
       .then(async (res) => {

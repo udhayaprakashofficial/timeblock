@@ -42,7 +42,19 @@ function sessionSecret(): string {
 }
 
 async function createSessionStore(): Promise<session.Store> {
-  // 1) Prefer Prisma/Postgres when reachable
+  const base = (process.env.SUPABASE_URL ?? '').replace(/\/$/, '');
+  const key =
+    process.env.SUPABASE_SECRET_KEY?.trim() ||
+    process.env.SUPABASE_PUBLISHABLE_KEY?.trim() ||
+    '';
+
+  // On Vercel, prefer HTTPS PostgREST — direct Postgres often flakes after connect.
+  if (isVercelRuntime() && base && key) {
+    console.log('[session] Using Supabase REST session store (Vercel)');
+    return new SupabaseSessionStore(base, key);
+  }
+
+  // Local / non-Vercel: Prisma when reachable
   try {
     const sessionPrisma = new PrismaClient();
     await Promise.race([
@@ -60,12 +72,6 @@ async function createSessionStore(): Promise<session.Store> {
     );
   }
 
-  // 2) Supabase REST (HTTPS) — works on Vercel when :5432 is blocked
-  const base = (process.env.SUPABASE_URL ?? '').replace(/\/$/, '');
-  const key =
-    process.env.SUPABASE_SECRET_KEY?.trim() ||
-    process.env.SUPABASE_PUBLISHABLE_KEY?.trim() ||
-    '';
   if (base && key) {
     console.log('[session] Using Supabase REST session store');
     return new SupabaseSessionStore(base, key);
@@ -73,7 +79,7 @@ async function createSessionStore(): Promise<session.Store> {
 
   if (isVercelRuntime()) {
     console.error(
-      '[session] No durable store on Vercel (set DATABASE_URL pooler or SUPABASE_URL + SUPABASE_SECRET_KEY). Falling back to MemoryStore — logins will 401 across cold starts.',
+      '[session] No durable store on Vercel (set SUPABASE_URL + SUPABASE_SECRET_KEY). Falling back to MemoryStore — logins will 401 across cold starts.',
     );
     return new session.MemoryStore();
   }
