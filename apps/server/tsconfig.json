@@ -5,6 +5,10 @@
     "moduleResolution": "Node",
     "outDir": "dist",
     "rootDir": "src",
+    "baseUrl": ".",
+    "paths": {
+      "@timeblock/shared-types": ["src/shared-types/index.ts"]
+    },
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
     "strictPropertyInitialization": false,
