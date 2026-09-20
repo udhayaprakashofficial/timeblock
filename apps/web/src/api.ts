@@ -10,7 +10,11 @@ function resolveApiOrigin(): string {
   if (fromEnv) return fromEnv;
   if (typeof window !== 'undefined') {
     const host = window.location.hostname;
-    if (host === 'timeblock-web-ashy.vercel.app' || host.endsWith('-web-ashy.vercel.app')) {
+    // Any Vercel web deploy (prod / preview) should talk to the Nest API host.
+    if (
+      host === 'timeblock-web-ashy.vercel.app' ||
+      host.endsWith('.vercel.app')
+    ) {
       return 'https://timeblock-server.vercel.app';
     }
   }

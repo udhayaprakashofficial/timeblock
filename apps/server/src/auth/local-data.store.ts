@@ -74,47 +74,54 @@ export class LocalDataStore {
   }
 
   private write(data: StoreFile) {
-    if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true });
-    writeFileSync(this.file, JSON.stringify(data, null, 2), 'utf8');
+    try {
+      if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true });
+      writeFileSync(this.file, JSON.stringify(data, null, 2), 'utf8');
+    } catch {
+      /* Vercel / read-only FS — keep in-memory only for this request */
+    }
+  }
+
+  private defaultTemplates(userId: string): LocalTemplate[] {
+    const weekdays: Weekday[] = [1, 2, 3, 4, 5];
+    return weekdays.map((weekday) => ({
+      id: `ltpl_${randomBytes(6).toString('hex')}`,
+      userId,
+      weekday,
+      workStart: '09:00',
+      workEnd: '18:00',
+      breaks: [
+        {
+          id: `lbr_${randomBytes(4).toString('hex')}`,
+          name: 'Lunch',
+          start: '12:00',
+          end: '13:00',
+        },
+      ],
+    }));
   }
 
   ensureDefaultSchedule(userId: string) {
     const db = this.read();
     const existing = db.schedules.filter((s) => s.userId === userId);
     if (existing.length) return;
-    const weekdays: Weekday[] = [1, 2, 3, 4, 5];
-    for (const weekday of weekdays) {
-      db.schedules.push({
-        id: `ltpl_${randomBytes(6).toString('hex')}`,
-        userId,
-        weekday,
-        workStart: '09:00',
-        workEnd: '18:00',
-        breaks: [
-          {
-            id: `lbr_${randomBytes(4).toString('hex')}`,
-            name: 'Lunch',
-            start: '12:00',
-            end: '13:00',
-          },
-        ],
-      });
-    }
+    db.schedules.push(...this.defaultTemplates(userId));
     this.write(db);
   }
 
   listSchedule(userId: string): DailyScheduleTemplateDto[] {
     this.ensureDefaultSchedule(userId);
-    return this.read()
+    const rows = this.read()
       .schedules.filter((s) => s.userId === userId)
-      .sort((a, b) => a.weekday - b.weekday)
-      .map((s) => ({
-        id: s.id,
-        weekday: s.weekday,
-        workStart: s.workStart,
-        workEnd: s.workEnd,
-        breaks: s.breaks.map((b) => ({ ...b })),
-      }));
+      .sort((a, b) => a.weekday - b.weekday);
+    const source = rows.length ? rows : this.defaultTemplates(userId);
+    return source.map((s) => ({
+      id: s.id,
+      weekday: s.weekday,
+      workStart: s.workStart,
+      workEnd: s.workEnd,
+      breaks: s.breaks.map((b) => ({ ...b })),
+    }));
   }
 
   upsertSchedule(

@@ -132,7 +132,7 @@ export async function createNestApp(): Promise<NestExpressApplication> {
       .map((s) => s.trim())
       .filter(Boolean),
   );
-  // Always allow the production web host
+  // Always allow the production web host (+ previews)
   allowedOrigins.add('https://timeblock-web-ashy.vercel.app');
 
   if (!isProd) {
@@ -157,6 +157,18 @@ export async function createNestApp(): Promise<NestExpressApplication> {
     ) => {
       if (!requestOrigin || allowedOrigins.has(requestOrigin)) {
         return cb(null, true);
+      }
+      // Vercel preview / renamed web hosts
+      try {
+        const host = new URL(requestOrigin).hostname;
+        if (
+          host === 'timeblock-web-ashy.vercel.app' ||
+          (host.endsWith('.vercel.app') && host.includes('timeblock'))
+        ) {
+          return cb(null, true);
+        }
+      } catch {
+        /* ignore */
       }
       return cb(null, false);
     },

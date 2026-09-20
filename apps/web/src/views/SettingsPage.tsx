@@ -123,7 +123,11 @@ export function SettingsPage({ user }: { user: UserDto }) {
 
   const scheduleQ = useQuery({
     queryKey: ['schedule'],
-    queryFn: () => api.get<DailyScheduleTemplateDto[]>('/api/schedule'),
+    queryFn: async () => {
+      const rows = await api.get<DailyScheduleTemplateDto[]>('/api/schedule');
+      return Array.isArray(rows) ? rows : [];
+    },
+    retry: 2,
   });
 
   const saveProfile = useMutation({
@@ -345,7 +349,10 @@ export function SettingsPage({ user }: { user: UserDto }) {
             <p className="settings-hint">Loading schedule…</p>
           ) : scheduleQ.isError ? (
             <p className="settings-toast is-err">
-              Could not load schedule.{' '}
+              Could not load schedule
+              {scheduleQ.error instanceof Error
+                ? `: ${scheduleQ.error.message}`
+                : '.'}{' '}
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"

@@ -66,25 +66,45 @@ export class ScheduleTemplatesService {
   }
 
   async list(userId: string): Promise<DailyScheduleTemplateDto[]> {
-    const fromDb = await this.viaDb(
-      userId,
-      (id) =>
-        this.supabase.listSchedule(id) as Promise<DailyScheduleTemplateDto[]>,
-    );
-    if (fromDb) return fromDb;
-
-    if (userId.startsWith('local_')) {
-      return this.local.listSchedule(userId);
-    }
     try {
-      const rows = await this.prisma.dailyScheduleTemplate.findMany({
-        where: { userId },
-        include: { breaks: true },
-        orderBy: { weekday: 'asc' },
+      const fromDb = await this.viaDb(userId, async (id) => {
+        try {
+          await this.supabase.ensureDefaultSchedule(id);
+        } catch (err) {
+          console.warn(
+            '[schedule] seed defaults failed',
+            err instanceof Error ? err.message : err,
+          );
+        }
+        return this.supabase.listSchedule(id) as Promise<
+          DailyScheduleTemplateDto[]
+        >;
       });
-      return rows.map((r) => this.map(r));
-    } catch {
-      return this.local.listSchedule(userId);
+      if (fromDb !== null) return fromDb;
+
+      if (userId.startsWith('local_')) {
+        return this.local.listSchedule(userId);
+      }
+      try {
+        const rows = await this.prisma.dailyScheduleTemplate.findMany({
+          where: { userId },
+          include: { breaks: true },
+          orderBy: { weekday: 'asc' },
+        });
+        return rows.map((r) => this.map(r));
+      } catch {
+        return this.local.listSchedule(userId);
+      }
+    } catch (err) {
+      console.warn(
+        '[schedule] list failed',
+        err instanceof Error ? err.message : err,
+      );
+      try {
+        return this.local.listSchedule(userId);
+      } catch {
+        return [];
+      }
     }
   }
 
@@ -100,7 +120,7 @@ export class ScheduleTemplatesService {
         return row as DailyScheduleTemplateDto;
       },
     );
-    if (fromDb) return fromDb;
+    if (fromDb !== null) return fromDb;
 
     if (userId.startsWith('local_')) {
       return this.local.upsertSchedule(userId, dto);
@@ -126,7 +146,7 @@ export class ScheduleTemplatesService {
       await this.rescheduleAfter(id);
       return this.supabase.listSchedule(id) as Promise<DailyScheduleTemplateDto[]>;
     });
-    if (fromDb) return fromDb;
+    if (fromDb !== null) return fromDb;
 
     if (userId.startsWith('local_')) {
       return this.local.applyScheduleToAll(userId, dto);

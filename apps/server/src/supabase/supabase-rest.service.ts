@@ -854,9 +854,18 @@ export class SupabaseRestService implements OnModuleInit {
     );
     const out = [];
     for (const t of templates) {
-      const breaks = await this.select<Record<string, unknown>>('Break', '*', {
-        filter: `templateId=eq.${t.id}`,
-      });
+      let breaks: Record<string, unknown>[] = [];
+      try {
+        breaks = await this.select<Record<string, unknown>>('Break', '*', {
+          filter: `templateId=eq.${t.id}`,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `Break fetch failed for template ${String(t.id)}: ${
+            err instanceof Error ? err.message : err
+          }`,
+        );
+      }
       out.push({
         id: String(t.id),
         weekday: Number(t.weekday),
@@ -882,6 +891,13 @@ export class SupabaseRestService implements OnModuleInit {
       breaks: Array<{ name: string; start: string; end: string }>;
     },
   ) {
+    const workStart = normalizeHm(dto.workStart, '09:00');
+    const workEnd = normalizeHm(dto.workEnd, '18:00');
+    const breakRows = (dto.breaks ?? []).map((b) => ({
+      name: (b.name || 'Break').trim() || 'Break',
+      start: normalizeHm(b.start, '12:00'),
+      end: normalizeHm(b.end, '13:00'),
+    }));
     const existing = await this.select<{ id: string }>(
       'DailyScheduleTemplate',
       'id',
@@ -895,25 +911,31 @@ export class SupabaseRestService implements OnModuleInit {
     if (existing[0]) {
       templateId = existing[0].id;
       await this.patch('DailyScheduleTemplate', `id=eq.${templateId}`, {
-        workStart: dto.workStart,
-        workEnd: dto.workEnd,
+        workStart,
+        workEnd,
         updatedAt: now,
       });
-      await this.delete('Break', `templateId=eq.${templateId}`);
+      try {
+        await this.delete('Break', `templateId=eq.${templateId}`);
+      } catch (err) {
+        this.logger.warn(
+          `Break delete failed: ${err instanceof Error ? err.message : err}`,
+        );
+      }
     } else {
       templateId = createId();
       await this.insert('DailyScheduleTemplate', {
         id: templateId,
         userId,
         weekday: dto.weekday,
-        workStart: dto.workStart,
-        workEnd: dto.workEnd,
+        workStart,
+        workEnd,
         createdAt: now,
         updatedAt: now,
       });
     }
     const breaks = [];
-    for (const b of dto.breaks) {
+    for (const b of breakRows) {
       const id = createId();
       await this.insert('Break', {
         id,
@@ -927,10 +949,44 @@ export class SupabaseRestService implements OnModuleInit {
     return {
       id: templateId,
       weekday: dto.weekday,
-      workStart: dto.workStart,
-      workEnd: dto.workEnd,
+      workStart,
+      workEnd,
       breaks,
     };
+  }
+
+  /** Seed Mon–Fri 09–18 + lunch when the user has no templates yet. */
+  async ensureDefaultSchedule(userId: string) {
+    const existing = await this.select<{ id: string }>(
+      'DailyScheduleTemplate',
+      'id',
+      { filter: `userId=eq.${userId}`, limit: 1 },
+    );
+    if (existing.length) return;
+    const now = new Date().toISOString();
+    for (const weekday of [1, 2, 3, 4, 5]) {
+      const templateId = createId();
+      await this.insert('DailyScheduleTemplate', {
+        id: templateId,
+        userId,
+        weekday,
+        workStart: '09:00',
+        workEnd: '18:00',
+        createdAt: now,
+        updatedAt: now,
+      });
+      try {
+        await this.insert('Break', {
+          id: createId(),
+          templateId,
+          name: 'Lunch',
+          start: '12:00',
+          end: '13:00',
+        });
+      } catch {
+        /* optional */
+      }
+    }
   }
 
 
