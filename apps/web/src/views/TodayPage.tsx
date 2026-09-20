@@ -237,7 +237,11 @@ export function TodayPage({
   });
   const scheduleQ = useQuery({
     queryKey: ['schedule'],
-    queryFn: () => api.get<DailyScheduleTemplateDto[]>('/api/schedule'),
+    queryFn: async () => {
+      const rows = await api.get<DailyScheduleTemplateDto[]>('/api/schedule');
+      return Array.isArray(rows) ? rows : [];
+    },
+    retry: 2,
   });
 
   const invalidateStats = () => {
