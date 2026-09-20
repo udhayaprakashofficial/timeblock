@@ -167,6 +167,20 @@ export class LocalDataStore {
 
   listTasks(userId: string, dateStr: string): TaskDto[] {
     this.ensureDefaultSchedule(userId);
+    const db = this.read();
+    let dirty = false;
+    for (const t of db.tasks) {
+      if (
+        t.userId === userId &&
+        t.date === dateStr &&
+        t.status === 'completed' &&
+        t.actualMinutes <= 0
+      ) {
+        t.actualMinutes = Math.max(1, t.estimatedMinutes || 30);
+        dirty = true;
+      }
+    }
+    if (dirty) this.write(db);
     return this.read()
       .tasks.filter(
         (t) =>
@@ -298,6 +312,10 @@ export class LocalDataStore {
       t.actualMinutes += elapsed;
       t.activeEntryId = null;
       t.timerStartedAt = null;
+    }
+    // Checkbox Done without a timer still counts planned time (proof of work)
+    if (t.actualMinutes <= 0) {
+      t.actualMinutes = Math.max(1, t.estimatedMinutes || 30);
     }
     t.status = 'completed';
     this.write(db);
@@ -671,6 +689,11 @@ export class LocalDataStore {
     if (dateStr === todayLocal) {
       const now = new Date();
       const floor = now.getHours() * 60 + now.getMinutes();
+      const coverageEnd = free.reduce((m, i) => Math.max(m, i.end), 0);
+      if (coverageEnd <= floor + 45) {
+        const end = Math.min(24 * 60, floor + 4 * 60);
+        if (end > floor) free = [...free, { start: floor, end }];
+      }
       free = free
         .map((i) => ({ start: Math.max(i.start, floor), end: i.end }))
         .filter((i) => i.end > i.start);

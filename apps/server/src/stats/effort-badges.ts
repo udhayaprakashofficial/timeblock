@@ -144,8 +144,41 @@ export function buildEffortSummary(input: {
   );
   const aiSparkEarned =
     aiTaskDone ||
-    (todayActual >= 45 && util >= 40 && util <= 85) ||
+    (todayActual >= 45 && util >= 40 && util <= 80) ||
     (lockedThisWeek >= 2 && todayCompleted >= 1);
+
+  /** Progress into the 40–80% utilization band (never “Ready” when over capacity). */
+  const focusZoneProgress = (() => {
+    if (util >= 40 && util <= 80) return { current: 1, target: 1 };
+    if (util > 80) return { current: 0, target: 1 };
+    return {
+      current: Math.max(0, Math.min(40, Math.round(util))),
+      target: 40,
+    };
+  })();
+
+  /**
+   * AI Spark has 3 alternate paths — progress is the best incomplete path fill,
+   * never 100% unless actually earned.
+   */
+  const aiSparkProgress = (() => {
+    if (aiSparkEarned) return { current: 1, target: 1 };
+    const pathFocus = Math.min(
+      99,
+      Math.round(
+        (Math.min(todayActual, 45) / 45) * 50 +
+          (util >= 40 && util <= 80 ? 50 : Math.min(util, 40) / 40 * 25),
+      ),
+    );
+    const pathLock = Math.min(
+      99,
+      Math.round(
+        (Math.min(lockedThisWeek, 2) / 2) * 50 +
+          (todayCompleted >= 1 ? 50 : 0),
+      ),
+    );
+    return { current: Math.max(pathFocus, pathLock), target: 100 };
+  })();
 
   const badges: EffortBadgeDto[] = [
     {
@@ -200,10 +233,7 @@ export function buildEffortSummary(input: {
       challenge: 'Keep day utilization between 40% and 80%.',
       earned: util >= 40 && util <= 80,
       tone: 'teal',
-      progress: {
-        current: Math.min(Math.max(util, 0), 80),
-        target: 40,
-      },
+      progress: focusZoneProgress,
     },
     {
       id: 'timekeeper',
@@ -265,17 +295,7 @@ export function buildEffortSummary(input: {
         'Complete an AI-named task, log 45m+ today in Focus Zone, or lock 2+ timed slots this week.',
       earned: aiSparkEarned,
       tone: 'blue',
-      progress: {
-        current: aiSparkEarned
-          ? 1
-          : Math.min(
-              1,
-              (aiTaskDone ? 1 : 0) +
-                (todayActual >= 45 ? 1 : 0) +
-                (lockedThisWeek >= 2 ? 1 : 0),
-            ),
-        target: 1,
-      },
+      progress: aiSparkProgress,
     },
   ];
 

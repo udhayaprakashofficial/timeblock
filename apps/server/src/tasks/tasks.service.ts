@@ -452,6 +452,21 @@ export class TasksService {
           data: { endedAt: now, actualMinutes },
         });
       }
+      const closed = await this.prisma.timeEntry.findMany({
+        where: { taskId, endedAt: { not: null } },
+      });
+      const logged = closed.reduce((s, e) => s + (e.actualMinutes ?? 0), 0);
+      if (logged <= 0) {
+        const mins = Math.max(1, task.estimatedMinutes || 30);
+        await this.prisma.timeEntry.create({
+          data: {
+            taskId,
+            startedAt: new Date(now.getTime() - mins * 60_000),
+            endedAt: now,
+            actualMinutes: mins,
+          },
+        });
+      }
       await this.prisma.task.update({
         where: { id: taskId },
         data: { status: 'completed', inBacklog: false },

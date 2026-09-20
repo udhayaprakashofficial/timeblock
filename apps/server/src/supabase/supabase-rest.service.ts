@@ -1,8 +1,16 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { createId } from './create-id';
-import { dayBoundsInTimeZone, toUtcIso, parseHm, combineDateAndMinutes } from '../common/time.util';
+import { dayBoundsInTimeZone, toUtcIso, parseHm, combineDateAndMinutes, elapsedMinutes, entryActualMinutes } from '../common/time.util';
 
 type Json = Record<string, unknown>;
+
+function normalizeHm(value: string, fallback = '09:00'): string {
+  const m = String(value ?? '').match(/(\d{1,2}):(\d{2})/);
+  if (!m) return fallback;
+  const h = Math.min(23, Math.max(0, Number(m[1]) || 0));
+  const min = Math.min(59, Math.max(0, Number(m[2]) || 0));
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
 
 /**
  * Writes/reads app tables over Supabase PostgREST (HTTPS).
@@ -499,11 +507,44 @@ export class SupabaseRestService implements OnModuleInit {
     const out = [];
     for (const t of rows) {
       if (t.inBacklog === true) continue;
-      const entries = await this.select<Record<string, unknown>>(
+      let entries = await this.select<Record<string, unknown>>(
         'TimeEntry',
         '*',
         { filter: `taskId=eq.${t.id}` },
       );
+      // Repair IST-offset bad actualMinutes written by naive Date parsing
+      for (const e of entries) {
+        if (!e.endedAt || !e.startedAt) continue;
+        const correct = entryActualMinutes(e);
+        const stored = Number(e.actualMinutes) || 0;
+        if (correct > 0 && Math.abs(correct - stored) > 5) {
+          await this.patch('TimeEntry', `id=eq.${e.id}`, {
+            actualMinutes: correct,
+          });
+          e.actualMinutes = correct;
+        }
+      }
+      const logged = entries.reduce(
+        (sum, e) => sum + entryActualMinutes(e),
+        0,
+      );
+      // Repair older checkbox-completes that never created a TimeEntry
+      if (String(t.status) === 'completed' && logged <= 0) {
+        const mins = Math.max(1, Number(t.estimatedMinutes) || 30);
+        const endedAt = new Date();
+        const startedAt = new Date(endedAt.getTime() - mins * 60_000);
+        await this.insert('TimeEntry', {
+          id: createId(),
+          taskId: String(t.id),
+          startedAt: startedAt.toISOString(),
+          endedAt: endedAt.toISOString(),
+          actualMinutes: mins,
+          createdAt: endedAt.toISOString(),
+        });
+        entries = await this.select<Record<string, unknown>>('TimeEntry', '*', {
+          filter: `taskId=eq.${t.id}`,
+        });
+      }
       out.push(this.mapTaskRow(t, entries));
     }
     return out;
@@ -763,14 +804,35 @@ export class SupabaseRestService implements OnModuleInit {
     if (!rows[0]) throw new Error('Task not found');
     // Close any open timer before marking done
     await this.closeOpenEntriesForTask(taskId);
+    let entries = await this.select<Record<string, unknown>>('TimeEntry', '*', {
+      filter: `taskId=eq.${taskId}`,
+    });
+    const logged = entries.reduce(
+      (sum, e) => sum + entryActualMinutes(e),
+      0,
+    );
+    // Done without a live session → credit estimated minutes as a closed entry
+    if (logged <= 0) {
+      const mins = Math.max(1, Number(rows[0].estimatedMinutes) || 30);
+      const endedAt = new Date();
+      const startedAt = new Date(endedAt.getTime() - mins * 60_000);
+      await this.insert('TimeEntry', {
+        id: createId(),
+        taskId,
+        startedAt: startedAt.toISOString(),
+        endedAt: endedAt.toISOString(),
+        actualMinutes: mins,
+        createdAt: endedAt.toISOString(),
+      });
+      entries = await this.select<Record<string, unknown>>('TimeEntry', '*', {
+        filter: `taskId=eq.${taskId}`,
+      });
+    }
     const updated = await this.patch<Record<string, unknown>>(
       'Task',
       `id=eq.${taskId}`,
       { status: 'completed', updatedAt: new Date().toISOString() },
     );
-    const entries = await this.select<Record<string, unknown>>('TimeEntry', '*', {
-      filter: `taskId=eq.${taskId}`,
-    });
     return this.mapTaskRow(updated[0] ?? rows[0], entries);
   }
 
@@ -798,13 +860,13 @@ export class SupabaseRestService implements OnModuleInit {
       out.push({
         id: String(t.id),
         weekday: Number(t.weekday),
-        workStart: String(t.workStart),
-        workEnd: String(t.workEnd),
+        workStart: normalizeHm(String(t.workStart)),
+        workEnd: normalizeHm(String(t.workEnd)),
         breaks: breaks.map((b) => ({
           id: String(b.id),
           name: String(b.name),
-          start: String(b.start),
-          end: String(b.end),
+          start: normalizeHm(String(b.start)),
+          end: normalizeHm(String(b.end)),
         })),
       });
     }
@@ -919,11 +981,7 @@ export class SupabaseRestService implements OnModuleInit {
     const active = entries.find((e) => !e.endedAt);
     if (!active) throw new Error('No active timer');
     const endedAt = new Date();
-    const startedAt = new Date(String(active.startedAt));
-    const actualMinutes = Math.max(
-      1,
-      Math.round((endedAt.getTime() - startedAt.getTime()) / 60000),
-    );
+    const actualMinutes = elapsedMinutes(String(active.startedAt), endedAt);
     await this.patch('TimeEntry', `id=eq.${active.id}`, {
       endedAt: endedAt.toISOString(),
       actualMinutes,
@@ -950,11 +1008,7 @@ export class SupabaseRestService implements OnModuleInit {
     const now = new Date();
     for (const e of entries) {
       if (e.endedAt) continue;
-      const startedAt = new Date(String(e.startedAt));
-      const actualMinutes = Math.max(
-        1,
-        Math.round((now.getTime() - startedAt.getTime()) / 60000),
-      );
+      const actualMinutes = elapsedMinutes(String(e.startedAt), now);
       await this.patch('TimeEntry', `id=eq.${e.id}`, {
         endedAt: now.toISOString(),
         actualMinutes,
@@ -981,11 +1035,7 @@ export class SupabaseRestService implements OnModuleInit {
       const active = entries.find((e) => !e.endedAt);
       if (!active) continue;
       const endedAt = new Date();
-      const startedAt = new Date(String(active.startedAt));
-      const actualMinutes = Math.max(
-        1,
-        Math.round((endedAt.getTime() - startedAt.getTime()) / 60000),
-      );
+      const actualMinutes = elapsedMinutes(String(active.startedAt), endedAt);
       await this.patch('TimeEntry', `id=eq.${active.id}`, {
         endedAt: endedAt.toISOString(),
         actualMinutes,
@@ -1021,7 +1071,7 @@ export class SupabaseRestService implements OnModuleInit {
     entries: Record<string, unknown>[],
   ) {
     const actualMinutes = entries.reduce(
-      (sum, e) => sum + (Number(e.actualMinutes) || 0),
+      (sum, e) => sum + entryActualMinutes(e),
       0,
     );
     const active = entries.find((e) => !e.endedAt);

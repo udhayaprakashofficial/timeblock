@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useState, type CSSProperties, type FormEvent } from 'react';
 import type { AuthConfigDto, UserDto } from '@timeblock/shared-types';
 import { api } from '../api';
+import { CupkeyLogo } from '../components/CupkeyLogo';
 import './auth.css'; // LAYOUT_FIX_V1
 
 type AuthMode = 'signin' | 'signup';
@@ -19,13 +20,15 @@ function initialMode(): AuthMode {
 
 /** Safety net if external CSS fails to load (stale Vite / HMR). Must be above LoginScreen (TDZ). */
 const AUTH_CRITICAL_CSS = `
-.auth-screen{display:block!important;min-height:100vh!important;width:100%!important;padding:32px 16px!important;box-sizing:border-box!important;background:radial-gradient(ellipse 80% 50% at 50% -10%,rgba(139,92,246,.22),transparent),linear-gradient(180deg,#0b0b0f,#121218 50%,#0e0e14)!important;color:#f5f5f7!important}
-.auth-card{display:block!important;width:min(400px,100%)!important;max-width:400px!important;margin:0 auto!important;padding:36px 32px 28px!important;border-radius:14px!important;background:#1a1a1f!important;border:1px solid #2a2a32!important;text-align:center!important;box-sizing:border-box!important}
+.auth-screen{display:block!important;min-height:100vh!important;width:100%!important;padding:32px 16px!important;box-sizing:border-box!important;background:radial-gradient(ellipse 80% 50% at 50% -10%,rgba(255,87,34,.22),transparent),linear-gradient(180deg,#0a0a0a,#121212 50%,#0e0e0e)!important;color:#f5f5f7!important}
+.auth-card{display:block!important;width:min(400px,100%)!important;max-width:400px!important;margin:0 auto!important;padding:36px 32px 28px!important;border-radius:14px!important;background:#161616!important;border:1px solid #2a2a2a!important;text-align:center!important;box-sizing:border-box!important}
+.auth-brand{display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:10px!important;margin:0 auto 20px!important;text-decoration:none!important;color:inherit!important}
 .auth-form{display:block!important;width:100%!important;text-align:left!important}
 .auth-field{display:block!important;width:100%!important;margin:0 0 14px!important}
 .auth-field>span{display:block!important;width:100%!important;margin:0 0 6px!important}
-.auth-field input{display:block!important;width:100%!important;height:40px!important;padding:0 12px!important;border-radius:8px!important;border:1px solid #33333d!important;background:#121217!important;color:#f9fafb!important;box-sizing:border-box!important}
-.auth-continue,.auth-social-btn{display:block!important;width:100%!important;box-sizing:border-box!important}
+.auth-field input{display:block!important;width:100%!important;height:40px!important;padding:0 12px!important;border-radius:8px!important;border:1px solid #333!important;background:#0f0f0f!important;color:#f9fafb!important;box-sizing:border-box!important}
+.auth-continue,.auth-social-btn{display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:10px!important;width:100%!important;min-height:44px!important;height:44px!important;padding:0 14px!important;box-sizing:border-box!important;line-height:1!important}
+.auth-social-btn .google-icon{width:18px!important;height:18px!important;flex-shrink:0!important;display:block!important}
 `;
 
 const screenStyle: CSSProperties = {
@@ -35,7 +38,7 @@ const screenStyle: CSSProperties = {
   padding: '32px 16px',
   boxSizing: 'border-box',
   background:
-    'radial-gradient(ellipse 80% 50% at 50% -10%, rgba(139, 92, 246, 0.22), transparent), linear-gradient(180deg, #0b0b0f 0%, #121218 50%, #0e0e14 100%)',
+    'radial-gradient(ellipse 80% 50% at 50% -10%, rgba(255, 87, 34, 0.22), transparent), linear-gradient(180deg, #0a0a0a 0%, #121212 50%, #0e0e0e 100%)',
   color: '#f5f5f7',
 };
 
@@ -120,24 +123,33 @@ const inputStyle: CSSProperties = {
 };
 
 const continueStyle: CSSProperties = {
-  display: 'block',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 8,
   width: '100%',
   marginTop: 4,
-  height: 42,
+  minHeight: 44,
+  height: 44,
   border: 'none',
   borderRadius: 8,
-  background: '#8b5cf6',
-  color: '#0b0b0f',
+  background: 'linear-gradient(135deg, #ff8a50 0%, #ff5722 48%, #e64a19 100%)',
+  color: '#fff',
   fontWeight: 650,
   fontSize: '0.95rem',
   cursor: 'pointer',
   boxSizing: 'border-box',
+  lineHeight: 1,
 };
 
 const socialBtnStyle: CSSProperties = {
-  display: 'block',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 10,
   width: '100%',
-  height: 40,
+  minHeight: 44,
+  height: 44,
   padding: '0 14px',
   borderRadius: 8,
   border: '1px solid #33333d',
@@ -147,6 +159,7 @@ const socialBtnStyle: CSSProperties = {
   fontWeight: 500,
   cursor: 'pointer',
   boxSizing: 'border-box',
+  lineHeight: 1,
 };
 
 function AuthCard({
@@ -243,7 +256,7 @@ function AuthCard({
   };
 
   const title =
-    mode === 'signin' ? 'Sign in to Timeblock' : 'Create your Timeblock account';
+    mode === 'signin' ? 'Sign in to Cupkey' : 'Create your Cupkey account';
   const subtitle =
     mode === 'signin'
       ? 'Welcome back! Please sign in to continue'
@@ -253,9 +266,9 @@ function AuthCard({
     <div className="auth-screen" style={screenStyle}>
       <style>{AUTH_CRITICAL_CSS}</style>
       <div className="auth-card" data-mode={mode} style={cardStyle}>
-        <Link href="/" className="auth-brand" aria-label="Timeblock home">
-          <span className="auth-brand-mark" aria-hidden />
-          <span className="auth-brand-name">timeblock</span>
+        <Link href="/" className="auth-brand" aria-label="Cupkey home">
+          <CupkeyLogo size={28} className="auth-brand-logo" title="Cupkey" />
+          <span className="auth-brand-name">cupkey</span>
         </Link>
         <h1 className="auth-title">{title}</h1>
         <p className="auth-subtitle">{subtitle}</p>
@@ -369,7 +382,7 @@ function AuthCard({
             </p>
           )}
         </div>
-        <p className="auth-secured">Secured by Timeblock</p>
+        <p className="auth-secured">Secured by Cupkey</p>
       </div>
     </div>
   );
@@ -377,7 +390,13 @@ function AuthCard({
 
 function GoogleIcon() {
   return (
-    <svg className="google-icon" viewBox="0 0 24 24" aria-hidden>
+    <svg
+      className="google-icon"
+      width={18}
+      height={18}
+      viewBox="0 0 24 24"
+      aria-hidden
+    >
       <path
         fill="#4285F4"
         d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"

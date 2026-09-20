@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   useCallback,
   useEffect,
+  useMemo,
   useState,
   lazy,
   Suspense,
@@ -15,8 +16,12 @@ import type { ThemePreference, UserDto } from '@timeblock/shared-types';
 import { api, detectBrowserTimeZone } from './api';
 import { ThemeProvider, useTheme } from './theme';
 import { RightPanel } from './components/RightPanel';
+import { TopbarPulse } from './components/TopbarPulse';
+import { TopbarSearch } from './components/TopbarSearch';
+import { CupkeyLogo } from './components/CupkeyLogo';
 import { LoginScreen } from './auth/SignInCard';
 import { UserProvider } from './user-context';
+import { DataBootstrap } from './store/DataBootstrap';
 import './auth/auth.css';
 
 /** Survives React StrictMode remounts — one exchange per loginCode. */
@@ -88,16 +93,24 @@ function NavItem({
   href,
   exact,
   children,
+  title,
 }: {
   href: string;
   exact?: boolean;
   children: ReactNode;
+  title?: string;
 }) {
   const pathname = usePathname();
   const active = exact ? pathname === href : pathname.startsWith(href);
   return (
-    <Link href={href} className={active ? 'active' : undefined}>
+    <Link
+      href={href}
+      className={`nav-link${active ? ' active' : ''}`}
+      data-tooltip={title}
+      aria-label={title}
+    >
       {children}
+      {title ? <span className="nav-tooltip">{title}</span> : null}
     </Link>
   );
 }
@@ -105,6 +118,7 @@ function NavItem({
 function LogoutButton({ onLoggedOut }: { onLoggedOut: () => void }) {
   const qc = useQueryClient();
   const clerkKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
+  const [busy, setBusy] = useState(false);
 
   if (clerkKey) {
     return (
@@ -114,21 +128,42 @@ function LogoutButton({ onLoggedOut }: { onLoggedOut: () => void }) {
     );
   }
 
+  const logout = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.post('/api/auth/logout');
+    } catch {
+      /* still clear local session */
+    } finally {
+      qc.setQueryData(['me'], null);
+      void qc.cancelQueries({ queryKey: ['me'] });
+      onLoggedOut();
+      setBusy(false);
+    }
+  };
+
   return (
     <button
-      className="btn btn-ghost"
+      className="btn btn-ghost sidebar-logout"
       type="button"
-      onClick={() => {
-        void api.post('/api/auth/logout').finally(() => {
-          qc.setQueryData(['me'], null);
-          onLoggedOut();
-        });
-      }}
-      style={{ justifyContent: 'flex-start', paddingLeft: 4 }}
+      aria-label="Log out"
+      title="Log out"
+      disabled={busy}
+      onClick={() => void logout()}
     >
-      ↩ Logout
+      <span className="nav-icon" aria-hidden>
+        ↩
+      </span>
+      <span className="nav-tooltip">Log out</span>
     </button>
   );
+}
+
+function greetingForHour(h: number) {
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
 }
 
 function Shell({
@@ -141,12 +176,46 @@ function Shell({
   children: ReactNode;
 }) {
   const { theme, setTheme } = useTheme();
+  const pathname = usePathname();
   const qc = useQueryClient();
   const offline = typeof user.id === 'string' && user.id.startsWith('local_');
+  const firstName = user.name.split(/\s+/)[0] || user.name;
+  const dateLine = useMemo(() => {
+    const tz = user.timezone || detectBrowserTimeZone();
+    try {
+      const day = new Intl.DateTimeFormat('en-GB', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        timeZone: tz,
+      }).format(new Date());
+      return `${day} · ${tz}`;
+    } catch {
+      return new Date().toLocaleDateString();
+    }
+  }, [user.timezone]);
+  const greet = useMemo(() => {
+    const tz = user.timezone || detectBrowserTimeZone();
+    try {
+      const hour = Number(
+        new Intl.DateTimeFormat('en-US', {
+          timeZone: tz,
+          hour: 'numeric',
+          hourCycle: 'h23',
+        }).format(new Date()),
+      );
+      return greetingForHour(hour);
+    } catch {
+      return greetingForHour(new Date().getHours());
+    }
+  }, [user.timezone]);
 
   useEffect(() => {
+    // Match product mock: dark orange dashboard by default
     if (user.theme === 'light' || user.theme === 'dark') {
       setTheme(user.theme);
+    } else {
+      setTheme('dark');
     }
   }, [user.theme, setTheme]);
 
@@ -181,6 +250,7 @@ function Shell({
       api.patch<UserDto>('/api/users/me', { theme: next }),
     onSuccess: (data) => {
       qc.setQueryData(['me'], data);
+      writeCachedUser(data);
     },
   });
 
@@ -192,61 +262,115 @@ function Shell({
 
   return (
     <UserProvider user={user}>
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden />
-          Timeblock.
-        </div>
-
-        <div className="profile-chip">
-          <div className="avatar">{initials(user.name)}</div>
-          <div>
-            <div className="name">{user.name}</div>
-            <div className="role">Personal planner</div>
-          </div>
-        </div>
+    <DataBootstrap userId={user.id} timeZone={user.timezone} />
+    <div
+      className={`app-shell${
+        pathname.startsWith('/badges') || pathname.startsWith('/settings')
+          ? ' is-wide'
+          : ''
+      }${pathname.startsWith('/badges') ? ' is-badges' : ''}${
+        pathname.startsWith('/settings') ? ' is-settings' : ''
+      }`}
+    >
+      <aside className="sidebar" aria-label="Primary">
+        <Link href="/schedule" className="brand" aria-label="Cupkey home">
+          <CupkeyLogo size={54} className="brand-logo" title="Cupkey" />
+        </Link>
 
         <nav className="nav">
-          <NavItem href="/schedule" exact>
-            <span className="nav-icon">▦</span> My Schedule
+          <NavItem href="/schedule" exact title="Schedule">
+            <span className="nav-icon" aria-hidden>
+              ▦
+            </span>
+            <span className="nav-label">Schedule</span>
           </NavItem>
-          <NavItem href="/today">
-            <span className="nav-icon">▣</span> Today
+          <NavItem href="/today" title="Today">
+            <span className="nav-icon" aria-hidden>
+              ▣
+            </span>
+            <span className="nav-label">Today</span>
           </NavItem>
-          <NavItem href="/report">
-            <span className="nav-icon">↗</span> Weekly report
+          <NavItem href="/report" title="Weekly report">
+            <span className="nav-icon" aria-hidden>
+              ↗
+            </span>
+            <span className="nav-label">Report</span>
           </NavItem>
-          <NavItem href="/timesheet">
-            <span className="nav-icon">☰</span> Timesheet
+          <NavItem href="/badges" title="Badges">
+            <span className="nav-icon" aria-hidden>
+              ◈
+            </span>
+            <span className="nav-label">Badges</span>
           </NavItem>
-          <NavItem href="/badges">
-            <span className="nav-icon">◈</span> Badges
+          <NavItem href="/timesheet" title="Timesheet">
+            <span className="nav-icon" aria-hidden>
+              ☰
+            </span>
+            <span className="nav-label">Timesheet</span>
           </NavItem>
-          <NavItem href="/settings">
-            <span className="nav-icon">⚙</span> Settings
+          <NavItem href="/settings" title="Settings">
+            <span className="nav-icon" aria-hidden>
+              ⚙
+            </span>
+            <span className="nav-label">Settings</span>
           </NavItem>
         </nav>
 
         <div className="sidebar-footer">
+          <div
+            className="sidebar-rail-avatar"
+            data-tooltip={user.name}
+            aria-label={user.name}
+          >
+            {initials(user.name)}
+            <span className="nav-tooltip">{user.name}</span>
+          </div>
           <LogoutButton onLoggedOut={onLoggedOut} />
         </div>
       </aside>
 
-      <div className="main">
-        <header className="topbar">
-          <div className="search-bar">
-            <span aria-hidden>⌕</span>
-            <input placeholder="Search tasks, events…" readOnly />
+      <header className="topbar">
+        <div className="topbar-greeting">
+          <span className="topbar-date">{dateLine}</span>
+          <strong>
+            {greet}, {firstName}
+          </strong>
+        </div>
+        <TopbarSearch timeZone={user.timezone} />
+        <div className="topbar-actions">
+          <div className="view-toggle" aria-label="View">
+            <Link
+              href="/schedule"
+              className={pathname.startsWith('/schedule') ? 'is-active' : undefined}
+            >
+              Day
+            </Link>
+            <Link
+              href="/report"
+              className={pathname.startsWith('/report') ? 'is-active' : undefined}
+            >
+              Week
+            </Link>
+            <Link
+              href="/timesheet"
+              className={pathname.startsWith('/timesheet') ? 'is-active' : undefined}
+            >
+              Sessions
+            </Link>
           </div>
+          <TopbarPulse timeZone={user.timezone} />
           <button
-            className="btn btn-outline btn-pill"
+            className="btn btn-outline btn-pill topbar-theme"
             type="button"
             onClick={onToggleTheme}
+            aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
           >
             {theme === 'light' ? 'Dark' : 'Light'}
           </button>
-        </header>
+        </div>
+      </header>
+
+      <div className="main">
         <div className="content">
           {offline && (
             <div
@@ -267,7 +391,8 @@ function Shell({
           {children}
         </div>
       </div>
-      <RightPanel user={user} />
+      {!pathname.startsWith('/badges') &&
+        !pathname.startsWith('/settings') && <RightPanel user={user} />}
     </div>
     </UserProvider>
   );
@@ -283,6 +408,7 @@ export function App({ children }: { children: ReactNode }) {
   const [sessionUser, setSessionUser] = useState<UserDto | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [exchanging, setExchanging] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
     setSessionUser(readCachedUser());
@@ -294,24 +420,20 @@ export function App({ children }: { children: ReactNode }) {
 
   const me = useQuery({
     queryKey: ['me'],
-    queryFn: async () => {
-      try {
-        const data = await api.get<UserDto | null>('/api/users/me');
-        return data ?? null;
-      } catch {
-        return null;
-      }
-    },
-    retry: 1,
-    staleTime: 30_000,
-    enabled: hydrated && !exchanging,
+    queryFn: () => api.get<UserDto | null>('/api/users/me'),
+    retry: 2,
+    staleTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnReconnect: true,
+    enabled: hydrated && !exchanging && !loggingOut,
   });
 
-  const user = sessionUser ?? me.data ?? null;
+  const user = loggingOut ? null : sessionUser ?? me.data ?? null;
 
   const handleSignedIn = useCallback(
     (next: UserDto) => {
       const normalized = normalizeUser(next);
+      setLoggingOut(false);
       writeCachedUser(normalized);
       setSessionUser(normalized);
       qc.setQueryData(['me'], normalized);
@@ -321,10 +443,19 @@ export function App({ children }: { children: ReactNode }) {
   );
 
   const handleLoggedOut = useCallback(() => {
+    setLoggingOut(true);
     writeCachedUser(null);
     setSessionUser(null);
     qc.setQueryData(['me'], null);
-    router.replace('/');
+    void qc.cancelQueries();
+    qc.removeQueries({ queryKey: ['me'] });
+    qc.clear();
+    try {
+      sessionStorage.removeItem('tb.coachMuteUntil');
+    } catch {
+      /* ignore */
+    }
+    router.replace('/login');
   }, [qc, router]);
 
   useEffect(() => {
@@ -382,31 +513,46 @@ export function App({ children }: { children: ReactNode }) {
   }, [handleSignedIn, hydrated]);
 
   useEffect(() => {
-    if (!hydrated || me.isLoading || exchanging) return;
+    if (!hydrated || exchanging || loggingOut || !me.isSuccess) return;
     if (me.data) {
       writeCachedUser(me.data);
       setSessionUser(me.data);
       return;
     }
+    // Only clear cached session when the server explicitly says "no user"
     if (sessionUser && me.data === null) {
       writeCachedUser(null);
       setSessionUser(null);
     }
-  }, [me.data, me.isLoading, exchanging, sessionUser, hydrated]);
+  }, [me.data, me.isSuccess, exchanging, sessionUser, hydrated, loggingOut]);
 
   useEffect(() => {
-    if (!hydrated || exchanging) return;
-    if (user && isLanding) {
+    if (!hydrated || exchanging || loggingOut) return;
+    // Authed users should never sit on marketing/login chrome
+    if (user && (isLanding || isLogin)) {
       router.replace('/schedule');
     }
-  }, [hydrated, exchanging, user, isLanding, router]);
+  }, [hydrated, exchanging, loggingOut, user, isLanding, isLogin, router]);
 
   useEffect(() => {
-    if (!hydrated || exchanging || me.isLoading) return;
-    if (!user && !isPublic) {
+    if (!hydrated || exchanging || loggingOut || me.isLoading || me.isFetching)
+      return;
+    // Don't bounce to login on transient /me failures (common under rapid nav)
+    if (!user && !isPublic && me.isSuccess && me.data === null) {
       router.replace('/login');
     }
-  }, [hydrated, exchanging, me.isLoading, user, isPublic, router]);
+  }, [
+    hydrated,
+    exchanging,
+    loggingOut,
+    me.isLoading,
+    me.isFetching,
+    me.isSuccess,
+    me.data,
+    user,
+    isPublic,
+    router,
+  ]);
 
   let body: ReactNode;
   if (exchanging || (!hydrated && !isLanding)) {
@@ -422,16 +568,35 @@ export function App({ children }: { children: ReactNode }) {
       body = children;
     } else if (isLogin) {
       body = <LoginScreen onSignedIn={handleSignedIn} />;
+    } else if (me.isError) {
+      body = (
+        <div className="auth-screen">
+          <div className="auth-card">
+            <p className="auth-loading">Connection hiccup — retrying session…</p>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ marginTop: 12 }}
+              onClick={() => void me.refetch()}
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      );
     } else {
       body = (
         <div className="auth-screen">
           <div className="auth-card">
-            <p className="auth-loading">Redirecting…</p>
+            <p className="auth-loading">
+              {me.isLoading || me.isFetching ? 'Checking session…' : 'Redirecting…'}
+            </p>
           </div>
         </div>
       );
     }
-  } else if (isLanding) {
+  } else if (isLanding || isLogin) {
+    // Still on a public URL while session is warm — wait for replace('/schedule')
     body = (
       <div className="auth-screen">
         <div className="auth-card">
@@ -447,7 +612,7 @@ export function App({ children }: { children: ReactNode }) {
     );
   }
 
-  return <ThemeProvider forceLight={isPublic}>{body}</ThemeProvider>;
+  return <ThemeProvider forceLight={isPublic && !user}>{body}</ThemeProvider>;
 }
 
 export type { UserDto };

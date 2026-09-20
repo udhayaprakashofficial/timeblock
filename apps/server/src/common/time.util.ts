@@ -46,6 +46,37 @@ export function toUtcIso(value: string | Date | null | undefined): string | null
   return d.toISOString();
 }
 
+/** Elapsed whole minutes between two DB timestamps (UTC-safe). */
+export function elapsedMinutes(
+  startedAt: string | Date,
+  endedAt: string | Date = new Date(),
+): number {
+  const s = parseUtcInstant(startedAt);
+  const e = parseUtcInstant(endedAt);
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime()) || e.getTime() <= s.getTime()) {
+    return 1;
+  }
+  return Math.max(1, Math.round((e.getTime() - s.getTime()) / 60000));
+}
+
+/**
+ * Prefer duration from start/end timestamps when both exist (fixes bad stored
+ * actualMinutes from naive Date parsing). Otherwise use stored actualMinutes.
+ */
+export function entryActualMinutes(entry: {
+  actualMinutes?: unknown;
+  startedAt?: unknown;
+  endedAt?: unknown;
+}): number {
+  const started = entry.startedAt != null ? String(entry.startedAt) : '';
+  const ended = entry.endedAt != null ? String(entry.endedAt) : '';
+  if (started && ended) {
+    return elapsedMinutes(started, ended);
+  }
+  const stored = Number(entry.actualMinutes);
+  return Number.isFinite(stored) && stored > 0 ? Math.round(stored) : 0;
+}
+
 /** Civil YYYY-MM-DD for an instant in the given IANA timezone. */
 export function formatDateInTimeZone(d: Date, timeZone?: string | null): string {
   const tz = normalizeTimeZone(timeZone);

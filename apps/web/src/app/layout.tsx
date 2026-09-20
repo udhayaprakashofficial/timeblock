@@ -3,6 +3,7 @@ import Script from 'next/script';
 import { Providers } from '../Providers';
 import '../styles.css';
 import '../auth/auth.css';
+import '../dashboard-theme.css';
 
 const siteUrl =
   process.env.NEXT_PUBLIC_SITE_URL ?? 'http://127.0.0.1:5173';
@@ -10,12 +11,12 @@ const siteUrl =
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: {
-    default: 'Timeblock — Plan your day, prove your hours',
-    template: '%s · Timeblock',
+    default: 'Cupkey — Plan your day, prove your hours',
+    template: '%s · Cupkey',
   },
   description:
-    'Timeblock helps you schedule tasks, track focus time, earn effort badges, and export timesheets for your team lead.',
-  applicationName: 'Timeblock',
+    'Cupkey helps you schedule tasks, track focus time, earn effort badges, and export timesheets for your team lead.',
+  applicationName: 'Cupkey',
   keywords: [
     'time blocking',
     'timesheet',
@@ -25,16 +26,16 @@ export const metadata: Metadata = {
     'effort tracking',
   ],
   openGraph: {
-    title: 'Timeblock — Plan your day, prove your hours',
+    title: 'Cupkey — Plan your day, prove your hours',
     description:
       'Schedule tasks, track real time, and download timesheets for work reporting.',
     type: 'website',
-    siteName: 'Timeblock',
+    siteName: 'Cupkey',
     url: '/',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Timeblock — Plan your day, prove your hours',
+    title: 'Cupkey — Plan your day, prove your hours',
     description:
       'Schedule tasks, track real time, and download timesheets for work reporting.',
   },

@@ -384,9 +384,34 @@ export class AuthController {
 
   @Post('logout')
   logout(@Req() req: Request, @Res() res: Response) {
-    req.session.destroy(() => {
-      res.clearCookie('timeblock.sid');
+    const crossSite =
+      Boolean(process.env.VERCEL) ||
+      Boolean(process.env.WEB_ORIGIN?.includes('vercel.app'));
+    const isProd = process.env.NODE_ENV === 'production';
+    const cookieOpts = {
+      path: '/',
+      httpOnly: true,
+      sameSite: (crossSite ? 'none' : 'lax') as 'none' | 'lax',
+      secure: isProd || crossSite,
+    };
+
+    const finish = () => {
+      res.clearCookie('timeblock.sid', cookieOpts);
+      // Older / mismatched cookie variants
+      res.clearCookie('timeblock.sid', { path: '/' });
       res.json({ ok: true });
+    };
+
+    if (!req.session) {
+      finish();
+      return;
+    }
+
+    req.session.destroy((err) => {
+      if (err) {
+        console.warn('[auth] session destroy', err);
+      }
+      finish();
     });
   }
 

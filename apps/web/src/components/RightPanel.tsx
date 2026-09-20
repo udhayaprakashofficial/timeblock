@@ -1,18 +1,19 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { StatsOverviewDto, TaskDto, UserDto } from '@timeblock/shared-types';
 import { api, formatTimeRange, parseInstant, todayISO } from '../api';
+import { useAppDispatch, useAppSelector } from '../store/hooks';
+import {
+  completeTaskOptimistic,
+  fetchTasks,
+  startTimerOptimistic,
+  tasksActions,
+} from '../store/tasksSlice';
+import { fetchStats } from '../store/statsSlice';
 
-function initials(name: string) {
-  return name
-    .split(/\s+/)
-    .map((p) => p[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase();
-}
+const EMPTY_PANEL_TASKS: TaskDto[] = [];
 
 function minutesOf(iso: string, timeZone?: string | null) {
   const d = parseInstant(iso);
@@ -41,7 +42,6 @@ function nowMinutes(timeZone?: string | null) {
   return minutesOf(new Date().toISOString(), timeZone);
 }
 
-/** Pick the task that is live / in the current slot / next up. */
 function resolveCurrentTask(
   tasks: TaskDto[],
   timeZone?: string | null,
@@ -87,263 +87,384 @@ function resolveCurrentTask(
 export function RightPanel({ user }: { user: UserDto }) {
   const date = todayISO(user.timezone);
   const qc = useQueryClient();
+  const dispatch = useAppDispatch();
   const [tick, setTick] = useState(0);
+  const [mutedUntil, setMutedUntil] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const MUTE_KEY = 'tb.coachMuteUntil';
 
   useEffect(() => {
-    const id = window.setInterval(() => setTick((n) => n + 1), 30_000);
+    try {
+      const raw = sessionStorage.getItem(MUTE_KEY);
+      const until = raw ? Number(raw) : NaN;
+      if (Number.isFinite(until) && until > Date.now()) setMutedUntil(until);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((n) => n + 1), 15_000);
     return () => window.clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    void dispatch(fetchTasks(date));
+  }, [dispatch, date]);
 
   const stats = useQuery({
     queryKey: ['stats', date],
     queryFn: () =>
       api.get<StatsOverviewDto>(`/api/stats/overview?date=${date}`),
   });
-  const tasks = useQuery({
-    queryKey: ['tasks', date],
-    queryFn: () => api.get<TaskDto[]>(`/api/tasks?date=${date}`),
-  });
+
+  const taskList = useAppSelector((s) => s.tasks.byDate[date] ?? EMPTY_PANEL_TASKS);
 
   const util = stats.data?.utilization;
-  const pct = util?.utilizationPercent ?? 0;
-  const cal = useMemo(
-    () => buildMiniCalendar(new Date(`${date}T12:00:00`)),
-    [date],
+  const available = Math.max(1, util?.availableMinutes ?? 480);
+  const scheduledFromApi = util?.scheduledMinutes ?? 0;
+
+  // Real tracked / planned minutes — never invent category spend
+  const isMeet = (t: TaskDto) => Boolean(t.scheduleLocked || t.meetLink);
+  const spent = (t: TaskDto) => {
+    if (t.actualMinutes > 0) return t.actualMinutes;
+    // Completed without a timer still credits estimate (proof of work)
+    if (t.status === 'completed') return Math.max(0, t.estimatedMinutes || 0);
+    return 0;
+  };
+  const planned = (t: TaskDto) =>
+    t.status === 'completed' ? 0 : Math.max(0, t.estimatedMinutes || 0);
+
+  const deepLogged = taskList
+    .filter((t) => !isMeet(t))
+    .reduce((s, t) => s + spent(t), 0);
+  const meetLogged = taskList
+    .filter((t) => isMeet(t))
+    .reduce((s, t) => s + spent(t), 0);
+  const deepPlanned = taskList
+    .filter((t) => !isMeet(t))
+    .reduce((s, t) => s + planned(t), 0);
+  const meetPlanned = taskList
+    .filter((t) => isMeet(t))
+    .reduce((s, t) => s + planned(t), 0);
+
+  // Load = scheduled work vs available day (API when present)
+  const scheduledTotal = Math.max(
+    scheduledFromApi,
+    deepLogged + meetLogged + deepPlanned + meetPlanned,
   );
-  const current = useMemo(
-    () => resolveCurrentTask(tasks.data ?? [], user.timezone),
-    [tasks.data, user.timezone, tick],
+  const loadPct = Math.min(
+    100,
+    Math.round(
+      (util?.utilizationPercent ?? (scheduledTotal / available) * 100),
+    ),
   );
 
-  const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: ['tasks', date] });
+  // Focus: reward healthy utilization (~50–70%), not fake filler
+  const focusScore = Math.max(
+    0,
+    Math.min(100, Math.round(100 - Math.abs(loadPct - 55) * 1.2)),
+  );
+
+  // Bar segments: logged deep / logged meet / still planned / open capacity
+  const openMins = Math.max(
+    0,
+    available - deepLogged - meetLogged - deepPlanned - meetPlanned,
+  );
+  const sliceTotal = Math.max(
+    1,
+    deepLogged + meetLogged + deepPlanned + meetPlanned + openMins,
+  );
+  const deepPct = Math.round((deepLogged / sliceTotal) * 100);
+  const meetPct = Math.round((meetLogged / sliceTotal) * 100);
+  const plannedPct = Math.round(
+    ((deepPlanned + meetPlanned) / sliceTotal) * 100,
+  );
+  const openPct = Math.max(0, 100 - deepPct - meetPct - plannedPct);
+
+  const current = useMemo(
+    () => resolveCurrentTask(taskList, user.timezone),
+    [taskList, user.timezone, tick],
+  );
+
+  const weekDays = useMemo(() => {
+    const labels = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+    const todayIdx = (new Date(`${date}T12:00:00`).getDay() + 6) % 7;
+    const todayLoad = Math.min(100, loadPct);
+    return labels.map((label, i) => {
+      const isToday = i === todayIdx;
+      // Only today is real; other days stay neutral until weekly API is wired
+      const height = isToday ? Math.max(8, todayLoad) : 12;
+      return { label, height, isToday };
+    });
+  }, [date, loadPct]);
+
+  const liveRemainingMins = useMemo(() => {
+    if (current.mode !== 'live' || !current.task?.scheduledEnd) return null;
+    const end = parseInstant(current.task.scheduledEnd).getTime();
+    const left = Math.ceil((end - Date.now()) / 60_000);
+    return left > 0 ? left : null;
+  }, [current, tick]);
+
+  const muteMins = liveRemainingMins
+    ? Math.max(10, Math.min(90, liveRemainingMins))
+    : Math.max(15, Math.min(45, 90 - Math.round(loadPct / 2)));
+
+  const isMuted = mutedUntil != null && mutedUntil > Date.now();
+  const muteLeftMins = isMuted
+    ? Math.max(1, Math.ceil(((mutedUntil as number) - Date.now()) / 60_000))
+    : 0;
+
+  const openTasks = taskList.filter((t) => t.status !== 'completed').length;
+  const doneTasks = taskList.filter((t) => t.status === 'completed').length;
+
+  // Contextual coach — never invent app-switch / Slack claims we can't measure
+  const coach = useMemo(() => {
+    if (current.mode === 'live' && current.task) {
+      const left = liveRemainingMins;
+      return {
+        title: `Protect “${current.task.name}”.`,
+        body: left
+          ? `Timer is live — about ${left}m left in this block. Stay with it.`
+          : 'Timer is live. Finish this block before you context-switch.',
+      };
+    }
+    if (current.mode === 'now' && current.task) {
+      return {
+        title: 'This slot is open.',
+        body: `“${current.task.name}” is on the calendar now. Hit Start to turn it into proof of hours.`,
+      };
+    }
+    if (loadPct > 85) {
+      return {
+        title: `Day is ${loadPct}% booked.`,
+        body: 'Leave a little slack for ad-hoc work — or move a low-priority block to backlog.',
+      };
+    }
+    if (deepLogged + meetLogged === 0 && openTasks > 0) {
+      return {
+        title: 'No time logged yet.',
+        body: `You have ${openTasks} open task${openTasks === 1 ? '' : 's'}. Start one session so today’s hours show on your timesheet.`,
+      };
+    }
+    if (focusScore < 40 && loadPct < 35) {
+      return {
+        title: 'Plenty of open time.',
+        body: 'Queue one deep-work block next so the day doesn’t stay empty.',
+      };
+    }
+    if (doneTasks > 0 && openTasks === 0) {
+      return {
+        title: 'Queue is clear.',
+        body: `Nice — ${doneTasks} task${doneTasks === 1 ? '' : 's'} done. Pull from backlog or call it a day.`,
+      };
+    }
+    return {
+      title: 'Keep one block uninterrupted.',
+      body:
+        deepLogged > 0
+          ? `${deepLogged}m deep work logged. Mute coach nudges if you’re in flow.`
+          : 'Strong plan. Start the next block and stay with it.',
+    };
+  }, [
+    current,
+    liveRemainingMins,
+    loadPct,
+    openTasks,
+    doneTasks,
+    focusScore,
+    deepLogged,
+    meetLogged,
+  ]);
+
+  const applyMute = (minutes: number) => {
+    const until = Date.now() + minutes * 60_000;
+    setMutedUntil(until);
+    try {
+      sessionStorage.setItem(MUTE_KEY, String(until));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const clearMute = () => {
+    setMutedUntil(null);
+    try {
+      sessionStorage.removeItem(MUTE_KEY);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const afterMutation = () => {
     void qc.invalidateQueries({ queryKey: ['stats', date] });
-    void qc.invalidateQueries({ queryKey: ['eod', date] });
+    void dispatch(fetchStats(date)).then((action) => {
+      if (fetchStats.fulfilled.match(action)) {
+        qc.setQueryData(['stats', date], action.payload.stats);
+      }
+    });
   };
 
   return (
-    <aside className="right-panel">
-      <div className="panel-tools">
-        <button className="icon-btn" type="button" aria-label="Notifications">
-          ●
-        </button>
-        <div className="avatar sm">{initials(user.name)}</div>
-      </div>
-
-      <CurrentTaskCard
-        task={current.task}
-        mode={current.mode}
-        timeZone={user.timezone}
-        onChanged={invalidate}
-      />
-
-      <div className="panel-card">
-        <h3>Day utilization</h3>
-        <div className="util-ring" style={{ ['--pct' as string]: pct }}>
-          <div className="util-ring-inner">{pct}%</div>
-        </div>
-        <div className="task-meta" style={{ textAlign: 'center' }}>
-          {util
-            ? `${util.scheduledMinutes} / ${util.availableMinutes} min scheduled`
-            : '—'}
-        </div>
-        {util?.tip ? (
-          <div className="tip">{util.tip}</div>
-        ) : (
-          <div className="tip">
-            Don&apos;t go over 80% utilization — leave room for ad-hoc tasks.
+    <aside className="right-panel dash-side">
+      {current.task && current.mode !== 'live' && (
+        <div className="side-now">
+          <div className="side-now-kicker">
+            {current.mode === 'now' ? 'Now' : 'Up next'}
           </div>
-        )}
-      </div>
-
-      <div className="panel-card">
-        <h3>Today</h3>
-        <Counters
-          total={stats.data?.today.total ?? 0}
-          completed={stats.data?.today.completed ?? 0}
-          pending={stats.data?.today.pending ?? 0}
-        />
-      </div>
-
-      <div className="panel-card">
-        <h3>This week</h3>
-        <Counters
-          total={stats.data?.week.total ?? 0}
-          completed={stats.data?.week.completed ?? 0}
-          pending={stats.data?.week.pending ?? 0}
-        />
-      </div>
-
-      <div className="panel-card mini-cal">
-        <div className="mini-cal-head">
-          <span>{cal.monthLabel}</span>
-        </div>
-        <div className="mini-cal-grid">
-          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
-            <div className="dow" key={`${d}-${i}`}>
-              {d}
-            </div>
-          ))}
-          {cal.days.map((d, i) => (
-            <button
-              key={i}
-              type="button"
-              className={`day ${d.today ? 'today' : ''} ${d.muted ? 'muted' : ''}`}
-            >
-              {d.n}
-            </button>
-          ))}
-        </div>
-      </div>
-    </aside>
-  );
-}
-
-function CurrentTaskCard({
-  task,
-  mode,
-  timeZone,
-  onChanged,
-}: {
-  task: TaskDto | null;
-  mode: 'live' | 'now' | 'next' | 'idle';
-  timeZone?: string | null;
-  onChanged: () => void;
-}) {
-  const running = Boolean(task?.activeEntryId);
-  const done = task?.status === 'completed';
-
-  const start = useMutation({
-    mutationFn: () => api.post<TaskDto>(`/api/timer/${task!.id}/start`),
-    onSuccess: () => onChanged(),
-  });
-  const stop = useMutation({
-    mutationFn: () => api.post<TaskDto>(`/api/timer/${task!.id}/stop`),
-    onSuccess: () => onChanged(),
-  });
-  const complete = useMutation({
-    mutationFn: () => api.patch<TaskDto>(`/api/tasks/${task!.id}/complete`),
-    onSuccess: () => onChanged(),
-  });
-
-  const busy = start.isPending || stop.isPending || complete.isPending;
-  const label =
-    mode === 'live'
-      ? 'In progress'
-      : mode === 'now'
-        ? 'Now'
-        : mode === 'next'
-          ? 'Up next'
-          : 'Now';
-
-  return (
-    <div className={`panel-card now-card${mode === 'live' ? ' is-live' : ''}`}>
-      <div className="now-card-head">
-        <h3>Current task</h3>
-        {task && <span className={`now-status is-${mode}`}>{label}</span>}
-      </div>
-
-      {!task ? (
-        <p className="now-empty">No task in this slot.</p>
-      ) : (
-        <>
-          <div className="now-title">{task.name}</div>
-          <div className="now-meta">
-            {formatTimeRange(task.scheduledStart, task.scheduledEnd, timeZone)}
-            {!task.scheduleLocked ? ` · ${task.estimatedMinutes}m` : ''}
-          </div>
-          {!done && (
-            <div className="now-actions">
-              {running ? (
-                <button
-                  type="button"
-                  className="btn btn-primary btn-pill btn-sm"
-                  disabled={busy}
-                  onClick={() => stop.mutate()}
-                >
-                  {stop.isPending ? 'Stopping…' : 'Stop'}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="btn btn-outline btn-pill btn-sm"
-                  disabled={busy}
-                  onClick={() => start.mutate()}
-                >
-                  {start.isPending ? 'Starting…' : 'Start'}
-                </button>
-              )}
+          <strong>{current.task.name}</strong>
+          <span>
+            {formatTimeRange(
+              current.task.scheduledStart,
+              current.task.scheduledEnd,
+              user.timezone,
+            )}
+          </span>
+          {current.task.status !== 'completed' && (
+            <div className="side-now-actions">
               <button
                 type="button"
-                className="btn btn-soft btn-pill btn-sm"
+                className="btn btn-primary btn-pill btn-sm"
                 disabled={busy}
-                onClick={() => complete.mutate()}
+                onClick={() => {
+                  const t = current.task!;
+                  setBusy(true);
+                  dispatch(tasksActions.optimisticStart({ taskId: t.id }));
+                  void dispatch(
+                    startTimerOptimistic({ taskId: t.id, date }),
+                  ).finally(() => {
+                    setBusy(false);
+                    afterMutation();
+                  });
+                }}
               >
-                {complete.isPending ? 'Saving…' : 'Done'}
+                Start
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline btn-pill btn-sm"
+                disabled={busy}
+                onClick={() => {
+                  const t = current.task!;
+                  setBusy(true);
+                  dispatch(tasksActions.optimisticComplete({ taskId: t.id }));
+                  void dispatch(
+                    completeTaskOptimistic({ taskId: t.id, date }),
+                  ).finally(() => {
+                    setBusy(false);
+                    afterMutation();
+                  });
+                }}
+              >
+                Done
               </button>
             </div>
           )}
-        </>
+        </div>
       )}
-    </div>
-  );
-}
 
-function Counters({
-  total,
-  completed,
-  pending,
-}: {
-  total: number;
-  completed: number;
-  pending: number;
-}) {
-  return (
-    <div style={{ display: 'grid', gap: 8 }}>
-      <Row label="Total tasks" value={total} />
-      <Row label="Completed" value={completed} />
-      <Row label="Pending" value={pending} />
-    </div>
-  );
-}
+      <div className="side-card focus-card">
+        <div className="side-card-label">Focus</div>
+        <div
+          className="focus-ring"
+          style={{ ['--pct' as string]: focusScore }}
+        >
+          <strong>{focusScore}</strong>
+          <span>Focus</span>
+        </div>
+        <p className="focus-blurb">
+          {focusScore >= 70
+            ? 'Strong day so far.'
+            : focusScore >= 45
+              ? 'Steady — protect the next block.'
+              : 'Room to tighten focus.'}
+        </p>
+      </div>
 
-function Row({ label, value }: { label: string; value: number }) {
-  return (
-    <div
-      style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        color: 'var(--text-muted)',
-      }}
-    >
-      <span>{label}</span>
-      <strong style={{ color: 'var(--text)' }}>{value}</strong>
-    </div>
-  );
-}
+      <div className="side-card">
+        <div className="side-card-label">Where the time went</div>
+        <div className="time-went-bar">
+          <i className="seg deep" style={{ width: `${deepPct}%` }} />
+          <i className="seg meet" style={{ width: `${meetPct}%` }} />
+          <i className="seg planned" style={{ width: `${plannedPct}%` }} />
+          <i className="seg open" style={{ width: `${openPct}%` }} />
+        </div>
+        <ul className="time-went-legend">
+          <li>
+            <span className="swatch deep" /> Deep work{' '}
+            <strong>{deepLogged}m</strong>
+          </li>
+          <li>
+            <span className="swatch meet" /> Meetings{' '}
+            <strong>{meetLogged}m</strong>
+          </li>
+          <li>
+            <span className="swatch planned" /> Still planned{' '}
+            <strong>{deepPlanned + meetPlanned}m</strong>
+          </li>
+          <li>
+            <span className="swatch open" /> Open{' '}
+            <strong>{openMins}m</strong>
+          </li>
+        </ul>
+      </div>
 
-function buildMiniCalendar(anchor: Date) {
-  const year = anchor.getFullYear();
-  const month = anchor.getMonth();
-  const monthLabel = anchor.toLocaleDateString(undefined, {
-    month: 'long',
-    year: 'numeric',
-  });
-  const first = new Date(year, month, 1);
-  const startPad = first.getDay();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const today = anchor.getDate();
-  const days: Array<{ n: number; muted: boolean; today: boolean }> = [];
-  const prevDays = new Date(year, month, 0).getDate();
-  for (let i = startPad - 1; i >= 0; i--) {
-    days.push({ n: prevDays - i, muted: true, today: false });
-  }
-  for (let n = 1; n <= daysInMonth; n++) {
-    days.push({ n, muted: false, today: n === today });
-  }
-  let next = 1;
-  while (days.length % 7 !== 0) {
-    days.push({ n: next++, muted: true, today: false });
-  }
-  return { monthLabel, days };
+      <div className="side-card">
+        <div className="side-card-label">Load</div>
+        <div className="load-meta">
+          <strong>{loadPct}%</strong>
+          <span>of {Math.round(available / 60)}h</span>
+        </div>
+        <div className="load-track">
+          <i style={{ width: `${loadPct}%` }} />
+        </div>
+        <div className="load-bars" aria-label="Weekly load">
+          {weekDays.map((d, i) => (
+            <div
+              key={`${d.label}-${i}`}
+              className={`load-col${d.isToday ? ' is-today' : ''}`}
+            >
+              <div className="load-bar-track">
+                <i style={{ height: `${d.height}%` }} />
+              </div>
+              <span>{d.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="side-card coach-card">
+        <div className="side-card-label accent">✦ Coach</div>
+        {isMuted ? (
+          <>
+            <p className="coach-title">Nudges paused</p>
+            <p>
+              Coach tips stay quiet for about {muteLeftMins} more minute
+              {muteLeftMins === 1 ? '' : 's'}. Timers and the plan keep running.
+            </p>
+            <button
+              type="button"
+              className="btn btn-outline btn-pill coach-cta"
+              onClick={clearMute}
+            >
+              Unmute coach
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="coach-title">{coach.title}</p>
+            <p>{coach.body}</p>
+            <button
+              type="button"
+              className="btn btn-primary btn-pill coach-cta"
+              onClick={() => applyMute(muteMins)}
+            >
+              Mute for {muteMins} minutes →
+            </button>
+          </>
+        )}
+      </div>
+    </aside>
+  );
 }

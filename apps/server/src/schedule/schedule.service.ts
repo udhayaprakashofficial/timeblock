@@ -211,16 +211,21 @@ export class ScheduleTemplatesService {
     workEnd: string;
     breaks: Array<{ id: string; name: string; start: string; end: string }>;
   }): DailyScheduleTemplateDto {
+    const hm = (v: string) => {
+      const m = String(v ?? '').match(/(\d{1,2}):(\d{2})/);
+      if (!m) return '09:00';
+      return `${String(Number(m[1])).padStart(2, '0')}:${m[2]}`;
+    };
     return {
       id: r.id,
       weekday: r.weekday as DailyScheduleTemplateDto['weekday'],
-      workStart: r.workStart,
-      workEnd: r.workEnd,
+      workStart: hm(r.workStart),
+      workEnd: hm(r.workEnd),
       breaks: r.breaks.map((b) => ({
         id: b.id,
         name: b.name,
-        start: b.start,
-        end: b.end,
+        start: hm(b.start),
+        end: hm(b.end),
       })),
     };
   }

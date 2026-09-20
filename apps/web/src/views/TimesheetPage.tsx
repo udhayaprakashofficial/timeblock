@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { EodSheetDto, TaskDto, UserDto } from '@timeblock/shared-types';
 import {
@@ -9,6 +9,7 @@ import {
   todayISO,
 } from '../api';
 import { MeetSourceBadge } from '../components/MeetSourceBadge';
+import { useTheme } from '../theme';
 
 function statusLabel(status: string) {
   if (status === 'completed') return 'Done';
@@ -46,6 +47,76 @@ function clock(iso: string | null | undefined, timeZone?: string | null) {
     minute: '2-digit',
     timeZone: timeZone || undefined,
   });
+}
+
+function isIsoDate(value: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function TimesheetDateInput({
+  value,
+  max,
+  onChange,
+}: {
+  value: string;
+  max: string;
+  onChange: (next: string) => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  const { theme } = useTheme();
+
+  const openPicker = () => {
+    const el = ref.current;
+    if (!el) return;
+    try {
+      if (typeof el.showPicker === 'function') {
+        el.showPicker();
+        return;
+      }
+    } catch {
+      /* fall through — older browsers / blocked gesture */
+    }
+    el.focus();
+    el.click();
+  };
+
+  return (
+    <label className="timesheet-date-field">
+      <span className="timesheet-date-label">Work date</span>
+      <div className="timesheet-date-control">
+        <input
+          ref={ref}
+          type="date"
+          className="timesheet-date-input"
+          value={value}
+          max={max}
+          min="2020-01-01"
+          onChange={(e) => {
+            const next = e.target.value;
+            if (isIsoDate(next)) onChange(next);
+          }}
+          onClick={openPicker}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              openPicker();
+            }
+          }}
+          aria-label="Pick timesheet date"
+          style={{ colorScheme: theme === 'dark' ? 'dark' : 'light' }}
+        />
+        <button
+          type="button"
+          className="timesheet-date-open"
+          aria-label="Open calendar"
+          tabIndex={-1}
+          onClick={openPicker}
+        >
+          <span aria-hidden>▦</span>
+        </button>
+      </div>
+    </label>
+  );
 }
 
 export function TimesheetPage({
@@ -142,7 +213,7 @@ export function TimesheetPage({
       .join(',');
 
     const csv = [
-      'Timeblock timesheet',
+      'Cupkey timesheet',
       `Sheet No,${sheetNo}`,
       `Employee,${escapeCsv(user.name)}`,
       `Email,${escapeCsv(user.email)}`,
@@ -205,13 +276,10 @@ export function TimesheetPage({
       </div>
 
       <div className="timesheet-toolbar no-print">
-        <input
-          type="date"
-          className="timesheet-date-input"
+        <TimesheetDateInput
           value={date}
           max={today}
-          onChange={(e) => e.target.value && setDate(e.target.value)}
-          aria-label="Pick timesheet date"
+          onChange={setDate}
         />
         <div className="timesheet-toolbar-actions">
           <button
@@ -236,7 +304,7 @@ export function TimesheetPage({
       <article className="timesheet-sheet" id="timesheet-print">
         <header className="timesheet-head">
           <div>
-            <p className="timesheet-brand">Timeblock</p>
+            <p className="timesheet-brand">Cupkey</p>
             <h2>Daily timesheet</h2>
           </div>
           <div className="timesheet-head-meta">
@@ -340,21 +408,8 @@ export function TimesheetPage({
           </table>
         </div>
 
-        <section className="timesheet-signoff">
-          <div>
-            <p>Employee</p>
-            <div className="timesheet-sign-line" />
-            <span>{user.name}</span>
-          </div>
-          <div>
-            <p>Reviewed by (TL)</p>
-            <div className="timesheet-sign-line" />
-            <span>Name &amp; date</span>
-          </div>
-        </section>
-
         <p className="timesheet-footnote">
-          Timesheet for {dateLabel}. Hours from Timeblock task timers and
+          Timesheet for {dateLabel}. Hours from Cupkey task timers and
           schedule. Share CSV or print for your team lead.
         </p>
       </article>

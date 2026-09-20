@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { useClerk } from '@clerk/clerk-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
@@ -8,23 +9,41 @@ import { api } from '../api';
 export function ClerkLogout({ onLoggedOut }: { onLoggedOut: () => void }) {
   const qc = useQueryClient();
   const { signOut } = useClerk();
+  const [busy, setBusy] = useState(false);
+
+  const logout = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.post('/api/auth/logout');
+    } catch {
+      /* still clear local + Clerk session */
+    } finally {
+      qc.setQueryData(['me'], null);
+      void qc.cancelQueries({ queryKey: ['me'] });
+      onLoggedOut();
+      try {
+        await signOut({ redirectUrl: '/login' });
+      } catch {
+        /* AppRoot already routed to /login */
+      }
+      setBusy(false);
+    }
+  };
+
   return (
     <button
-      className="btn btn-ghost"
+      className="btn btn-ghost sidebar-logout"
       type="button"
-      onClick={() => {
-        void api
-          .post('/api/auth/logout')
-          .catch(() => undefined)
-          .finally(() => {
-            void signOut({ redirectUrl: '/' });
-            qc.setQueryData(['me'], null);
-            onLoggedOut();
-          });
-      }}
-      style={{ justifyContent: 'flex-start', paddingLeft: 4 }}
+      aria-label="Log out"
+      title="Log out"
+      disabled={busy}
+      onClick={() => void logout()}
     >
-      ↩ Logout
+      <span className="nav-icon" aria-hidden>
+        ↩
+      </span>
+      <span className="nav-tooltip">Log out</span>
     </button>
   );
 }

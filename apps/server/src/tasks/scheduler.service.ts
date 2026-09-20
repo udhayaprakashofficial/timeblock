@@ -103,6 +103,19 @@ export function packTasks(
       }
     }
 
+    // Today after hours: still pin to “now” so the task appears on the plan
+    if (
+      !placed &&
+      notBeforeMinutes != null &&
+      Number.isFinite(notBeforeMinutes)
+    ) {
+      const start = Math.max(0, Math.ceil(notBeforeMinutes));
+      const end = Math.min(24 * 60, start + need);
+      if (end > start) {
+        placed = { start, end };
+      }
+    }
+
     result.push({
       id: task.id,
       scheduledStart: placed
@@ -301,21 +314,34 @@ export class SchedulerService {
     return minutesInTimeZone(new Date(), timeZone);
   }
 
+  /**
+   * If “now” is past (or nearly past) the workday end, open an evening
+   * window starting at the floor so new tasks still land on the plan.
+   */
+  private ensureEveningPackWindow(
+    intervals: Interval[],
+    floor: number | null,
+  ): Interval[] {
+    if (floor == null || !Number.isFinite(floor)) return intervals;
+    const coverageEnd = intervals.reduce((m, i) => Math.max(m, i.end), 0);
+    // Need room for at least a typical 30–60m task after now
+    if (coverageEnd > floor + 45) return intervals;
+    const end = Math.min(24 * 60, Math.max(floor + 4 * 60, coverageEnd + 60));
+    if (end <= floor) return intervals;
+    return [...intervals, { start: floor, end }];
+  }
+
   private async reschedulePrisma(userId: string, dateStr: string) {
     const day = dateOnly(dateStr);
     const timeZone = await this.resolveTimeZone(userId);
-    const { intervals } = await this.getAvailablePrisma(userId, dateStr);
+    const floor = this.packingFloorMinutes(dateStr, timeZone);
+    const available = await this.getAvailablePrisma(userId, dateStr);
+    const intervals = this.ensureEveningPackWindow(available.intervals, floor);
     const tasks = await this.prisma.task.findMany({
       where: { userId, date: day, inBacklog: false },
       orderBy: { order: 'asc' },
     });
-    const packed = packTasks(
-      tasks,
-      intervals,
-      dateStr,
-      timeZone,
-      this.packingFloorMinutes(dateStr, timeZone),
-    );
+    const packed = packTasks(tasks, intervals, dateStr, timeZone, floor);
     for (const p of packed) {
       const task = tasks.find((t) => t.id === p.id);
       const unplaced =
@@ -347,17 +373,13 @@ export class SchedulerService {
 
   private async rescheduleRest(userId: string, dateStr: string) {
     const timeZone = await this.resolveTimeZone(userId);
-    const { intervals } = await this.getAvailableRest(userId, dateStr);
+    const floor = this.packingFloorMinutes(dateStr, timeZone);
+    const available = await this.getAvailableRest(userId, dateStr);
+    const intervals = this.ensureEveningPackWindow(available.intervals, floor);
     const tasks = (await this.supabase!.listTasks(userId, dateStr)).filter(
       (t) => !t.inBacklog,
     );
-    const packed = packTasks(
-      tasks,
-      intervals,
-      dateStr,
-      timeZone,
-      this.packingFloorMinutes(dateStr, timeZone),
-    );
+    const packed = packTasks(tasks, intervals, dateStr, timeZone, floor);
     const now = new Date().toISOString();
     for (const p of packed) {
       const task = tasks.find((t) => t.id === p.id);
