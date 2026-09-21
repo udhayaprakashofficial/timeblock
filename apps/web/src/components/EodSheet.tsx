@@ -1,7 +1,7 @@
 'use client';
 
 import type { EodSheetDto } from '@timeblock/shared-types';
-import { formatTimeRange } from '../api';
+import { detectBrowserTimeZone, formatTimeRange, parseInstant } from '../api';
 import { MeetSourceBadge } from './MeetSourceBadge';
 
 export function EodSheet({
@@ -37,10 +37,10 @@ export function EodSheet({
           <p>
             {data?.date ?? 'Today'} · generated{' '}
             {data?.generatedAt
-              ? new Date(data.generatedAt).toLocaleTimeString([], {
+              ? parseInstant(data.generatedAt).toLocaleTimeString([], {
                   hour: '2-digit',
                   minute: '2-digit',
-                  timeZone: timeZone || undefined,
+                  timeZone: timeZone?.trim() || detectBrowserTimeZone(),
                 })
               : '—'}
           </p>

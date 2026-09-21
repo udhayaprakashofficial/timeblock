@@ -19,6 +19,7 @@ import { PrismaClient } from '@prisma/client';
 import { AppModule } from './app.module';
 import { PrismaSessionStore } from './auth/prisma-session.store';
 import { SupabaseSessionStore } from './auth/supabase-session.store';
+import { FileSessionStore } from './auth/file-session.store';
 
 function isVercelRuntime() {
   return Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
@@ -42,6 +43,24 @@ function sessionSecret(): string {
   return 'dev-session-secret-change-me';
 }
 
+async function supabaseRestReachable(base: string, key: string): Promise<boolean> {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const res = await fetch(`${base}/rest/v1/User?select=id&limit=1`, {
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+      },
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    return res.ok || res.status === 401 || res.status === 403;
+  } catch {
+    return false;
+  }
+}
+
 async function createSessionStore(): Promise<session.Store> {
   const base = (process.env.SUPABASE_URL ?? '').replace(/\/$/, '');
   const key =
@@ -55,13 +74,13 @@ async function createSessionStore(): Promise<session.Store> {
     return new SupabaseSessionStore(base, key);
   }
 
-  // Local / non-Vercel: Prisma when reachable
+  // Prefer Postgres when reachable (longer timeout — cold DNS is common).
   try {
     const sessionPrisma = new PrismaClient();
     await Promise.race([
-      sessionPrisma.$connect(),
+      sessionPrisma.$connect().then(() => sessionPrisma.$queryRaw`SELECT 1`),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('prisma connect timeout')), 4000),
+        setTimeout(() => reject(new Error('prisma connect timeout')), 12_000),
       ),
     ]);
     console.log('[session] Using Postgres session store (Prisma)');
@@ -74,8 +93,21 @@ async function createSessionStore(): Promise<session.Store> {
   }
 
   if (base && key) {
-    console.log('[session] Using Supabase REST session store');
-    return new SupabaseSessionStore(base, key);
+    // Retry REST a few times before falling back — DB should stay primary.
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      const ok = await supabaseRestReachable(base, key);
+      if (ok) {
+        console.log(
+          `[session] Using Supabase REST session store (attempt ${attempt})`,
+        );
+        return new SupabaseSessionStore(base, key);
+      }
+      console.warn(`[session] Supabase REST attempt ${attempt}/4 failed`);
+      await new Promise((r) => setTimeout(r, 1500 * attempt));
+    }
+    console.warn(
+      '[session] Supabase REST still unreachable — temporary file session store',
+    );
   }
 
   if (isVercelRuntime()) {
@@ -85,9 +117,8 @@ async function createSessionStore(): Promise<session.Store> {
     return new session.MemoryStore();
   }
 
-  throw new Error(
-    'DATABASE_URL must reach Supabase Postgres. File sessions are disabled.',
-  );
+  console.log('[session] Using file session store (local offline)');
+  return new FileSessionStore();
 }
 
 export async function createNestApp(): Promise<NestExpressApplication> {
@@ -135,8 +166,11 @@ export async function createNestApp(): Promise<NestExpressApplication> {
       .map((s) => s.trim())
       .filter(Boolean),
   );
-  // Always allow the production web host (+ previews)
+  // Always allow the production web hosts (+ previews)
   allowedOrigins.add('https://timeblock-web-ashy.vercel.app');
+  allowedOrigins.add('https://app.cupkey.io');
+  allowedOrigins.add('https://cupkey.io');
+  allowedOrigins.add('https://www.cupkey.io');
 
   if (!isProd) {
     for (const o of [
@@ -161,10 +195,13 @@ export async function createNestApp(): Promise<NestExpressApplication> {
       if (!requestOrigin || allowedOrigins.has(requestOrigin)) {
         return cb(null, true);
       }
-      // Vercel preview / renamed web hosts
+      // Vercel preview / Cupkey hosts
       try {
         const host = new URL(requestOrigin).hostname;
         if (
+          host === 'app.cupkey.io' ||
+          host === 'cupkey.io' ||
+          host.endsWith('.cupkey.io') ||
           host === 'timeblock-web-ashy.vercel.app' ||
           (host.endsWith('.vercel.app') && host.includes('timeblock'))
         ) {

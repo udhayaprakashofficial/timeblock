@@ -1,37 +1,66 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { EodSheetDto, WeeklyReportDto } from '@timeblock/shared-types';
-import { api, formatTimeRange, todayISO } from '../api';
-import { EodSheet } from '../components/EodSheet';
-import { MeetSourceBadge } from '../components/MeetSourceBadge';
+import type { WeeklyReportDto } from '@timeblock/shared-types';
+import { api, todayISO } from '../api';
+import { HintMark } from '../components/ui-hints';
+import { CupkeyLogo } from '../components/CupkeyLogo';
+import { ShareStudio } from '../components/share/ShareStudio';
+import { ExportIcon, ShareIcon } from '../components/share/ShareIcons';
+import type { ShareWeekPayload } from '../components/share/shareFormat';
+import {
+  formatDrift,
+  formatHm,
+  formatWeekSpan,
+  isoWeekNumber,
+  weekdayShort,
+} from '../components/share/shareFormat';
 
-function formatDayLabel(date: string) {
-  const d = new Date(`${date}T12:00:00Z`);
-  return d.toLocaleDateString(undefined, {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    timeZone: 'UTC',
-  });
+function dayInsight(byDay: WeeklyReportDto['byDay']): string {
+  if (!byDay.length) {
+    return 'Finish a few blocks this week and Cupkey will narrate the shape of it.';
+  }
+  const ranked = [...byDay].sort((a, b) => b.actualMinutes - a.actualMinutes);
+  const best = ranked[0];
+  const soft = ranked[ranked.length - 1];
+  const bestLabel = weekdayShort(best.date);
+  const softLabel = weekdayShort(soft.date);
+  if (best.actualMinutes <= 0) {
+    return 'No logged minutes yet this week — start a block and the ledger fills in.';
+  }
+  return `${bestLabel.slice(0, 1)}${bestLabel.slice(1).toLowerCase()} was your monster: ${formatHm(best.actualMinutes)} logged. ${softLabel.slice(0, 1)}${softLabel.slice(1).toLowerCase()} you scheduled ${formatHm(soft.estimatedMinutes)} and did ${formatHm(soft.actualMinutes)}.`;
 }
 
-function statusLabel(status: string) {
-  if (status === 'completed') return 'Done';
-  if (status === 'in_progress') return 'Live';
-  return 'Open';
+function accuracyPercent(report: WeeklyReportDto): number {
+  const est = report.totals.estimatedMinutes;
+  if (est <= 0) return 100;
+  const drift = Math.abs(report.totals.actualMinutes - est);
+  return Math.max(0, Math.min(100, Math.round((1 - drift / est) * 100)));
+}
+
+function carriedTasks(report: WeeklyReportDto): number {
+  return report.byTask.filter((t) => t.status !== 'completed').length;
 }
 
 export function ReportPage({ timeZone }: { timeZone?: string | null }) {
-  const date = todayISO(timeZone);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [shareOpen, setShareOpen] = useState(false);
+
+  const anchor = useMemo(() => {
+    const base = todayISO(timeZone);
+    if (!weekOffset) return base;
+    const d = new Date(`${base}T12:00:00`);
+    d.setDate(d.getDate() + weekOffset * 7);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }, [timeZone, weekOffset]);
+
   const report = useQuery({
-    queryKey: ['weekly', date],
-    queryFn: () => api.get<WeeklyReportDto>(`/api/stats/weekly?date=${date}`),
-  });
-  const eod = useQuery({
-    queryKey: ['eod', date],
-    queryFn: () => api.get<EodSheetDto>(`/api/stats/eod?date=${date}`),
+    queryKey: ['weekly', anchor],
+    queryFn: () => api.get<WeeklyReportDto>(`/api/stats/weekly?date=${anchor}`),
   });
 
   const data = report.data;
@@ -41,171 +70,236 @@ export function ReportPage({ timeZone }: { timeZone?: string | null }) {
     1,
     ...byDay.map((d) => Math.max(d.estimatedMinutes, d.actualMinutes)),
   );
-  const delta =
+  const drift =
     (data?.totals?.actualMinutes ?? 0) - (data?.totals?.estimatedMinutes ?? 0);
+  const weekNo = data ? isoWeekNumber(data.weekStart) : isoWeekNumber(anchor);
+  const weekSpan = data
+    ? formatWeekSpan(data.weekStart, data.weekEnd)
+    : '…';
+  const acc = data ? accuracyPercent(data) : 0;
 
-  const weekdayLabels = useMemo(
-    () => byDay.map((d) => formatDayLabel(d.date)),
-    [byDay],
-  );
+  const shareWeek: ShareWeekPayload | null = data
+    ? {
+        weekStart: data.weekStart,
+        weekEnd: data.weekEnd,
+        weekLabel: `Week ${weekNo} · ${weekSpan}`,
+        estimatedMinutes: data.totals.estimatedMinutes,
+        actualMinutes: data.totals.actualMinutes,
+        driftMinutes: drift,
+        completed: data.totals.completed,
+        total: data.totals.total,
+        completionPercent: data.totals.completionPercent,
+        accuracyPercent: acc,
+        days: byDay.map((d) => ({
+          date: d.date,
+          label: weekdayShort(d.date),
+          estimatedMinutes: d.estimatedMinutes,
+          actualMinutes: d.actualMinutes,
+        })),
+        streakDays: Math.min(
+          7,
+          byDay.filter((d) => d.completed > 0).length,
+        ),
+      }
+    : null;
+
+  const exportCsv = () => {
+    if (!data) return;
+    const rows = [
+      ['Task', 'Day', 'Est (m)', 'Act (m)', 'Delta (m)', 'Status'],
+      ...data.byTask.map((t) => [
+        t.name,
+        weekdayShort(t.date),
+        String(t.estimatedMinutes),
+        String(t.actualMinutes),
+        String(t.varianceMinutes),
+        t.status,
+      ]),
+    ];
+    const csv = rows
+      .map((r) =>
+        r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','),
+      )
+      .join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cupkey-week-${weekNo}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
-    <div className="report-page">
-      <div className="schedule-header">
-        <div>
-          <h1 className="page-title">Weekly report</h1>
-          <p className="page-sub" style={{ marginBottom: 0 }}>
-            {data
-              ? `${data.weekStart} → ${data.weekEnd}`
-              : 'Estimated vs actual · completion · EOD'}
-          </p>
+    <div className="report-kit">
+      <header className="report-kit-head">
+        <div className="report-kit-brand">
+          <CupkeyLogo size={26} />
+          <h1>
+            Week {weekNo} · {weekSpan}
+            <HintMark id="report.delta" placement="bottom" />
+          </h1>
         </div>
-      </div>
+        <div className="report-kit-seg" role="tablist" aria-label="Week">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={weekOffset === 0}
+            className={weekOffset === 0 ? 'is-active' : ''}
+            onClick={() => setWeekOffset(0)}
+          >
+            This week
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={weekOffset === -1}
+            className={weekOffset === -1 ? 'is-active' : ''}
+            onClick={() => setWeekOffset(-1)}
+          >
+            Last week
+          </button>
+        </div>
+        <button
+          type="button"
+          className="btn btn-outline"
+          disabled={!data}
+          onClick={exportCsv}
+        >
+          <ExportIcon size={15} />
+          Export CSV
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!data}
+          onClick={() => setShareOpen(true)}
+        >
+          <ShareIcon size={15} />
+          Share recap
+        </button>
+      </header>
 
-      <div className="report-hero-stats">
-        <div className="report-stat">
-          <span className="label">Estimated</span>
-          <strong>{data?.totals?.estimatedMinutes ?? 0}m</strong>
+      <div className="report-kit-stats">
+        <div>
+          <span>Estimated</span>
+          <strong>{formatHm(data?.totals?.estimatedMinutes ?? 0)}</strong>
         </div>
-        <div className="report-stat">
-          <span className="label">Actual</span>
-          <strong>{data?.totals?.actualMinutes ?? 0}m</strong>
+        <div>
+          <span>Actual</span>
+          <strong>{formatHm(data?.totals?.actualMinutes ?? 0)}</strong>
         </div>
-        <div className="report-stat">
-          <span className="label">Delta</span>
-          <strong className={delta > 0 ? 'is-over' : delta < 0 ? 'is-under' : ''}>
-            {delta > 0 ? '+' : ''}
-            {delta}m
+        <div>
+          <span>Drift</span>
+          <strong className="is-hot">{formatDrift(drift)}</strong>
+        </div>
+        <div className="is-ink">
+          <span>Completion</span>
+          <strong className="is-flare">
+            {data?.totals?.completionPercent ?? 0}%
           </strong>
         </div>
-        <div className="report-stat accent">
-          <span className="label">Completion</span>
-          <strong>{data?.totals?.completionPercent ?? 0}%</strong>
-          <span className="sub">
-            {data?.totals?.completed ?? 0}/{data?.totals?.total ?? 0} tasks
-          </span>
-        </div>
       </div>
 
-      <EodSheet
-        data={eod.data}
-        loading={eod.isLoading}
-        timeZone={timeZone}
-      />
-
-      <section className="report-panel">
-        <div className="report-panel-head">
-          <h3>Daily breakdown</h3>
-          <p>Blue = estimated · Coral = actual · ring = completion</p>
-        </div>
-        <div className="report-day-grid">
-          {byDay.map((d, i) => (
-            <div className="report-day-card" key={d.date}>
-              <div className="report-day-top">
-                <strong>{weekdayLabels[i]}</strong>
-                <span
-                  className="report-day-ring"
-                  style={{ ['--pct' as string]: d.completionPercent }}
+      <div className="report-kit-body">
+        <section className="report-kit-breakdown">
+          <div className="report-kit-section-head">
+            <h2>Daily breakdown</h2>
+            <span>Solid = estimated · outline = actual</span>
+          </div>
+          <div className="report-kit-chart" role="img" aria-label="Estimated versus actual by day">
+            {byDay.map((d) => {
+              const estH = Math.round((d.estimatedMinutes / maxBar) * 100);
+              const actH = Math.round((d.actualMinutes / maxBar) * 100);
+              const label = weekdayShort(d.date);
+              const isPeak =
+                d.actualMinutes ===
+                Math.max(0, ...byDay.map((x) => x.actualMinutes));
+              return (
+                <div
+                  key={d.date}
+                  className={`report-kit-col${isPeak && d.actualMinutes > 0 ? ' is-peak' : ''}`}
                 >
-                  {d.completionPercent}%
-                </span>
-              </div>
-              <div className="report-day-bars">
-                <div className="report-mini-bar">
-                  <i
-                    className="est"
-                    style={{
-                      width: `${(d.estimatedMinutes / maxBar) * 100}%`,
-                    }}
-                  />
+                  <div className="report-kit-pair">
+                    <i className="est" style={{ height: `${estH}%` }} title={`${formatHm(d.estimatedMinutes)} est`} />
+                    <i className="act" style={{ height: `${actH}%` }} title={`${formatHm(d.actualMinutes)} act`} />
+                  </div>
+                  <span>{label.slice(0, 3)}</span>
                 </div>
-                <div className="report-mini-bar">
-                  <i
-                    className="act"
-                    style={{
-                      width: `${(d.actualMinutes / maxBar) * 100}%`,
-                    }}
-                  />
-                </div>
-              </div>
-              <div className="report-day-meta">
-                <span>{d.estimatedMinutes}m est</span>
-                <span>{d.actualMinutes}m act</span>
-                <span>
-                  {d.completed}/{d.total} done
-                </span>
-              </div>
-            </div>
-          ))}
-          {byDay.length === 0 && (
-            <p className="task-meta">Loading week…</p>
-          )}
-        </div>
-      </section>
+              );
+            })}
+            {byDay.length === 0 ? (
+              <p className="report-kit-empty">
+                {report.isLoading ? 'Loading week…' : 'No days yet.'}
+              </p>
+            ) : null}
+          </div>
+          <p className="report-kit-insight">{dayInsight(byDay)}</p>
+        </section>
 
-      <section className="report-panel">
-        <div className="report-panel-head">
-          <h3>Task ledger</h3>
-          <p>Every task this week with status and variance</p>
-        </div>
-        <div className="report-table-wrap">
-          <table className="report-table modern">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Task</th>
-                <th>Status</th>
-                <th>Window</th>
-                <th>Est</th>
-                <th>Actual</th>
-                <th>Δ</th>
-              </tr>
-            </thead>
-            <tbody>
-              {byTask.map((t) => (
-                <tr key={t.taskId}>
-                  <td>{t.date.slice(5)}</td>
-                  <td>
-                    <strong>{t.name}</strong>
-                    {t.scheduleLocked ? <MeetSourceBadge /> : null}
-                  </td>
-                  <td>
-                    <span className={`status-pill ${t.status}`}>
-                      {statusLabel(t.status)}
-                    </span>
-                  </td>
-                  <td className="mono">
-                    {formatTimeRange(
-                      t.scheduledStart ?? null,
-                      t.scheduledEnd ?? null,
-                      timeZone,
-                    )}
-                  </td>
-                  <td>{t.estimatedMinutes}m</td>
-                  <td>{t.actualMinutes}m</td>
-                  <td
-                    className={
-                      t.varianceMinutes > 0
-                        ? 'is-over'
-                        : t.varianceMinutes < 0
-                          ? 'is-under'
-                          : ''
-                    }
-                  >
-                    {t.varianceMinutes > 0 ? '+' : ''}
-                    {t.varianceMinutes}m
-                  </td>
-                </tr>
-              ))}
-              {byTask.length === 0 && (
+        <section className="report-kit-ledger">
+          <h2>Task ledger</h2>
+          <div className="report-kit-table-wrap">
+            <table>
+              <thead>
                 <tr>
-                  <td colSpan={7}>No tasks this week yet.</td>
+                  <th>Task</th>
+                  <th>Day</th>
+                  <th>Est</th>
+                  <th>Act</th>
+                  <th>Δ</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+              </thead>
+              <tbody>
+                {byTask.slice(0, 12).map((t) => (
+                  <tr key={t.taskId}>
+                    <td>
+                      <strong>{t.name}</strong>
+                    </td>
+                    <td>{weekdayShort(t.date).slice(0, 3)}</td>
+                    <td>{t.estimatedMinutes}m</td>
+                    <td>{t.actualMinutes}m</td>
+                    <td
+                      className={
+                        t.varianceMinutes < 0
+                          ? 'is-hot'
+                          : t.varianceMinutes > 0
+                            ? 'is-over'
+                            : ''
+                      }
+                    >
+                      {t.varianceMinutes > 0 ? '+' : ''}
+                      {t.varianceMinutes}
+                    </td>
+                  </tr>
+                ))}
+                {byTask.length === 0 ? (
+                  <tr>
+                    <td colSpan={5}>No tasks this week yet.</td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+          <div className="report-kit-foot">
+            <div>
+              <span>Carried forward</span>
+              <strong>{data ? carriedTasks(data) : 0} tasks</strong>
+            </div>
+            <div>
+              <span>Avg. accuracy</span>
+              <strong className="is-hot">{acc}%</strong>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <ShareStudio
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        week={shareWeek}
+        initialTab="linkedin"
+      />
     </div>
   );
 }

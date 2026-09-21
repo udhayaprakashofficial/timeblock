@@ -85,11 +85,7 @@ export function DashboardInsights({
           <span>Focus</span>
         </div>
         <p className="focus-blurb">
-          {focusScore >= 70
-            ? 'Strong day so far.'
-            : focusScore >= 45
-              ? 'Steady — protect the next block.'
-              : 'Room to tighten focus.'}
+          {pct}% of work hours booked. Highest near 55%.
         </p>
       </div>
 

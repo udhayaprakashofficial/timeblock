@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpException,
   Patch,
   Post,
   Req,
@@ -42,6 +43,7 @@ export class UsersController {
       theme?: ThemePreference;
       timezone?: string;
       defaultTaskMinutes?: number;
+      onboardingCompleted?: boolean;
     },
   ) {
     const userId = req.session?.userId;
@@ -50,6 +52,36 @@ export class UsersController {
     }
     const me = await this.usersService.updateProfile(userId, body);
     return res.json(me);
+  }
+
+  @Post('me/password')
+  async changePassword(
+    @Req() req: Request,
+    @Res() res: Response,
+    @Body() body: { currentPassword?: string; newPassword?: string },
+  ) {
+    const userId = req.session?.userId;
+    if (!userId) {
+      return res.status(401).json({ message: 'Not authenticated' });
+    }
+    try {
+      const result = await this.usersService.changePassword(userId, body);
+      return res.json(result);
+    } catch (err) {
+      if (err instanceof HttpException) {
+        const raw = err.getResponse();
+        const message =
+          typeof raw === 'string'
+            ? raw
+            : Array.isArray((raw as { message?: unknown }).message)
+              ? String((raw as { message: string[] }).message[0])
+              : String((raw as { message?: string }).message ?? err.message);
+        return res.status(err.getStatus()).json({ message });
+      }
+      return res.status(400).json({
+        message: err instanceof Error ? err.message : 'Could not update password',
+      });
+    }
   }
 
   @Post('dev-login')

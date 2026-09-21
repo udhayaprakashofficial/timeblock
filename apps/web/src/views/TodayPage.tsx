@@ -19,6 +19,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { api, formatTimeRange, todayISO, parseInstant, shiftDateISO } from '../api';
 import { MeetSourceBadge } from '../components/MeetSourceBadge';
+import { HintMark } from '../components/ui-hints';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import {
   completeTaskOptimistic,
@@ -606,7 +607,9 @@ export function TodayPage({
         <section className="dash-col dash-plan">
           <div className="dash-col-head">
             <div>
-              <h2 className="dash-col-title">The plan</h2>
+              <h2 className="dash-col-title">
+                The plan <HintMark id="dash.plan" placement="bottom" />
+              </h2>
               <p className="dash-col-sub">{dateLabel}</p>
             </div>
             <div className="date-nav">
@@ -877,7 +880,9 @@ export function TodayPage({
         <section className="dash-col dash-queue">
           <div className="dash-col-head">
             <div>
-              <h2 className="dash-col-title">Queue</h2>
+              <h2 className="dash-col-title">
+                Queue <HintMark id="dash.queue" placement="bottom" />
+              </h2>
               <p className="dash-col-sub">
                 {statsQ.data?.today.pending ?? 0} pending ·{' '}
                 {statsQ.data?.today.completed ?? 0} done
@@ -910,14 +915,18 @@ export function TodayPage({
                 ? `${Math.max(5, parseHm(endTime) - parseHm(startTime))}m`
                 : `${defaultTaskMinutes}m`}
             </span>
-            <button
-              type="button"
-              className={`add-task-pin-btn${pinTime ? ' is-on' : ''}`}
-              aria-pressed={pinTime}
-              onClick={() => setPinTime((v) => !v)}
-            >
-              Pin
-            </button>
+            <span className="add-task-pin-wrap">
+              <button
+                type="button"
+                className={`add-task-pin-btn${pinTime ? ' is-on' : ''}`}
+                aria-pressed={pinTime}
+                aria-label="Pin time"
+                onClick={() => setPinTime((v) => !v)}
+              >
+                Pin
+              </button>
+              <HintMark id="dash.pin" placement="bottom" />
+            </span>
             {pinTime && (
               <div className="add-task-times" aria-label="Task time range">
                 <input
@@ -1204,7 +1213,7 @@ function BacklogSection({
       <div className="priority-header">
         <div>
           <h3 className="section-label" style={{ marginBottom: 2 }}>
-            Backlog
+            Backlog <HintMark id="dash.backlog" placement="top" />
           </h3>
           <p className="priority-sub">
             Unfinished or unscheduled — pick up when you have room.

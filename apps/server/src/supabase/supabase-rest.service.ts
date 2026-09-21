@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { createId } from './create-id';
 import { dayBoundsInTimeZone, toUtcIso, parseHm, combineDateAndMinutes, elapsedMinutes, entryActualMinutes } from '../common/time.util';
 
@@ -17,9 +17,10 @@ function normalizeHm(value: string, fallback = '09:00'): string {
  * Used when the Prisma Postgres port is blocked but HTTPS works.
  */
 @Injectable()
-export class SupabaseRestService implements OnModuleInit {
+export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SupabaseRestService.name);
   private ok = false;
+  private keepAlive: ReturnType<typeof setInterval> | null = null;
 
   private get baseUrl() {
     return (process.env.SUPABASE_URL ?? '').replace(/\/$/, '');
@@ -46,36 +47,58 @@ export class SupabaseRestService implements OnModuleInit {
       this.logger.warn('SUPABASE_URL / SUPABASE_SECRET_KEY not set');
       return;
     }
-    try {
-      await this.select('User', 'id', { limit: 1 });
-      this.ok = true;
-      this.logger.log('Supabase REST API reachable — DB writes via HTTPS enabled');
-      await this.syncLocalUsersIfPresent();
-    } catch (err) {
-      this.ok = false;
+    const ready = await this.ping();
+    if (!ready) {
       this.logger.warn(
-        `Supabase REST not reachable yet: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        'Supabase REST not reachable yet — retrying until connected',
       );
-      // Retry once shortly after boot (DNS/network may come up later)
-      setTimeout(() => {
-        void this.ping();
-      }, 3000);
     }
+    this.keepAlive = setInterval(() => {
+      void this.ping().then((ok) => {
+        if (!ok) {
+          this.logger.warn('Supabase REST keepalive failed — will retry');
+        }
+      });
+    }, this.ok ? 45_000 : 8_000);
   }
 
   async ping() {
     if (!this.isConfigured()) return false;
     try {
       await this.select('User', 'id', { limit: 1 });
+      const was = this.ok;
       this.ok = true;
-      this.logger.log('Supabase REST API reachable');
-      await this.syncLocalUsersIfPresent();
+      if (!was) {
+        this.logger.log('Supabase REST API reachable — DB writes via HTTPS enabled');
+        await this.syncLocalUsersIfPresent();
+        this.rescheduleKeepAlive();
+      }
       return true;
-    } catch {
+    } catch (err) {
+      const was = this.ok;
       this.ok = false;
+      if (was) {
+        this.logger.warn(
+          `Supabase REST lost: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        this.rescheduleKeepAlive();
+      }
       return false;
+    }
+  }
+
+  private rescheduleKeepAlive() {
+    if (!this.keepAlive) return;
+    clearInterval(this.keepAlive);
+    this.keepAlive = setInterval(() => {
+      void this.ping();
+    }, this.ok ? 45_000 : 8_000);
+  }
+
+  onModuleDestroy() {
+    if (this.keepAlive) {
+      clearInterval(this.keepAlive);
+      this.keepAlive = null;
     }
   }
 
@@ -183,6 +206,7 @@ export class SupabaseRestService implements OnModuleInit {
     email: string;
     theme: string;
     timezone: string;
+    onboardingCompleted?: boolean;
   }> {
     const email = input.email.toLowerCase();
     const existing = await this.select<{
@@ -191,31 +215,61 @@ export class SupabaseRestService implements OnModuleInit {
       email: string;
       theme: string;
       timezone: string;
+      onboardingCompleted?: boolean;
     }>('User', 'id,name,email,theme,timezone,defaultTaskMinutes', {
       filter: `email=eq.${encodeURIComponent(email)}`,
       limit: 1,
     });
 
-    let user = existing[0];
+    let user:
+      | {
+          id: string;
+          name: string;
+          email: string;
+          theme: string;
+          timezone: string;
+          onboardingCompleted?: boolean;
+        }
+      | undefined = existing[0];
     if (!user) {
       const id = createId();
       const now = new Date().toISOString();
-      const created = await this.insert<{
-        id: string;
-        name: string;
-        email: string;
-        theme: string;
-        timezone: string;
-      }>('User', {
-        id,
-        name: input.name,
-        email,
-        theme: 'light',
-        timezone: 'UTC',
-        createdAt: now,
-        updatedAt: now,
-      });
-      user = created[0];
+      try {
+        const created = await this.insert<{
+          id: string;
+          name: string;
+          email: string;
+          theme: string;
+          timezone: string;
+        }>('User', {
+          id,
+          name: input.name,
+          email,
+          theme: 'light',
+          timezone: 'UTC',
+          onboardingCompleted: false,
+          createdAt: now,
+          updatedAt: now,
+        });
+        user = { ...created[0], onboardingCompleted: false };
+      } catch {
+        const created = await this.insert<{
+          id: string;
+          name: string;
+          email: string;
+          theme: string;
+          timezone: string;
+        }>('User', {
+          id,
+          name: input.name,
+          email,
+          theme: 'light',
+          timezone: 'UTC',
+          createdAt: now,
+          updatedAt: now,
+        });
+        user = { ...created[0], onboardingCompleted: false };
+      }
     } else if (user.name !== input.name) {
       const updated = await this.patch<{
         id: string;
@@ -282,17 +336,32 @@ export class SupabaseRestService implements OnModuleInit {
   }
 
   async getUserById(id: string) {
-    const rows = await this.select<{
-      id: string;
-      name: string;
-      email: string;
-      theme: string;
-      timezone: string;
-    }>('User', 'id,name,email,theme,timezone,defaultTaskMinutes', {
-      filter: `id=eq.${id}`,
-      limit: 1,
-    });
-    return rows[0] ?? null;
+    try {
+      const rows = await this.select<{
+        id: string;
+        name: string;
+        email: string;
+        theme: string;
+        timezone: string;
+        onboardingCompleted?: boolean;
+      }>('User', 'id,name,email,theme,timezone,defaultTaskMinutes,onboardingCompleted', {
+        filter: `id=eq.${id}`,
+        limit: 1,
+      });
+      return rows[0] ?? null;
+    } catch {
+      const rows = await this.select<{
+        id: string;
+        name: string;
+        email: string;
+        theme: string;
+        timezone: string;
+      }>('User', 'id,name,email,theme,timezone,defaultTaskMinutes', {
+        filter: `id=eq.${id}`,
+        limit: 1,
+      });
+      return rows[0] ? { ...rows[0], onboardingCompleted: true } : null;
+    }
   }
 
   async createPasswordUser(input: {
@@ -302,13 +371,7 @@ export class SupabaseRestService implements OnModuleInit {
   }) {
     const id = createId();
     const now = new Date().toISOString();
-    const created = await this.insert<{
-      id: string;
-      name: string;
-      email: string;
-      theme: string;
-      timezone: string;
-    }>('User', {
+    const base = {
       id,
       name: input.name,
       email: input.email.toLowerCase(),
@@ -317,8 +380,26 @@ export class SupabaseRestService implements OnModuleInit {
       timezone: 'UTC',
       createdAt: now,
       updatedAt: now,
-    });
-    return created[0];
+    };
+    try {
+      const created = await this.insert<{
+        id: string;
+        name: string;
+        email: string;
+        theme: string;
+        timezone: string;
+      }>('User', { ...base, onboardingCompleted: false });
+      return { ...created[0], onboardingCompleted: false as boolean };
+    } catch {
+      const created = await this.insert<{
+        id: string;
+        name: string;
+        email: string;
+        theme: string;
+        timezone: string;
+      }>('User', base);
+      return { ...created[0], onboardingCompleted: false as boolean };
+    }
   }
 
 

@@ -19,9 +19,13 @@ import { RightPanel } from './components/RightPanel';
 import { TopbarPulse } from './components/TopbarPulse';
 import { TopbarSearch } from './components/TopbarSearch';
 import { CupkeyLogo } from './components/CupkeyLogo';
+import { ContextTipBanner } from './components/ui-hints';
+import { HINTS } from './components/ui-hints/hints';
+import { onAvatarChange, readAvatar } from './components/user-avatar';
 import { LoginScreen } from './auth/SignInCard';
 import { UserProvider } from './user-context';
 import { DataBootstrap } from './store/DataBootstrap';
+import { OnboardingFlow } from './views/OnboardingFlow';
 import './auth/auth.css';
 
 /** Survives React StrictMode remounts — one exchange per loginCode. */
@@ -53,7 +57,12 @@ function normalizeUser(user: UserDto): UserDto {
       Number.isFinite(user.defaultTaskMinutes) && user.defaultTaskMinutes >= 5
         ? Math.round(user.defaultTaskMinutes)
         : 30,
+    onboardingCompleted: user.onboardingCompleted !== false,
   };
+}
+
+function needsOnboarding(user: UserDto | null | undefined): boolean {
+  return Boolean(user && user.onboardingCompleted === false);
 }
 
 function readCachedUser(): UserDto | null {
@@ -94,11 +103,13 @@ function NavItem({
   exact,
   children,
   title,
+  tip,
 }: {
   href: string;
   exact?: boolean;
   children: ReactNode;
   title?: string;
+  tip?: string;
 }) {
   const pathname = usePathname();
   const active = exact ? pathname === href : pathname.startsWith(href);
@@ -110,7 +121,36 @@ function NavItem({
       aria-label={title}
     >
       {children}
-      {title ? <span className="nav-tooltip">{title}</span> : null}
+      {title ? (
+        <span className="nav-tooltip">
+          <strong className="nav-tooltip-title">{title}</strong>
+          {tip ? <span className="nav-tooltip-body">{tip}</span> : null}
+        </span>
+      ) : null}
+    </Link>
+  );
+}
+
+function RailAvatar({ name, userId }: { name: string; userId: string }) {
+  const [photo, setPhoto] = useState<string | null>(null);
+  useEffect(() => {
+    setPhoto(readAvatar(userId));
+    return onAvatarChange(() => setPhoto(readAvatar(userId)));
+  }, [userId]);
+  return (
+    <Link
+      href="/settings"
+      className="sidebar-rail-avatar"
+      data-tooltip={name}
+      aria-label={`${name} — open profile`}
+    >
+      <span className="sidebar-rail-avatar-face">
+        {photo ? <img src={photo} alt="" /> : initials(name)}
+      </span>
+      <span className="nav-tooltip">
+        <strong className="nav-tooltip-title">{name}</strong>
+        <span className="nav-tooltip-body">Profile, timezone, schedule</span>
+      </span>
     </Link>
   );
 }
@@ -180,8 +220,16 @@ function Shell({
   const qc = useQueryClient();
   const offline = typeof user.id === 'string' && user.id.startsWith('local_');
   const firstName = user.name.split(/\s+/)[0] || user.name;
+  const browserTz = useMemo(() => detectBrowserTimeZone(), []);
+  const displayUser = useMemo(
+    () => ({
+      ...user,
+      timezone: browserTz || user.timezone || 'UTC',
+    }),
+    [user, browserTz],
+  );
   const dateLine = useMemo(() => {
-    const tz = user.timezone || detectBrowserTimeZone();
+    const tz = displayUser.timezone || detectBrowserTimeZone();
     try {
       const day = new Intl.DateTimeFormat('en-GB', {
         weekday: 'long',
@@ -193,9 +241,9 @@ function Shell({
     } catch {
       return new Date().toLocaleDateString();
     }
-  }, [user.timezone]);
+  }, [displayUser.timezone]);
   const greet = useMemo(() => {
-    const tz = user.timezone || detectBrowserTimeZone();
+    const tz = displayUser.timezone || detectBrowserTimeZone();
     try {
       const hour = Number(
         new Intl.DateTimeFormat('en-US', {
@@ -208,7 +256,7 @@ function Shell({
     } catch {
       return greetingForHour(new Date().getHours());
     }
-  }, [user.timezone]);
+  }, [displayUser.timezone]);
 
   useEffect(() => {
     // Match product mock: dark orange dashboard by default
@@ -220,7 +268,6 @@ function Shell({
   }, [user.theme, setTheme]);
 
   useEffect(() => {
-    if (offline) return;
     const tz = detectBrowserTimeZone();
     if (!tz || user.timezone === tz) return;
     void api
@@ -228,9 +275,12 @@ function Shell({
       .then((data) => {
         qc.setQueryData(['me'], data);
         writeCachedUser(data);
+        void qc.invalidateQueries({ queryKey: ['tasks'] });
+        void qc.invalidateQueries({ queryKey: ['events'] });
+        void qc.invalidateQueries({ queryKey: ['stats'] });
       })
       .catch(() => undefined);
-  }, [user.id, user.timezone, qc, offline]);
+  }, [user.id, user.timezone, qc]);
 
   const providersKey = (user.connectedProviders ?? []).join(',');
   useEffect(() => {
@@ -261,8 +311,8 @@ function Shell({
   }, [theme, setTheme, persistTheme]);
 
   return (
-    <UserProvider user={user}>
-    <DataBootstrap userId={user.id} timeZone={user.timezone} />
+    <UserProvider user={displayUser}>
+    <DataBootstrap userId={displayUser.id} timeZone={displayUser.timezone} />
     <div
       className={`app-shell${
         pathname.startsWith('/badges') || pathname.startsWith('/settings')
@@ -278,37 +328,62 @@ function Shell({
         </Link>
 
         <nav className="nav">
-          <NavItem href="/schedule" exact title="Schedule">
+          <NavItem
+            href="/schedule"
+            exact
+            title={HINTS['nav.schedule'].title}
+            tip={HINTS['nav.schedule'].body}
+          >
             <span className="nav-icon" aria-hidden>
               ▦
             </span>
             <span className="nav-label">Schedule</span>
           </NavItem>
-          <NavItem href="/today" title="Today">
+          <NavItem
+            href="/today"
+            title={HINTS['nav.today'].title}
+            tip={HINTS['nav.today'].body}
+          >
             <span className="nav-icon" aria-hidden>
               ▣
             </span>
             <span className="nav-label">Today</span>
           </NavItem>
-          <NavItem href="/report" title="Weekly report">
+          <NavItem
+            href="/report"
+            title={HINTS['nav.report'].title}
+            tip={HINTS['nav.report'].body}
+          >
             <span className="nav-icon" aria-hidden>
               ↗
             </span>
             <span className="nav-label">Report</span>
           </NavItem>
-          <NavItem href="/badges" title="Badges">
+          <NavItem
+            href="/badges"
+            title={HINTS['nav.badges'].title}
+            tip={HINTS['nav.badges'].body}
+          >
             <span className="nav-icon" aria-hidden>
               ◈
             </span>
             <span className="nav-label">Badges</span>
           </NavItem>
-          <NavItem href="/timesheet" title="Timesheet">
+          <NavItem
+            href="/timesheet"
+            title={HINTS['nav.timesheet'].title}
+            tip={HINTS['nav.timesheet'].body}
+          >
             <span className="nav-icon" aria-hidden>
               ☰
             </span>
             <span className="nav-label">Timesheet</span>
           </NavItem>
-          <NavItem href="/settings" title="Settings">
+          <NavItem
+            href="/settings"
+            title={HINTS['nav.settings'].title}
+            tip={HINTS['nav.settings'].body}
+          >
             <span className="nav-icon" aria-hidden>
               ⚙
             </span>
@@ -317,14 +392,7 @@ function Shell({
         </nav>
 
         <div className="sidebar-footer">
-          <div
-            className="sidebar-rail-avatar"
-            data-tooltip={user.name}
-            aria-label={user.name}
-          >
-            {initials(user.name)}
-            <span className="nav-tooltip">{user.name}</span>
-          </div>
+          <RailAvatar name={user.name} userId={user.id} />
           <LogoutButton onLoggedOut={onLoggedOut} />
         </div>
       </aside>
@@ -336,7 +404,7 @@ function Shell({
             {greet}, {firstName}
           </strong>
         </div>
-        <TopbarSearch timeZone={user.timezone} />
+        <TopbarSearch timeZone={displayUser.timezone} />
         <div className="topbar-actions">
           <div className="view-toggle" aria-label="View">
             <Link
@@ -358,7 +426,7 @@ function Shell({
               Sessions
             </Link>
           </div>
-          <TopbarPulse timeZone={user.timezone} />
+          <TopbarPulse timeZone={displayUser.timezone} />
           <button
             className="btn btn-outline btn-pill topbar-theme"
             type="button"
@@ -372,6 +440,7 @@ function Shell({
 
       <div className="main">
         <div className="content">
+          <ContextTipBanner />
           {offline && (
             <div
               className="card"
@@ -392,7 +461,7 @@ function Shell({
         </div>
       </div>
       {!pathname.startsWith('/badges') &&
-        !pathname.startsWith('/settings') && <RightPanel user={user} />}
+        !pathname.startsWith('/settings') && <RightPanel user={displayUser} />}
     </div>
     </UserProvider>
   );
@@ -404,6 +473,7 @@ export function App({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const isLanding = pathname === '/';
   const isLogin = pathname === '/login';
+  const isOnboarding = pathname.startsWith('/onboarding');
   const isPublic = isLanding || isLogin;
   const [sessionUser, setSessionUser] = useState<UserDto | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -445,7 +515,9 @@ export function App({ children }: { children: ReactNode }) {
       writeCachedUser(normalized);
       setSessionUser(normalized);
       qc.setQueryData(['me'], normalized);
-      router.replace('/schedule');
+      router.replace(
+        needsOnboarding(normalized) ? '/onboarding' : '/schedule',
+      );
     },
     [qc, router],
   );
@@ -545,11 +617,27 @@ export function App({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!hydrated || exchanging || loggingOut) return;
-    // Authed users should never sit on marketing/login chrome
-    if (user && (isLanding || isLogin)) {
+    if (!user) return;
+
+    // First-time users: Signup/Login → Onboarding → Dashboard
+    if (needsOnboarding(user) && !isOnboarding) {
+      router.replace('/onboarding');
+      return;
+    }
+    // Returning users (or finished onboard): stay off login/landing/onboarding
+    if (!needsOnboarding(user) && (isLanding || isLogin || isOnboarding)) {
       router.replace('/schedule');
     }
-  }, [hydrated, exchanging, loggingOut, user, isLanding, isLogin, router]);
+  }, [
+    hydrated,
+    exchanging,
+    loggingOut,
+    user,
+    isLanding,
+    isLogin,
+    isOnboarding,
+    router,
+  ]);
 
   useEffect(() => {
     if (!hydrated || exchanging || loggingOut || me.isLoading || me.isFetching)
@@ -613,14 +701,18 @@ export function App({ children }: { children: ReactNode }) {
       );
     }
   } else if (isLanding || isLogin) {
-    // Still on a public URL while session is warm — wait for replace('/schedule')
+    // Still on a public URL while session is warm — wait for replace
     body = (
       <div className="auth-screen">
         <div className="auth-card">
-          <p className="auth-loading">Opening your schedule…</p>
+          <p className="auth-loading">
+            {needsOnboarding(user) ? 'Opening setup…' : 'Opening your schedule…'}
+          </p>
         </div>
       </div>
     );
+  } else if (isOnboarding || needsOnboarding(user)) {
+    body = <OnboardingFlow user={user} onFinished={handleSignedIn} />;
   } else {
     body = (
       <Shell user={user} onLoggedOut={handleLoggedOut}>
@@ -629,7 +721,11 @@ export function App({ children }: { children: ReactNode }) {
     );
   }
 
-  return <ThemeProvider forceLight={isPublic && !user}>{body}</ThemeProvider>;
+  return (
+    <ThemeProvider forceLight={(isPublic && !user) || isOnboarding || needsOnboarding(user)}>
+      {body}
+    </ThemeProvider>
+  );
 }
 
 export type { UserDto };

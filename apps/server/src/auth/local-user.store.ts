@@ -8,10 +8,12 @@ export type LocalUser = {
   email: string;
   name: string;
   theme: 'light' | 'dark';
+  timezone?: string;
   googleId?: string;
   accessToken?: string;
   refreshToken?: string;
   passwordHash?: string;
+  onboardingCompleted?: boolean;
   connectedProviders: Array<'google' | 'microsoft'>;
 };
 
@@ -63,6 +65,7 @@ export class LocalUserStore {
         googleId: input.googleId,
         accessToken: input.accessToken,
         refreshToken: input.refreshToken,
+        onboardingCompleted: false,
         connectedProviders: ['google'],
       };
       db.users.push(user);
@@ -114,6 +117,7 @@ export class LocalUserStore {
         name: input.name,
         theme: 'light',
         passwordHash: input.passwordHash,
+        onboardingCompleted: false,
         connectedProviders: [],
       };
       db.users.push(user);

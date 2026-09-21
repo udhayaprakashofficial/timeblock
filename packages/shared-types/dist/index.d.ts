@@ -11,6 +11,8 @@ export interface UserDto {
     timezone: string;
     /** Default duration (minutes) when adding tasks without an explicit time range */
     defaultTaskMinutes: number;
+    /** False until first-time onboarding finishes (signup → onboard → dashboard) */
+    onboardingCompleted: boolean;
     connectedProviders: CalendarProvider[];
 }
 export interface AuthConfigDto {

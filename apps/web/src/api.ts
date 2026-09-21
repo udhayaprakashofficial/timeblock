@@ -14,7 +14,11 @@
 function resolveApiOrigin(): string {
   if (typeof window !== 'undefined') {
     const host = window.location.hostname;
+    // Same-origin /api rewrite = first-party session cookie.
     if (
+      host === 'app.cupkey.io' ||
+      host === 'cupkey.io' ||
+      host.endsWith('.cupkey.io') ||
       host === 'timeblock-web-ashy.vercel.app' ||
       host.endsWith('.vercel.app')
     ) {

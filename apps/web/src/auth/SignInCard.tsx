@@ -76,11 +76,12 @@ export function LoginScreen({
 
   if (authConfig.isLoading) {
     return (
-      <div className="auth-screen" style={screenStyle}>
+      <div className="auth-kit">
         <style>{AUTH_CRITICAL_CSS}</style>
-        <div className="auth-card" style={cardStyle}>
+        <section className="auth-kit-left">
           <p className="auth-loading">Loading…</p>
-        </div>
+        </section>
+        <aside className="auth-kit-right" aria-hidden />
       </div>
     );
   }
@@ -256,71 +257,84 @@ function AuthCard({
   };
 
   const title =
-    mode === 'signin' ? 'Sign in to Cupkey' : 'Create your Cupkey account';
+    mode === 'signin'
+      ? 'Put your work where the time actually is.'
+      : 'Build the day. Then stand in it.';
   const subtitle =
     mode === 'signin'
-      ? 'Welcome back! Please sign in to continue'
-      : 'Welcome! Please fill in the details to get started';
+      ? 'Cupkey reads your calendars, packs your tasks into the gaps, and tells you at 6pm what really happened.'
+      : 'Create an account, connect a calendar, and get a week you can hand to a lead.';
 
   return (
-    <div className="auth-screen" style={screenStyle}>
+    <div className="auth-kit">
       <style>{AUTH_CRITICAL_CSS}</style>
-      <div className="auth-card" data-mode={mode} style={cardStyle}>
-        <Link href="/" className="auth-brand" aria-label="Cupkey home">
-          <CupkeyLogo size={28} className="auth-brand-logo" title="Cupkey" />
-          <span className="auth-brand-name">cupkey</span>
+      <section className="auth-kit-left">
+        <Link href="/" className="auth-kit-logo" aria-label="Cupkey home">
+          <CupkeyLogo size={30} title="Cupkey" />
+          <span>cupkey</span>
         </Link>
-        <h1 className="auth-title">{title}</h1>
-        <p className="auth-subtitle">{subtitle}</p>
 
-        {googleEnabled && (
-          <>
-            <div className="auth-social" style={{ width: '100%', marginBottom: 4 }}>
-              <button
-                type="button"
-                className="auth-social-btn auth-social-btn-full"
-                style={socialBtnStyle}
-                disabled={busy}
-                onClick={onGoogleClick}
-              >
-                <GoogleIcon />
-                Continue with Google
-              </button>
-            </div>
-            <div className="auth-divider" role="separator">
-              <span>or</span>
-            </div>
-          </>
-        )}
+        <p className="auth-kit-kicker">Plan the day in 4 minutes</p>
+        <h1>{title}</h1>
+        <p className="auth-kit-lede">{subtitle}</p>
 
-        <form className="auth-form" style={formStyle} onSubmit={onSubmit}>
-          {mode === 'signup' && (
-            <label className="auth-field" style={fieldStyle}>
-              <span>Full name</span>
-              <input
-                type="text"
-                autoComplete="name"
-                placeholder="Enter your name"
-                style={inputStyle}
-                value={name}
-                onChange={(ev) => setName(ev.target.value)}
-              />
-            </label>
-          )}
-          <label className="auth-field" style={fieldStyle}>
-            <span>Email address</span>
+        <div className="auth-kit-social">
+          {googleEnabled ? (
+            <button
+              type="button"
+              className="auth-kit-social-btn"
+              disabled={busy}
+              onClick={onGoogleClick}
+            >
+              <GoogleIcon />
+              Continue with Google
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="auth-kit-social-btn"
+            disabled
+            title="Coming soon"
+          >
+            <MicrosoftIcon />
+            Continue with Microsoft
+            <em>Soon</em>
+          </button>
+          <button
+            type="button"
+            className="auth-kit-social-btn"
+            disabled
+            title="Coming soon"
+          >
+            <AppleIcon />
+            Continue with Apple
+            <em>Soon</em>
+          </button>
+        </div>
+
+        <div className="auth-kit-or" role="separator">
+          <span>or email</span>
+        </div>
+
+        <form className="auth-kit-form" onSubmit={onSubmit}>
+          {mode === 'signup' ? (
+            <input
+              type="text"
+              autoComplete="name"
+              placeholder="Your name"
+              value={name}
+              onChange={(ev) => setName(ev.target.value)}
+            />
+          ) : null}
+          <div className="auth-kit-email-row">
             <input
               type="email"
               autoComplete="email"
               required
-              placeholder="Enter your email address"
-              style={inputStyle}
+              placeholder="you@work.com"
               value={email}
               onChange={(ev) => setEmail(ev.target.value)}
             />
-          </label>
-          <label className="auth-field" style={fieldStyle}>
-            <span>Password</span>
             <input
               type="password"
               autoComplete={
@@ -328,63 +342,93 @@ function AuthCard({
               }
               required
               minLength={6}
-              placeholder={
-                mode === 'signup' ? 'Create a password' : 'Enter your password'
-              }
-              style={inputStyle}
+              placeholder="Password"
               value={password}
               onChange={(ev) => setPassword(ev.target.value)}
             />
-          </label>
-          <button
-            className="auth-continue"
-            type="submit"
-            disabled={busy}
-            style={continueStyle}
-          >
-            {busy
-              ? mode === 'signup'
-                ? 'Creating account…'
-                : 'Signing in…'
-              : mode === 'signup'
-                ? 'Sign up'
-                : 'Continue'}
-            <span className="auth-continue-arrow" aria-hidden>
-              →
-            </span>
-          </button>
+            <button type="submit" className="btn btn-primary" disabled={busy}>
+              {busy
+                ? '…'
+                : mode === 'signup'
+                  ? 'Create account'
+                  : 'Continue'}
+            </button>
+          </div>
         </form>
 
-        {error && <p className="auth-error">{error}</p>}
+        {error ? <p className="auth-kit-error">{error}</p> : null}
 
-        <div className="auth-footer">
+        <p className="auth-kit-switch">
           {mode === 'signin' ? (
-            <p>
-              Don&apos;t have an account?{' '}
-              <button
-                type="button"
-                className="auth-link"
-                onClick={() => switchMode('signup')}
-              >
-                Sign up
+            <>
+              New here?{' '}
+              <button type="button" onClick={() => switchMode('signup')}>
+                Create an account
               </button>
-            </p>
+            </>
           ) : (
-            <p>
-              Already have an account?{' '}
-              <button
-                type="button"
-                className="auth-link"
-                onClick={() => switchMode('signin')}
-              >
+            <>
+              Already in?{' '}
+              <button type="button" onClick={() => switchMode('signin')}>
                 Sign in
               </button>
-            </p>
+            </>
           )}
+        </p>
+
+        <p className="auth-kit-footnote">
+          No credit card. Your calendar stays read-only until you say otherwise.
+        </p>
+      </section>
+
+      <aside className="auth-kit-right" aria-hidden>
+        <p className="auth-kit-right-kicker">Friday, in review</p>
+        <div className="auth-kit-stats">
+          <div>
+            <strong>6h 40m</strong>
+            <span>Focused</span>
+          </div>
+          <div>
+            <strong className="is-fire">9</strong>
+            <span>Shipped</span>
+          </div>
+          <div>
+            <strong>76%</strong>
+            <span>Utilized</span>
+          </div>
+          <div>
+            <strong>+12m</strong>
+            <span>Est. drift</span>
+          </div>
         </div>
-        <p className="auth-secured">Secured by Cupkey</p>
-      </div>
+        <div className="auth-kit-bars">
+          <i style={{ width: '88%' }} />
+          <i className="is-flare" style={{ width: '64%' }} />
+          <i className="is-soft" style={{ width: '41%' }} />
+          <i style={{ width: '77%' }} />
+          <i className="is-soft" style={{ width: '22%' }} />
+        </div>
+        <p className="auth-kit-right-copy">
+          Every week ends with a sheet you can hand to a lead — or post.
+        </p>
+      </aside>
     </div>
+  );
+}
+
+function MicrosoftIcon() {
+  return (
+    <svg width={18} height={18} viewBox="0 0 24 24" aria-hidden fill="currentColor">
+      <path d="M3 5.6 10.5 4.5v7.1H3zM11.6 4.3 21 3v8.6h-9.4zM3 12.6h7.5v7.1L3 18.6zM11.6 12.6H21V21l-9.4-1.3z" />
+    </svg>
+  );
+}
+
+function AppleIcon() {
+  return (
+    <svg width={18} height={18} viewBox="0 0 24 24" aria-hidden fill="currentColor">
+      <path d="M16.4 12.7c0-2.6 2.1-3.9 2.2-4-1.2-1.8-3.1-2-3.8-2-1.6-.2-3.1.9-3.9.9s-2.1-.9-3.4-.9c-1.8 0-3.4 1-4.3 2.6-1.8 3.2-.5 7.9 1.3 10.5.9 1.3 1.9 2.7 3.2 2.6 1.3-.05 1.8-.8 3.3-.8s2 .8 3.4.8 2.3-1.3 3.1-2.6c1-1.5 1.4-2.9 1.4-3-.03-.02-2.7-1-2.7-4.1zM14 4.9c.7-.9 1.2-2.1 1-3.3-1 .04-2.3.7-3 1.6-.7.8-1.3 2-1.1 3.2 1.1.08 2.3-.6 3.1-1.5z" />
+    </svg>
   );
 }
 

@@ -7,6 +7,9 @@ import type {
   EffortSummaryDto,
 } from '@timeblock/shared-types';
 import { BadgeLogo } from './BadgeLogo';
+import { ShareStudio } from './share/ShareStudio';
+import { ShareIcon } from './share/ShareIcons';
+import type { ShareBadgePayload } from './share/shareFormat';
 
 const CATEGORY_LABEL: Record<EffortBadgeCategory, string> = {
   daily: 'Daily',
@@ -61,6 +64,7 @@ export function EffortBadges({
   loading?: boolean;
 }) {
   const [filter, setFilter] = useState<'all' | EffortBadgeCategory>('all');
+  const [shareBadge, setShareBadge] = useState<ShareBadgePayload | null>(null);
 
   const badges = useMemo(() => {
     if (!effort) return [];
@@ -192,6 +196,26 @@ export function EffortBadges({
             </button>
           ))}
         </div>
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          disabled={!effort.badges.some((b) => b.earned)}
+          onClick={() => {
+            const earned =
+              effort.badges.find((b) => b.earned) ?? effort.badges[0];
+            if (!earned) return;
+            setShareBadge({
+              title: earned.title,
+              body:
+                earned.challenge ||
+                'Proof from logged minutes — not a participation trophy.',
+              days: ['MON', 'TUE', 'WED', 'THU', 'FRI'],
+            });
+          }}
+        >
+          <ShareIcon size={14} />
+          Share a badge
+        </button>
         <p className="effort-count">
           {badges.length} badge{badges.length === 1 ? '' : 's'}
         </p>
@@ -199,12 +223,36 @@ export function EffortBadges({
 
       <div className="effort-grid" role="list">
         {badges.map((badge, index) => (
-          <BadgeCard key={badge.id} badge={badge} index={index} />
+          <BadgeCard
+            key={badge.id}
+            badge={badge}
+            index={index}
+            onShare={
+              badge.earned
+                ? () =>
+                    setShareBadge({
+                      title: badge.title,
+                      body:
+                        badge.challenge ||
+                        'Proof from logged minutes — not a participation trophy.',
+                      days: ['MON', 'TUE', 'WED', 'THU', 'FRI'],
+                    })
+                : undefined
+            }
+          />
         ))}
         {badges.length === 0 ? (
           <p className="effort-empty">No badges in this category.</p>
         ) : null}
       </div>
+
+      <ShareStudio
+        open={Boolean(shareBadge)}
+        onClose={() => setShareBadge(null)}
+        week={null}
+        badge={shareBadge}
+        initialTab="badge"
+      />
     </div>
   );
 }
@@ -212,9 +260,11 @@ export function EffortBadges({
 function BadgeCard({
   badge,
   index,
+  onShare,
 }: {
   badge: EffortBadgeDto;
   index: number;
+  onShare?: () => void;
 }) {
   const pct = progressPct(badge);
   const ready = !badge.earned && pct >= 100;
@@ -282,6 +332,16 @@ function BadgeCard({
         >
           <i style={{ width: `${pct}%` }} />
         </div>
+        {onShare ? (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={onShare}
+          >
+            <ShareIcon size={13} />
+            Share
+          </button>
+        ) : null}
       </div>
     </article>
   );

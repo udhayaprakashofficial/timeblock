@@ -53,6 +53,7 @@ export class AuthService {
         data: {
           email: input.email,
           name: input.name,
+          onboardingCompleted: false,
         },
       });
     }

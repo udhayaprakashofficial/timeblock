@@ -39,8 +39,8 @@
   color: #fff;
 }
 
-[data-theme='dark'] .topbar-brand-logo.cupkey-logo svg {
-  box-shadow: 0 0 16px rgba(255, 77, 0, 0.4);
+[data-theme='dark'] .topbar-brand-logo.cupkey-logo img {
+  filter: drop-shadow(0 0 10px rgba(255, 77, 0, 0.45));
 }
 
 [data-theme='dark'] .right-panel.dash-side {
@@ -1043,8 +1043,8 @@
   border-right: 1px solid #1a1a1a;
 }
 
-[data-theme='dark'] .cupkey-logo svg {
-  box-shadow: 0 0 18px rgba(255, 77, 0, 0.45);
+[data-theme='dark'] .cupkey-logo img {
+  filter: drop-shadow(0 0 12px rgba(255, 77, 0, 0.5));
 }
 
 [data-theme='dark'] .nav-link.active {

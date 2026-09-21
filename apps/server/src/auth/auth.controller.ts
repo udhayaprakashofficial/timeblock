@@ -18,6 +18,23 @@ import { LoginCodeService } from './login-code.service';
 import { UsersService } from '../users/users.service';
 import { CalendarSyncService } from '../calendar/calendar-sync.service';
 
+function isAllowedWebOrigin(origin: string, allowed: string[]): boolean {
+  if (allowed.includes(origin)) return true;
+  try {
+    const host = new URL(origin).hostname;
+    return (
+      host === 'app.cupkey.io' ||
+      host === 'cupkey.io' ||
+      host === 'www.cupkey.io' ||
+      host.endsWith('.cupkey.io') ||
+      host === 'timeblock-web-ashy.vercel.app' ||
+      (host.endsWith('.vercel.app') && host.includes('timeblock'))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function primaryWebOrigin(req?: Request): string {
   const allowed = (process.env.WEB_ORIGIN ?? 'http://localhost:5173')
     .split(',')
@@ -45,7 +62,7 @@ function primaryWebOrigin(req?: Request): string {
   ].filter(Boolean) as string[];
 
   for (const c of candidates) {
-    if (allowed.includes(c)) return c;
+    if (isAllowedWebOrigin(c, allowed)) return c;
   }
   return fallback;
 }

@@ -22,9 +22,9 @@ export class DbBridgeService {
     private readonly crypto: CryptoService,
   ) {}
 
-  /** True when APIs must use the database (HTTPS REST). */
+  /** True when APIs must use the database (HTTPS REST) and it is reachable. */
   useDb() {
-    return this.supabase.isConfigured();
+    return this.supabase.isConfigured() && this.supabase.isReady();
   }
 
   /**

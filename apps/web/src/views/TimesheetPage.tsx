@@ -5,10 +5,13 @@ import { useQuery } from '@tanstack/react-query';
 import type { EodSheetDto, TaskDto, UserDto } from '@timeblock/shared-types';
 import {
   api,
+  detectBrowserTimeZone,
+  parseInstant,
   shiftDateISO,
   todayISO,
 } from '../api';
 import { MeetSourceBadge } from '../components/MeetSourceBadge';
+import { HintMark } from '../components/ui-hints';
 import { useTheme } from '../theme';
 
 function statusLabel(status: string) {
@@ -42,10 +45,13 @@ function hoursLabel(minutes: number) {
 
 function clock(iso: string | null | undefined, timeZone?: string | null) {
   if (!iso) return '—';
-  return new Date(iso).toLocaleTimeString([], {
+  const d = parseInstant(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const tz = timeZone?.trim() || detectBrowserTimeZone();
+  return d.toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
-    timeZone: timeZone || undefined,
+    timeZone: tz,
   });
 }
 
@@ -236,7 +242,9 @@ export function TimesheetPage({
     <div className="timesheet-page">
       <div className="schedule-header no-print">
         <div>
-          <h1 className="page-title">Timesheet</h1>
+          <h1 className="page-title">
+            Timesheet <HintMark id="timesheet.hours" placement="bottom" />
+          </h1>
           <p className="page-sub" style={{ marginBottom: 0 }}>
             Check previous days’ tasks and hours, then download a timesheet for
             your TL or personal records.

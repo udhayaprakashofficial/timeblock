@@ -6,7 +6,8 @@ import '../auth/auth.css';
 import '../dashboard-theme.css';
 
 const siteUrl =
-  process.env.NEXT_PUBLIC_SITE_URL ?? 'http://127.0.0.1:5173';
+  process.env.NEXT_PUBLIC_SITE_URL ??
+  (process.env.VERCEL ? 'https://app.cupkey.io' : 'http://127.0.0.1:5173');
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
@@ -60,7 +61,7 @@ export default function RootLayout({
           crossOrigin="anonymous"
         />
         <link
-          href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700;800&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap"
           rel="stylesheet"
         />
       </head>

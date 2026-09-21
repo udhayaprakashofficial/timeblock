@@ -75,6 +75,7 @@ export class ClerkAuthService {
         clerkId: clerkUserId,
         email: email.toLowerCase(),
         name,
+        onboardingCompleted: false,
       },
     });
   }

@@ -14,7 +14,8 @@ import { AuthService } from '../auth/auth.service';
 import { SupabaseRestService } from '../supabase/supabase-rest.service';
 import { CryptoService } from '../crypto/crypto.service';
 import { createId } from '../supabase/create-id';
-import { normalizeTimeZone } from '../common/time.util';
+import { normalizeTimeZone, todayInTimeZone } from '../common/time.util';
+import { SchedulerService } from '../tasks/scheduler.service';
 
 @Injectable()
 export class UsersService {
@@ -26,6 +27,8 @@ export class UsersService {
     private readonly crypto: CryptoService,
     @Inject(forwardRef(() => AuthService))
     private readonly authService: AuthService,
+    @Inject(forwardRef(() => SchedulerService))
+    private readonly scheduler: SchedulerService,
   ) {}
 
   authConfig(): AuthConfigDto {
@@ -53,6 +56,17 @@ export class UsersService {
   }
 
   async getMe(userId: string): Promise<UserDto> {
+    if (userId.startsWith('local_')) {
+      const local = this.localUsers.findById(userId);
+      if (!local) throw new NotFoundException('User not found');
+      return this.dtoFromParts(
+        {
+          ...local,
+          onboardingCompleted: local.onboardingCompleted !== false,
+        },
+        local.connectedProviders,
+      );
+    }
     try {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
@@ -76,6 +90,11 @@ export class UsersService {
 
   /** Resolve IANA timezone for scheduling (falls back to UTC). */
   async getTimeZone(userId: string): Promise<string> {
+    if (userId.startsWith('local_')) {
+      const local = this.localUsers.findById(userId);
+      if (local?.timezone) return normalizeTimeZone(local.timezone);
+      return 'UTC';
+    }
     try {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
@@ -174,12 +193,14 @@ export class UsersService {
       theme?: ThemePreference;
       timezone?: string;
       defaultTaskMinutes?: number;
+      onboardingCompleted?: boolean;
     },
   ): Promise<UserDto> {
     const tz =
       body.timezone !== undefined
         ? normalizeTimeZone(body.timezone)
         : undefined;
+    const prevTz = tz !== undefined ? await this.getTimeZone(userId) : undefined;
     let defaultTaskMinutes: number | undefined;
     if (body.defaultTaskMinutes !== undefined) {
       const n = Number(body.defaultTaskMinutes);
@@ -195,7 +216,8 @@ export class UsersService {
       !body.email &&
       !body.theme &&
       tz === undefined &&
-      defaultTaskMinutes === undefined
+      defaultTaskMinutes === undefined &&
+      body.onboardingCompleted === undefined
     ) {
       throw new BadRequestException('Nothing to update');
     }
@@ -204,10 +226,14 @@ export class UsersService {
     }
 
     if (body.email) {
-      const taken = await this.prisma.user.findFirst({
-        where: { email: body.email, NOT: { id: userId } },
-      });
-      if (taken) throw new BadRequestException('Email already in use');
+      try {
+        const taken = await this.prisma.user.findFirst({
+          where: { email: body.email, NOT: { id: userId } },
+        });
+        if (taken) throw new BadRequestException('Email already in use');
+      } catch (err) {
+        if (err instanceof BadRequestException) throw err;
+      }
     }
 
     const data = {
@@ -216,26 +242,134 @@ export class UsersService {
       ...(body.theme ? { theme: body.theme } : {}),
       ...(tz !== undefined ? { timezone: tz } : {}),
       ...(defaultTaskMinutes !== undefined ? { defaultTaskMinutes } : {}),
+      ...(body.onboardingCompleted !== undefined
+        ? { onboardingCompleted: Boolean(body.onboardingCompleted) }
+        : {}),
     };
+
+    if (userId.startsWith('local_')) {
+      const local = this.localUsers.findById(userId);
+      if (!local) throw new NotFoundException('User not found');
+      if (body.name) local.name = body.name.trim();
+      if (body.email) local.email = body.email.trim().toLowerCase();
+      if (body.theme) local.theme = body.theme;
+      if (tz) local.timezone = tz;
+      if (body.onboardingCompleted !== undefined) {
+        local.onboardingCompleted = Boolean(body.onboardingCompleted);
+      }
+      this.localUsers.save(local);
+      return this.dtoFromParts(local, local.connectedProviders);
+    }
 
     try {
       await this.prisma.user.update({
         where: { id: userId },
         data,
       });
+      await this.repackTodayIfZoneChanged(userId, prevTz, tz);
       return this.getMe(userId);
     } catch (err) {
       if (this.supabase.isConfigured()) {
-        await this.supabase.patch('User', `id=eq.${userId}`, {
-          ...data,
-          updatedAt: new Date().toISOString(),
-        });
-        return this.getMe(userId);
+        try {
+          await this.supabase.patch('User', `id=eq.${userId}`, {
+            ...data,
+            updatedAt: new Date().toISOString(),
+          });
+        } catch (patchErr) {
+          // Column may not exist yet on remote — still succeed for onboarding flag
+          if (body.onboardingCompleted === undefined) throw patchErr;
+        }
+        await this.repackTodayIfZoneChanged(userId, prevTz, tz);
+        const me = await this.getMe(userId);
+        if (body.onboardingCompleted !== undefined) {
+          return { ...me, onboardingCompleted: Boolean(body.onboardingCompleted) };
+        }
+        return me;
       }
       throw err;
     }
   }
 
+  /** After the account zone changes, pack today in that local zone. */
+  private async repackTodayIfZoneChanged(
+    userId: string,
+    prevTz: string | undefined,
+    tz: string | undefined,
+  ) {
+    if (!tz || !prevTz || tz === prevTz || userId.startsWith('local_')) return;
+    try {
+      await this.scheduler.rescheduleDay(userId, todayInTimeZone(tz));
+    } catch (err) {
+      console.warn(
+        '[users] reschedule after timezone change failed',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  async changePassword(
+    userId: string,
+    body: { currentPassword?: string; newPassword?: string },
+  ): Promise<{ ok: true }> {
+    const next = (body.newPassword ?? '').trim();
+    if (next.length < 8) {
+      throw new BadRequestException('Password must be at least 8 characters');
+    }
+    const current = body.currentPassword ?? '';
+    const hashed = this.crypto.hashPassword(next);
+
+    if (userId.startsWith('local_')) {
+      const local = this.localUsers.findById(userId);
+      if (!local) throw new NotFoundException('User not found');
+      if (
+        local.passwordHash &&
+        !this.crypto.verifyPassword(current, local.passwordHash)
+      ) {
+        throw new BadRequestException('Current password is wrong');
+      }
+      local.passwordHash = hashed;
+      this.localUsers.save(local);
+      return { ok: true };
+    }
+
+    try {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { passwordHash: true },
+      });
+      if (!user) throw new NotFoundException('User not found');
+      if (
+        user.passwordHash &&
+        !this.crypto.verifyPassword(current, user.passwordHash)
+      ) {
+        throw new BadRequestException('Current password is wrong');
+      }
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { passwordHash: hashed },
+      });
+      return { ok: true };
+    } catch (err) {
+      if (err instanceof BadRequestException || err instanceof NotFoundException) {
+        throw err;
+      }
+      if (!this.supabase.isConfigured()) throw err;
+      const rows = await this.supabase.select<{ passwordHash?: string | null }>(
+        'User',
+        'passwordHash',
+        { filter: `id=eq.${userId}`, limit: 1 },
+      );
+      const existing = rows[0]?.passwordHash ?? null;
+      if (existing && !this.crypto.verifyPassword(current, existing)) {
+        throw new BadRequestException('Current password is wrong');
+      }
+      await this.supabase.patch('User', `id=eq.${userId}`, {
+        passwordHash: hashed,
+        updatedAt: new Date().toISOString(),
+      });
+      return { ok: true };
+    }
+  }
 
   private async seedDefaultScheduleRest(userId: string) {
     const existing = await this.supabase.select('DailyScheduleTemplate', 'id', {
@@ -298,7 +432,10 @@ export class UsersService {
         } catch {
           /* optional */
         }
-        return this.dtoFromParts(user, []);
+        return {
+          ...this.dtoFromParts(user, []),
+          onboardingCompleted: false,
+        };
       } catch (err) {
         if (err instanceof BadRequestException) throw err;
         console.warn(
@@ -314,20 +451,35 @@ export class UsersService {
         throw new BadRequestException('An account with this email already exists');
       }
       const user = await this.prisma.user.create({
-        data: { email, name, passwordHash },
+        data: { email, name, passwordHash, onboardingCompleted: false },
         include: { oauthAccounts: true },
       });
       return this.toDto(user);
     } catch (err) {
       if (err instanceof BadRequestException) throw err;
-      console.error(
-        '[auth] signup failed against Supabase',
+      console.warn(
+        '[auth] signup Prisma failed — using local store',
         err instanceof Error ? err.message : err,
       );
-      throw new BadRequestException(
-        'Could not create account in Supabase. Check DATABASE_URL / SUPABASE keys.',
-      );
     }
+
+    // Offline / unreachable Supabase — keep local app usable
+    const existingLocal = this.localUsers.findByEmail(email);
+    if (existingLocal) {
+      throw new BadRequestException('An account with this email already exists');
+    }
+    const local = this.localUsers.upsertPassword({ email, name, passwordHash });
+    local.onboardingCompleted = false;
+    this.localUsers.save(local);
+    try {
+      this.localData.ensureDefaultSchedule(local.id);
+    } catch {
+      /* optional */
+    }
+    return {
+      ...this.dtoFromParts(local, local.connectedProviders),
+      onboardingCompleted: false,
+    };
   }
 
   async signinWithPassword(input: {
@@ -385,6 +537,19 @@ export class UsersService {
       if (err instanceof BadRequestException) throw err;
     }
 
+    const local = this.localUsers.findByEmail(email);
+    if (local?.passwordHash && this.crypto.verifyPassword(password, local.passwordHash)) {
+      return this.dtoFromParts(local, local.connectedProviders);
+    }
+    if (local && !local.passwordHash) {
+      throw new BadRequestException(
+        'This account uses Google sign-in. Continue with Google.',
+      );
+    }
+    if (local) {
+      throw new BadRequestException('Invalid email or password');
+    }
+
     throw new BadRequestException('Invalid email or password');
   }
 
@@ -413,6 +578,7 @@ export class UsersService {
       theme?: string | null;
       timezone?: string | null;
       defaultTaskMinutes?: number | null;
+      onboardingCompleted?: boolean | null;
     },
     providers: string[],
   ): UserDto {
@@ -427,6 +593,8 @@ export class UsersService {
         Number(user.defaultTaskMinutes) >= 5
           ? Math.round(Number(user.defaultTaskMinutes))
           : 30,
+      // Missing field (older rows / REST without column) → already onboarded
+      onboardingCompleted: user.onboardingCompleted !== false,
       connectedProviders: providers as UserDto['connectedProviders'],
     };
   }
@@ -438,6 +606,7 @@ export class UsersService {
     theme?: string | null;
     timezone?: string | null;
     defaultTaskMinutes?: number | null;
+    onboardingCompleted?: boolean | null;
     oauthAccounts: Array<{ provider: string }>;
   }): UserDto {
     return this.dtoFromParts(

@@ -12,6 +12,8 @@ import {
   tasksActions,
 } from '../store/tasksSlice';
 import { fetchStats } from '../store/statsSlice';
+import { HintMark } from './ui-hints';
+import { CoachSlot, resolveCoachSlot } from './coach';
 
 const EMPTY_PANEL_TASKS: TaskDto[] = [];
 
@@ -211,72 +213,42 @@ export function RightPanel({ user }: { user: UserDto }) {
     ? Math.max(10, Math.min(90, liveRemainingMins))
     : Math.max(15, Math.min(45, 90 - Math.round(loadPct / 2)));
 
-  const isMuted = mutedUntil != null && mutedUntil > Date.now();
-  const muteLeftMins = isMuted
-    ? Math.max(1, Math.ceil(((mutedUntil as number) - Date.now()) / 60_000))
-    : 0;
-
   const openTasks = taskList.filter((t) => t.status !== 'completed').length;
   const doneTasks = taskList.filter((t) => t.status === 'completed').length;
 
-  // Contextual coach — never invent app-switch / Slack claims we can't measure
-  const coach = useMemo(() => {
-    if (current.mode === 'live' && current.task) {
-      const left = liveRemainingMins;
-      return {
-        title: `Protect “${current.task.name}”.`,
-        body: left
-          ? `Timer is live — about ${left}m left in this block. Stay with it.`
-          : 'Timer is live. Finish this block before you context-switch.',
-      };
-    }
-    if (current.mode === 'now' && current.task) {
-      return {
-        title: 'This slot is open.',
-        body: `“${current.task.name}” is on the calendar now. Hit Start to turn it into proof of hours.`,
-      };
-    }
-    if (loadPct > 85) {
-      return {
-        title: `Day is ${loadPct}% booked.`,
-        body: 'Leave a little slack for ad-hoc work — or move a low-priority block to backlog.',
-      };
-    }
-    if (deepLogged + meetLogged === 0 && openTasks > 0) {
-      return {
-        title: 'No time logged yet.',
-        body: `You have ${openTasks} open task${openTasks === 1 ? '' : 's'}. Start one session so today’s hours show on your timesheet.`,
-      };
-    }
-    if (focusScore < 40 && loadPct < 35) {
-      return {
-        title: 'Plenty of open time.',
-        body: 'Queue one deep-work block next so the day doesn’t stay empty.',
-      };
-    }
-    if (doneTasks > 0 && openTasks === 0) {
-      return {
-        title: 'Queue is clear.',
-        body: `Nice — ${doneTasks} task${doneTasks === 1 ? '' : 's'} done. Pull from backlog or call it a day.`,
-      };
-    }
-    return {
-      title: 'Keep one block uninterrupted.',
-      body:
-        deepLogged > 0
-          ? `${deepLogged}m deep work logged. Mute coach nudges if you’re in flow.`
-          : 'Strong plan. Start the next block and stay with it.',
-    };
-  }, [
-    current,
-    liveRemainingMins,
-    loadPct,
-    openTasks,
-    doneTasks,
-    focusScore,
-    deepLogged,
-    meetLogged,
-  ]);
+  const coachContent = useMemo(
+    () =>
+      resolveCoachSlot({
+        date,
+        loadPct,
+        focusScore,
+        deepLogged,
+        meetLogged,
+        openTasks,
+        doneTasks,
+        liveRemainingMins,
+        current: {
+          mode: current.mode,
+          taskName: current.task?.name ?? null,
+        },
+        mutedUntil,
+        muteMins,
+      }),
+    [
+      date,
+      loadPct,
+      focusScore,
+      deepLogged,
+      meetLogged,
+      openTasks,
+      doneTasks,
+      liveRemainingMins,
+      current,
+      mutedUntil,
+      muteMins,
+      tick,
+    ],
+  );
 
   const applyMute = (minutes: number) => {
     const until = Date.now() + minutes * 60_000;
@@ -365,7 +337,9 @@ export function RightPanel({ user }: { user: UserDto }) {
       )}
 
       <div className="side-card focus-card">
-        <div className="side-card-label">Focus</div>
+        <div className="side-card-label">
+          Focus <HintMark id="side.focus" placement="left" />
+        </div>
         <div
           className="focus-ring"
           style={{ ['--pct' as string]: focusScore }}
@@ -374,11 +348,7 @@ export function RightPanel({ user }: { user: UserDto }) {
           <span>Focus</span>
         </div>
         <p className="focus-blurb">
-          {focusScore >= 70
-            ? 'Strong day so far.'
-            : focusScore >= 45
-              ? 'Steady — protect the next block.'
-              : 'Room to tighten focus.'}
+          {loadPct}% of work hours booked. Highest near 55%.
         </p>
       </div>
 
@@ -411,7 +381,9 @@ export function RightPanel({ user }: { user: UserDto }) {
       </div>
 
       <div className="side-card">
-        <div className="side-card-label">Load</div>
+        <div className="side-card-label">
+          Load <HintMark id="side.load" placement="left" />
+        </div>
         <div className="load-meta">
           <strong>{loadPct}%</strong>
           <span>of {Math.round(available / 60)}h</span>
@@ -434,37 +406,11 @@ export function RightPanel({ user }: { user: UserDto }) {
         </div>
       </div>
 
-      <div className="side-card coach-card">
-        <div className="side-card-label accent">✦ Coach</div>
-        {isMuted ? (
-          <>
-            <p className="coach-title">Nudges paused</p>
-            <p>
-              Coach tips stay quiet for about {muteLeftMins} more minute
-              {muteLeftMins === 1 ? '' : 's'}. Timers and the plan keep running.
-            </p>
-            <button
-              type="button"
-              className="btn btn-outline btn-pill coach-cta"
-              onClick={clearMute}
-            >
-              Unmute coach
-            </button>
-          </>
-        ) : (
-          <>
-            <p className="coach-title">{coach.title}</p>
-            <p>{coach.body}</p>
-            <button
-              type="button"
-              className="btn btn-primary btn-pill coach-cta"
-              onClick={() => applyMute(muteMins)}
-            >
-              Mute for {muteMins} minutes →
-            </button>
-          </>
-        )}
-      </div>
+      <CoachSlot
+        content={coachContent}
+        onMute={applyMute}
+        onUnmute={clearMute}
+      />
     </aside>
   );
 }
