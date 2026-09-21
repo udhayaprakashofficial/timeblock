@@ -3,7 +3,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const apiOrigin = process.env.API_ORIGIN ?? 'http://127.0.0.1:3001';
+// On Vercel web, rewrite /api → Nest. Must not default to localhost in production.
+const apiOrigin =
+  process.env.API_ORIGIN?.replace(/\/$/, '') ||
+  (process.env.VERCEL
+    ? 'https://timeblock-server.vercel.app'
+    : 'http://127.0.0.1:3001');
 
 const nextConfig: NextConfig = {
   transpilePackages: ['@timeblock/shared-types'],

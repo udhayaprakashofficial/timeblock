@@ -13,7 +13,7 @@ import {
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ThemePreference, UserDto } from '@timeblock/shared-types';
-import { api, detectBrowserTimeZone } from './api';
+import { api, detectBrowserTimeZone, AUTH_LOST_EVENT } from './api';
 import { ThemeProvider, useTheme } from './theme';
 import { RightPanel } from './components/RightPanel';
 import { TopbarPulse } from './components/TopbarPulse';
@@ -422,13 +422,21 @@ export function App({ children }: { children: ReactNode }) {
     queryKey: ['me'],
     queryFn: () => api.get<UserDto | null>('/api/users/me'),
     retry: 2,
-    staleTime: 5 * 60_000,
-    refetchOnMount: false,
+    staleTime: 30_000,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
     refetchOnReconnect: true,
     enabled: hydrated && !exchanging && !loggingOut,
   });
 
-  const user = loggingOut ? null : sessionUser ?? me.data ?? null;
+  // Never treat sessionStorage alone as auth — that caused "logged in UI" + 401 APIs.
+  const user = loggingOut
+    ? null
+    : me.isSuccess
+      ? me.data
+      : me.isLoading || me.isFetching
+        ? sessionUser
+        : null;
 
   const handleSignedIn = useCallback(
     (next: UserDto) => {
@@ -457,6 +465,15 @@ export function App({ children }: { children: ReactNode }) {
     }
     router.replace('/login');
   }, [qc, router]);
+
+  useEffect(() => {
+    const onAuthLost = () => {
+      if (loggingOut) return;
+      handleLoggedOut();
+    };
+    window.addEventListener(AUTH_LOST_EVENT, onAuthLost);
+    return () => window.removeEventListener(AUTH_LOST_EVENT, onAuthLost);
+  }, [handleLoggedOut, loggingOut]);
 
   useEffect(() => {
     if (!hydrated) return;

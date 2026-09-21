@@ -384,20 +384,19 @@ export class AuthController {
 
   @Post('logout')
   logout(@Req() req: Request, @Res() res: Response) {
-    const crossSite =
+    const isProd =
+      process.env.NODE_ENV === 'production' ||
       Boolean(process.env.VERCEL) ||
-      Boolean(process.env.WEB_ORIGIN?.includes('vercel.app'));
-    const isProd = process.env.NODE_ENV === 'production';
+      Boolean(process.env.VERCEL_ENV);
     const cookieOpts = {
       path: '/',
       httpOnly: true,
-      sameSite: (crossSite ? 'none' : 'lax') as 'none' | 'lax',
-      secure: isProd || crossSite,
+      sameSite: 'lax' as const,
+      secure: isProd,
     };
 
     const finish = () => {
       res.clearCookie('timeblock.sid', cookieOpts);
-      // Older / mismatched cookie variants
       res.clearCookie('timeblock.sid', { path: '/' });
       res.json({ ok: true });
     };

@@ -1,24 +1,27 @@
 'use client';
 
 /**
- * Resolve API base URL.
- * Prefer NEXT_PUBLIC_API_ORIGIN; on the production web host, fall back to the
- * Nest server so requests never hit the Next.js domain's /api (which 401s).
+ * API base URL.
+ *
+ * On the Vercel web host, always use same-origin `/api/*` so the session cookie
+ * is first-party (Next.js rewrites proxy to Nest). Cross-origin calls to
+ * timeblock-server.vercel.app make `timeblock.sid` a third-party cookie —
+ * Chrome/Safari often block it, which surfaces as "Not authenticated" while
+ * the UI still looks logged in.
+ *
+ * NEXT_PUBLIC_API_ORIGIN is only honored off Vercel (local split-origin debug).
  */
 function resolveApiOrigin(): string {
-  const fromEnv = (process.env.NEXT_PUBLIC_API_ORIGIN ?? '').replace(/\/$/, '');
-  if (fromEnv) return fromEnv;
   if (typeof window !== 'undefined') {
     const host = window.location.hostname;
-    // Any Vercel web deploy (prod / preview) should talk to the Nest API host.
     if (
       host === 'timeblock-web-ashy.vercel.app' ||
       host.endsWith('.vercel.app')
     ) {
-      return 'https://timeblock-server.vercel.app';
+      return '';
     }
   }
-  return '';
+  return (process.env.NEXT_PUBLIC_API_ORIGIN ?? '').replace(/\/$/, '');
 }
 
 function apiUrl(path: string): string {
@@ -26,6 +29,18 @@ function apiUrl(path: string): string {
   const origin = resolveApiOrigin();
   const normalized = path.startsWith('/') ? path : `/${path}`;
   return `${origin}${normalized}`;
+}
+
+/** Fired on 401 so the shell can clear the fake cached session and route to login. */
+export const AUTH_LOST_EVENT = 'timeblock:auth-lost';
+
+function notifyAuthLost() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(new CustomEvent(AUTH_LOST_EVENT));
+  } catch {
+    /* ignore */
+  }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -39,6 +54,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text();
+    if (
+      res.status === 401 &&
+      !path.includes('/users/me') &&
+      !path.includes('/auth/')
+    ) {
+      notifyAuthLost();
+    }
     try {
       const json = JSON.parse(text) as {
         error?: string;

@@ -29,9 +29,10 @@ function sessionSecret(): string {
   if (v) return v;
   if (isVercelRuntime()) {
     console.error(
-      '[session] SESSION_SECRET is not set — using a temporary secret. Set SESSION_SECRET in Vercel env!',
+      '[session] SESSION_SECRET is not set — using a stable temporary secret. Set SESSION_SECRET in Vercel env!',
     );
-    return `vercel-temp-${process.env.VERCEL_GIT_COMMIT_SHA || 'timeblock'}`;
+    // Must NOT include commit SHA — that invalidated every cookie on each deploy.
+    return 'vercel-temp-timeblock-session-secret';
   }
   if (process.env.NODE_ENV === 'production') {
     throw new Error(
@@ -108,6 +109,8 @@ export async function createNestApp(): Promise<NestExpressApplication> {
     isVercelRuntime() ||
     Boolean(process.env.WEB_ORIGIN?.includes('vercel.app'));
 
+  // Session cookie is first-party via Next.js /api rewrite to Nest.
+  // SameSite=Lax — do NOT use None (third-party); browsers block those.
   app.use(
     session({
       name: 'timeblock.sid',
@@ -118,7 +121,7 @@ export async function createNestApp(): Promise<NestExpressApplication> {
       proxy: true,
       cookie: {
         httpOnly: true,
-        sameSite: crossSite ? 'none' : 'lax',
+        sameSite: 'lax',
         secure: isProd || crossSite,
         path: '/',
         maxAge: 7 * 24 * 60 * 60 * 1000,
