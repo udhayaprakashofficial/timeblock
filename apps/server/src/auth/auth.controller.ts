@@ -18,20 +18,50 @@ import { LoginCodeService } from './login-code.service';
 import { UsersService } from '../users/users.service';
 import { CalendarSyncService } from '../calendar/calendar-sync.service';
 
+const PROD_WEB_ORIGIN = 'https://app.cupkey.io';
+
 function isAllowedWebOrigin(origin: string, allowed: string[]): boolean {
   if (allowed.includes(origin)) return true;
   try {
     const host = new URL(origin).hostname;
+    // Nest API host is not a web origin (OAuth must return to the Next app)
+    if (host === 'timeblock-server.vercel.app' || host.startsWith('timeblock-server-')) {
+      return false;
+    }
     return (
       host === 'app.cupkey.io' ||
       host === 'cupkey.io' ||
       host === 'www.cupkey.io' ||
       host.endsWith('.cupkey.io') ||
       host === 'timeblock-web-ashy.vercel.app' ||
-      (host.endsWith('.vercel.app') && host.includes('timeblock'))
+      (host.endsWith('.vercel.app') && host.includes('timeblock-web'))
     );
   } catch {
     return false;
+  }
+}
+
+function defaultWebOrigin(allowed: string[]): string {
+  const local = 'http://localhost:5173';
+  if (!process.env.VERCEL && allowed.includes(local)) return local;
+  const cupkey = allowed.find((o) => o.includes('app.cupkey.io'));
+  if (cupkey) return cupkey;
+  if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+    return PROD_WEB_ORIGIN;
+  }
+  return allowed[0] ?? local;
+}
+
+function originFromHeader(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    // Host / X-Forwarded-Host may be bare hostname
+    if (!value.includes('://')) {
+      return `https://${value.split(',')[0]!.trim()}`;
+    }
+    return new URL(value).origin;
+  } catch {
+    return null;
   }
 }
 
@@ -40,31 +70,35 @@ function primaryWebOrigin(req?: Request): string {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  // Prefer localhost:5173 for local Google GIS / cookies
-  const preferred = 'http://localhost:5173';
-  const fallback = allowed.includes(preferred)
-    ? preferred
-    : (allowed[0] ?? preferred);
+  const fallback = defaultWebOrigin(allowed);
 
   // Prefer the origin the user started from (so post-login lands on the same host)
   const candidates = [
     req?.session?.oauthWebOrigin,
     typeof req?.headers?.origin === 'string' ? req.headers.origin : null,
-    (() => {
-      const ref = req?.headers?.referer;
-      if (!ref || typeof ref !== 'string') return null;
-      try {
-        return new URL(ref).origin;
-      } catch {
-        return null;
-      }
-    })(),
+    originFromHeader(req?.headers?.referer),
+    originFromHeader(req?.headers['x-forwarded-host']),
+    originFromHeader(req?.headers?.host),
   ].filter(Boolean) as string[];
 
   for (const c of candidates) {
     if (isAllowedWebOrigin(c, allowed)) return c;
   }
   return fallback;
+}
+
+/** Must match an Authorized redirect URI in Google Cloud Console. */
+function googleCallbackUrl(req?: Request): string {
+  const fromEnv = process.env.GOOGLE_CALLBACK_URL?.trim() ?? '';
+  // Stale Vercel web URL breaks Google login on app.cupkey.io
+  if (
+    fromEnv &&
+    !fromEnv.includes('timeblock-web-ashy.vercel.app') &&
+    !(process.env.VERCEL && fromEnv.includes('localhost'))
+  ) {
+    return fromEnv;
+  }
+  return `${primaryWebOrigin(req)}/api/auth/google/callback`;
 }
 
 function safeReturnPath(raw: string | undefined, fallback = '/'): string {
@@ -289,13 +323,19 @@ export class AuthController {
         /* ignore */
       }
     }
+    // Same-origin /api rewrite: prefer Cupkey host over Nest's own Host header
+    if (!req.session.oauthWebOrigin) {
+      req.session.oauthWebOrigin = PROD_WEB_ORIGIN;
+    }
     void returnTo; // dashboard only
+    const callbackURL = googleCallbackUrl(req);
     req.session.save((err) => {
       if (err) {
         return res.redirect(`${primaryWebOrigin(req)}/?authError=session`);
       }
       passport.authenticate('google', {
         session: false,
+        callbackURL,
         scope: [
           'email',
           'profile',
@@ -313,9 +353,10 @@ export class AuthController {
     @Res() res: Response,
     @Next() next: NextFunction,
   ) {
+    const callbackURL = googleCallbackUrl(req);
     passport.authenticate(
       'google',
-      { session: false },
+      { session: false, callbackURL } as passport.AuthenticateOptions,
       (
         err: Error | null,
         user: { id: string } | false | undefined,
