@@ -1,9 +1,8 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { useState, type CSSProperties, type FormEvent } from 'react';
-import type { AuthConfigDto, UserDto } from '@timeblock/shared-types';
+import type { UserDto } from '@timeblock/shared-types';
 import { api } from '../api';
 import { CupkeyLogo } from '../components/CupkeyLogo';
 import './auth.css'; // LAYOUT_FIX_V1
@@ -57,43 +56,16 @@ const cardStyle: CSSProperties = {
 };
 
 /**
- * Clerk-style auth card: Google (browser GIS) + email/password.
- * Browser GIS avoids server→Google token exchange (often blocked / fails with authError=google).
+ * Auth card: email/password now; social providers shown as coming soon.
  */
 export function LoginScreen({
   onSignedIn,
 }: {
   onSignedIn: (user: UserDto) => void;
 }) {
-  const authConfig = useQuery({
-    queryKey: ['auth-config'],
-    queryFn: () => api.get<AuthConfigDto>('/api/users/auth-config'),
-  });
-
   const authError = new URLSearchParams(window.location.search).get('authError');
-  const googleOAuth = Boolean(authConfig.data?.googleCalendarOAuth);
-  const googleClientId = authConfig.data?.googleClientId ?? null;
 
-  if (authConfig.isLoading) {
-    return (
-      <div className="auth-kit">
-        <style>{AUTH_CRITICAL_CSS}</style>
-        <section className="auth-kit-left">
-          <p className="auth-loading">Loading…</p>
-        </section>
-        <aside className="auth-kit-right" aria-hidden />
-      </div>
-    );
-  }
-
-  return (
-    <AuthCard
-      googleEnabled={googleOAuth}
-      googleClientId={googleClientId}
-      authError={authError}
-      onSignedIn={onSignedIn}
-    />
-  );
+  return <AuthCard authError={authError} onSignedIn={onSignedIn} />;
 }
 
 const formStyle: CSSProperties = {
@@ -164,13 +136,9 @@ const socialBtnStyle: CSSProperties = {
 };
 
 function AuthCard({
-  googleEnabled,
-  googleClientId,
   authError,
   onSignedIn,
 }: {
-  googleEnabled: boolean;
-  googleClientId: string | null;
   authError: string | null;
   onSignedIn: (user: UserDto) => void;
 }) {
@@ -181,16 +149,16 @@ function AuthCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(() => {
     if (authError === 'google' || authError === 'google_token') {
-      return 'Google server sign-in failed. Click Continue with Google again (browser sign-in).';
+      return 'Google sign-in is coming soon. Use email instead.';
     }
     if (authError === 'google_not_configured') {
-      return 'Google OAuth is not configured on the server.';
+      return 'Google sign-in is coming soon. Use email instead.';
     }
     if (authError === 'origin_mismatch' || authError === 'redirect_uri_mismatch') {
-      return `Add this origin in Google Cloud → Credentials → Authorized JavaScript origins: ${window.location.origin}`;
+      return 'Google sign-in is coming soon. Use email instead.';
     }
     if (authError === 'exchange') {
-      return 'Google sign-in handoff failed. Try again.';
+      return 'Google sign-in is coming soon. Use email instead.';
     }
     return authError;
   });
@@ -202,39 +170,6 @@ function AuthCard({
     if (next === 'signup') url.searchParams.set('mode', 'signup');
     else url.searchParams.delete('mode');
     window.history.replaceState({}, '', url.pathname + url.search);
-  };
-
-  const onGoogleClick = async () => {
-    setError(null);
-    setBusy(true);
-    try {
-      if (!googleClientId) {
-        throw new Error('Google Client ID is not configured');
-      }
-      await loadGoogleIdentityScript();
-      const accessToken = await requestGoogleAccessToken(googleClientId);
-      const profile = await fetchGoogleProfile(accessToken);
-      const user = await api.post<UserDto>('/api/auth/google/browser', {
-        accessToken,
-        email: profile.email,
-        name: profile.name,
-        googleId: profile.id,
-      });
-      // Clear authError from URL
-      window.history.replaceState({}, '', '/');
-      onSignedIn(user);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Google sign-in failed';
-      if (/origin|idpiframe|popup_closed|access_denied/i.test(msg)) {
-        setError(
-          `Google blocked this origin. In Google Cloud Console → OAuth client → Authorized JavaScript origins, add: ${window.location.origin}`,
-        );
-      } else {
-        setError(msg);
-      }
-    } finally {
-      setBusy(false);
-    }
   };
 
   const onSubmit = async (e: FormEvent) => {
@@ -279,17 +214,16 @@ function AuthCard({
         <p className="auth-kit-lede">{subtitle}</p>
 
         <div className="auth-kit-social">
-          {googleEnabled ? (
-            <button
-              type="button"
-              className="auth-kit-social-btn"
-              disabled={busy}
-              onClick={onGoogleClick}
-            >
-              <GoogleIcon />
-              Continue with Google
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className="auth-kit-social-btn"
+            disabled
+            title="Coming soon"
+          >
+            <GoogleIcon />
+            Continue with Google
+            <em>Soon</em>
+          </button>
           <button
             type="button"
             className="auth-kit-social-btn"
@@ -461,98 +395,3 @@ function GoogleIcon() {
   );
 }
 
-type GoogleTokenClient = {
-  requestAccessToken: (override?: { prompt?: string }) => void;
-};
-
-type GoogleAccountsOauth2 = {
-  initTokenClient: (config: {
-    client_id: string;
-    scope: string;
-    callback: (resp: { access_token?: string; error?: string }) => void;
-    error_callback?: (err: { type?: string; message?: string }) => void;
-  }) => GoogleTokenClient;
-};
-
-declare global {
-  interface Window {
-    google?: { accounts?: { oauth2?: GoogleAccountsOauth2 } };
-  }
-}
-
-function loadGoogleIdentityScript(): Promise<void> {
-  if (window.google?.accounts?.oauth2) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>(
-      'script[data-google-gis]',
-    );
-    if (existing) {
-      existing.addEventListener('load', () => resolve());
-      existing.addEventListener('error', () =>
-        reject(new Error('Failed to load Google Identity script')),
-      );
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
-    script.async = true;
-    script.defer = true;
-    script.dataset.googleGis = '1';
-    script.onload = () => resolve();
-    script.onerror = () =>
-      reject(new Error('Failed to load Google Identity script'));
-    document.head.appendChild(script);
-  });
-}
-
-function requestGoogleAccessToken(clientId: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const oauth2 = window.google?.accounts?.oauth2;
-    if (!oauth2) {
-      reject(new Error('Google Identity Services not available'));
-      return;
-    }
-    const client = oauth2.initTokenClient({
-      client_id: clientId,
-      scope:
-        'email profile openid https://www.googleapis.com/auth/calendar.readonly',
-      callback: (resp) => {
-        if (resp.error || !resp.access_token) {
-          reject(new Error(resp.error || 'No Google access token'));
-          return;
-        }
-        resolve(resp.access_token);
-      },
-      error_callback: (err) => {
-        reject(new Error(err.message || err.type || 'Google popup failed'));
-      },
-    });
-    client.requestAccessToken({ prompt: 'consent' });
-  });
-}
-
-async function fetchGoogleProfile(accessToken: string): Promise<{
-  id: string;
-  email: string;
-  name: string;
-}> {
-  const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!res.ok) {
-    throw new Error('Failed to load Google profile');
-  }
-  const data = (await res.json()) as {
-    sub?: string;
-    email?: string;
-    name?: string;
-  };
-  if (!data.sub || !data.email) {
-    throw new Error('Google profile missing email');
-  }
-  return {
-    id: data.sub,
-    email: data.email,
-    name: data.name || data.email,
-  };
-}
