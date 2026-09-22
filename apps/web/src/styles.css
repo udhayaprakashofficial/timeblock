@@ -3212,6 +3212,10 @@ body:has(.landing) {
   justify-content: center;
 }
 
+.settings-kit .settings-feedback-block {
+  margin-top: 8px;
+}
+
 .settings-kit .settings-demo {
   display: flex;
   flex-direction: column;

@@ -98,6 +98,8 @@ function initials(name: string) {
     .toUpperCase();
 }
 
+const FEEDBACK_URL = 'https://cupkey.featurebase.app/';
+
 function NavItem({
   href,
   exact,
@@ -128,6 +130,35 @@ function NavItem({
         </span>
       ) : null}
     </Link>
+  );
+}
+
+function ExternalNavItem({
+  href,
+  children,
+  title,
+  tip,
+}: {
+  href: string;
+  children: ReactNode;
+  title: string;
+  tip?: string;
+}) {
+  return (
+    <a
+      href={href}
+      className="nav-link"
+      data-tooltip={title}
+      aria-label={title}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      {children}
+      <span className="nav-tooltip">
+        <strong className="nav-tooltip-title">{title}</strong>
+        {tip ? <span className="nav-tooltip-body">{tip}</span> : null}
+      </span>
+    </a>
   );
 }
 
@@ -360,16 +391,6 @@ function Shell({
             <span className="nav-label">Report</span>
           </NavItem>
           <NavItem
-            href="/badges"
-            title={HINTS['nav.badges'].title}
-            tip={HINTS['nav.badges'].body}
-          >
-            <span className="nav-icon" aria-hidden>
-              ◈
-            </span>
-            <span className="nav-label">Badges</span>
-          </NavItem>
-          <NavItem
             href="/timesheet"
             title={HINTS['nav.timesheet'].title}
             tip={HINTS['nav.timesheet'].body}
@@ -378,6 +399,16 @@ function Shell({
               ☰
             </span>
             <span className="nav-label">Timesheet</span>
+          </NavItem>
+          <NavItem
+            href="/badges"
+            title={HINTS['nav.badges'].title}
+            tip={HINTS['nav.badges'].body}
+          >
+            <span className="nav-icon" aria-hidden>
+              ◈
+            </span>
+            <span className="nav-label">Badges</span>
           </NavItem>
           <NavItem
             href="/settings"
@@ -392,6 +423,16 @@ function Shell({
         </nav>
 
         <div className="sidebar-footer">
+          <ExternalNavItem
+            href={FEEDBACK_URL}
+            title={HINTS['nav.feedback'].title}
+            tip={HINTS['nav.feedback'].body}
+          >
+            <span className="nav-icon" aria-hidden>
+              ✎
+            </span>
+            <span className="nav-label">Feedback</span>
+          </ExternalNavItem>
           <RailAvatar name={user.name} userId={user.id} />
           <LogoutButton onLoggedOut={onLoggedOut} />
         </div>

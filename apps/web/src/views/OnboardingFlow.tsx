@@ -79,8 +79,6 @@ export function OnboardingFlow({
     SAMPLE_PLANS.map((p) => ({ ...p })),
   );
 
-  const googleConnected = user.connectedProviders.includes('google');
-
   const workableMins = useMemo(() => {
     const span = Math.max(0, minutesOf(workEnd) - minutesOf(workStart));
     const breakMins = breaks.reduce(
@@ -376,30 +374,15 @@ export function OnboardingFlow({
             </p>
 
             <div className="onboard-cal-list">
-              <div
-                className={`onboard-cal-row${googleConnected ? ' is-connected' : ''}`}
-              >
+              <div className="onboard-cal-row is-soon">
                 <span className="onboard-cal-icon" aria-hidden>
                   G
                 </span>
                 <div className="onboard-cal-copy">
                   <strong>Google Calendar</strong>
-                  <span>
-                    {googleConnected
-                      ? `${user.email} · connected`
-                      : 'Import meetings into your day'}
-                  </span>
+                  <span>Import meetings into your day</span>
                 </div>
-                {googleConnected ? (
-                  <span className="onboard-cal-status">Connected</span>
-                ) : (
-                  <a
-                    className="btn btn-primary"
-                    href="/api/auth/google?returnTo=/onboarding"
-                  >
-                    Connect
-                  </a>
-                )}
+                <span className="coming-soon-tag">Coming soon</span>
               </div>
               <div className="onboard-cal-row is-soon">
                 <span className="onboard-cal-icon" aria-hidden>
@@ -472,7 +455,7 @@ export function OnboardingFlow({
             </p>
             <div className="onboard-preview-stats">
               <div>
-                <strong>{googleConnected ? 'Ready' : 'Optional'}</strong>
+                <strong>Coming soon</strong>
                 <span>Google Calendar</span>
               </div>
               <div>
