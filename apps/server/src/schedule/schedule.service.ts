@@ -142,9 +142,11 @@ export class ScheduleTemplatesService {
     userId: string,
     weekdays: Weekday[],
     dto: Omit<UpsertScheduleTemplateDto, 'weekday'>,
+    opts?: { deferReschedule?: boolean },
   ): Promise<DailyScheduleTemplateDto[]> {
     const days = [...new Set(weekdays)].filter((d) => d >= 0 && d <= 6) as Weekday[];
     if (!days.length) return [];
+    const defer = Boolean(opts?.deferReschedule);
 
     const fromDb = await this.viaDb(userId, async (id) => {
       const rows: DailyScheduleTemplateDto[] = [];
@@ -157,7 +159,8 @@ export class ScheduleTemplatesService {
           rows.push(row as DailyScheduleTemplateDto);
         }),
       );
-      await this.rescheduleAfter(id);
+      // Onboarding must stay under proxy timeouts — skip 7-day pack here.
+      if (!defer) await this.rescheduleAfter(id);
       return rows;
     });
     if (fromDb !== null) return fromDb;
@@ -172,7 +175,7 @@ export class ScheduleTemplatesService {
       for (const weekday of days) {
         rows.push(await this.writeTemplate(userId, { ...dto, weekday }));
       }
-      await this.rescheduleUpcoming(userId);
+      if (!defer) await this.rescheduleUpcoming(userId);
       return rows;
     } catch {
       return days.map((weekday) =>

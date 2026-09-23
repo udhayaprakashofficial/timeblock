@@ -75,26 +75,64 @@ export class UsersService {
       ? normalizeTimeZone(body.timezone)
       : undefined;
 
-    // Set timezone BEFORE seeding — otherwise UTC "today" can be yesterday in IST
-    // and tasks get carried into backlog while the plan looks empty.
-    const user = await this.updateProfile(userId, {
-      onboardingCompleted: true,
-      theme: 'dark',
-      ...(tz ? { timezone: tz } : {}),
-    });
+    // Mark complete first — never leave the user stuck on onboarding if later
+    // schedule/task steps are slow or fail (proxy timeouts → "Failed to fetch").
+    let user: UserDto;
+    try {
+      user = await this.updateProfile(userId, {
+        onboardingCompleted: true,
+        theme: 'dark',
+        ...(tz ? { timezone: tz } : {}),
+      });
+    } catch (err) {
+      console.warn(
+        '[onboarding] profile update failed',
+        err instanceof Error ? err.message : err,
+      );
+      this.localUsers.setOnboardingCompleted(userId, true);
+      try {
+        user = {
+          ...(await this.getMe(userId)),
+          onboardingCompleted: true,
+          theme: 'dark',
+        };
+      } catch {
+        user = {
+          id: userId,
+          name: '',
+          email: '',
+          theme: 'dark',
+          timezone: tz || 'UTC',
+          defaultTaskMinutes: 30,
+          onboardingCompleted: true,
+          connectedProviders: [],
+          plan: 'free',
+          planStatus: null,
+          planUpdatedAt: null,
+          proPaidAt: null,
+          proActivatedAt: null,
+          dodoPaymentId: null,
+        };
+      }
+    }
 
     try {
-      await this.schedule.upsertSelectedDays(userId, weekdays, {
-        workStart: body.workStart?.trim() || '09:00',
-        workEnd: body.workEnd?.trim() || '18:00',
-        breaks: (body.breaks ?? [])
-          .filter((b) => b?.name?.trim())
-          .map((b) => ({
-            name: b.name.trim(),
-            start: b.start || '12:00',
-            end: b.end || '13:00',
-          })),
-      });
+      await this.schedule.upsertSelectedDays(
+        userId,
+        weekdays,
+        {
+          workStart: body.workStart?.trim() || '09:00',
+          workEnd: body.workEnd?.trim() || '18:00',
+          breaks: (body.breaks ?? [])
+            .filter((b) => b?.name?.trim())
+            .map((b) => ({
+              name: b.name.trim(),
+              start: b.start || '12:00',
+              end: b.end || '13:00',
+            })),
+        },
+        { deferReschedule: true },
+      );
     } catch (err) {
       console.warn(
         '[onboarding] schedule save failed',
@@ -114,7 +152,7 @@ export class UsersService {
       }
     }
 
-    return { user: { ...user, onboardingCompleted: true }, tasks };
+    return { user: { ...user, onboardingCompleted: true, theme: 'dark' }, tasks };
   }
 
   authConfig(): AuthConfigDto {

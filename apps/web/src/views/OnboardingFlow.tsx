@@ -330,25 +330,81 @@ export function OnboardingFlow({
         recurring: boolean;
       }>;
     }) => {
-      const result = await api.post<{ user: UserDto; tasks: unknown[] }>(
-        '/api/users/me/finish-onboarding',
-        {
-          createTasks: payload.createTasks,
-          weekdays: payload.weekdays,
-          workStart: payload.workStart,
-          workEnd: payload.workEnd,
-          breaks: payload.breaks
-            .filter((b) => b.name.trim())
-            .map((b) => ({
-              name: b.name.trim(),
-              start: toHm(b.start, '12:00'),
-              end: toHm(b.end, '13:00'),
-            })),
-          tasks: payload.tasks,
+      const body = {
+        createTasks: payload.createTasks,
+        weekdays: payload.weekdays,
+        workStart: payload.workStart,
+        workEnd: payload.workEnd,
+        breaks: payload.breaks
+          .filter((b) => b.name.trim())
+          .map((b) => ({
+            name: b.name.trim(),
+            start: toHm(b.start, '12:00'),
+            end: toHm(b.end, '13:00'),
+          })),
+        tasks: payload.tasks,
+        timezone: detectBrowserTimeZone(),
+      };
+
+      try {
+        const result = await api.post<{ user: UserDto; tasks: unknown[] }>(
+          '/api/users/me/finish-onboarding',
+          body,
+        );
+        return { ...result.user, onboardingCompleted: true as const };
+      } catch (primaryErr) {
+        // Never trap the user on onboarding if the one-shot call drops
+        // (proxy timeout / Failed to fetch). Mark complete via PATCH, then
+        // best-effort schedule + tasks.
+        console.warn(
+          '[onboarding] finish-onboarding failed, falling back',
+          primaryErr instanceof Error ? primaryErr.message : primaryErr,
+        );
+        const next = await api.patch<UserDto>('/api/users/me', {
+          onboardingCompleted: true,
+          theme: 'dark',
           timezone: detectBrowserTimeZone(),
-        },
-      );
-      return { ...result.user, onboardingCompleted: true as const };
+        });
+
+        try {
+          await Promise.all(
+            payload.weekdays.map((weekday) =>
+              api.put('/api/schedule', {
+                weekday,
+                workStart: payload.workStart,
+                workEnd: payload.workEnd,
+                breaks: body.breaks,
+              }),
+            ),
+          );
+        } catch {
+          /* schedule can be set later in Settings */
+        }
+
+        if (payload.createTasks && payload.tasks.length) {
+          const today = new Intl.DateTimeFormat('en-CA', {
+            timeZone: detectBrowserTimeZone(),
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          }).format(new Date());
+          await Promise.all(
+            payload.tasks.map(async (t) => {
+              try {
+                await api.post('/api/tasks', {
+                  date: today,
+                  name: t.name,
+                  estimatedMinutes: t.estimatedMinutes,
+                });
+              } catch {
+                /* keep going */
+              }
+            }),
+          );
+        }
+
+        return { ...next, onboardingCompleted: true as const, theme: 'dark' as const };
+      }
     },
     onSuccess: (next) => {
       try {

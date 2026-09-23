@@ -92,7 +92,25 @@ export class UsersController {
               : String((raw as { message?: string }).message ?? err.message);
         return res.status(err.getStatus()).json({ message });
       }
-      throw err;
+      // Last resort: still clear onboarding so the client can enter the app
+      console.error('[finish-onboarding]', err);
+      try {
+        const me = await this.usersService.updateProfile(userId, {
+          onboardingCompleted: true,
+          theme: 'dark',
+          ...(body?.timezone ? { timezone: body.timezone } : {}),
+        });
+        return res.status(200).json({
+          user: { ...me, onboardingCompleted: true },
+          tasks: [],
+          partial: true,
+        });
+      } catch {
+        return res.status(500).json({
+          message:
+            'Could not finish setup. Please try again in a moment.',
+        });
+      }
     }
   }
 

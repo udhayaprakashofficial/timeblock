@@ -50,15 +50,29 @@ function notifyAuthLost() {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(apiUrl(path), {
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(init?.headers ?? {}),
-      },
-      ...init,
-    });
-  } catch {
+    const ctrl = new AbortController();
+    const timeoutMs = path.includes('finish-onboarding') ? 55_000 : 30_000;
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      res = await fetch(apiUrl(path), {
+        credentials: 'include',
+        ...init,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(init?.headers ?? {}),
+        },
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : '';
+    if (/abort/i.test(raw)) {
+      throw new Error(
+        'That took too long. Check your connection and try again.',
+      );
+    }
     throw new Error(
       'Cannot reach the server. Check your connection and try again.',
     );
