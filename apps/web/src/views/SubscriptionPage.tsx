@@ -64,11 +64,21 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
     const status = (params.get('status') || '').toLowerCase();
     const paymentId =
       params.get('payment_id') || params.get('paymentId') || '';
+    const subscriptionId =
+      params.get('subscription_id') || params.get('subscriptionId') || '';
 
-    if (status !== 'succeeded' && status !== 'success') return;
-    if (!paymentId) {
+    // Subscriptions return status=active + subscription_id (not pay_ + succeeded)
+    const okStatus =
+      status === 'succeeded' || status === 'success' || status === 'active';
+    if (!okStatus) return;
+
+    const idIsPay = /^pay_[\w-]+$/i.test(paymentId);
+    const idIsSub =
+      /^sub_[\w-]+$/i.test(subscriptionId) ||
+      /^sub_[\w-]+$/i.test(paymentId);
+    if (!idIsPay && !idIsSub) {
       setErr(
-        'Checkout returned without a payment id. If you were charged, contact support with your Dodo receipt — we cannot mark Pro without a verified payment.',
+        'Checkout returned without a payment or subscription id. If you were charged, wait a minute and refresh, or contact support with your Dodo receipt.',
       );
       return;
     }
@@ -84,8 +94,11 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
           plan: string;
           user?: UserDto;
         }>('/api/billing/confirm', {
-          paymentId: paymentId || undefined,
-          status: 'succeeded',
+          paymentId: idIsPay ? paymentId : undefined,
+          subscriptionId: idIsSub
+            ? subscriptionId || paymentId
+            : undefined,
+          status: status || 'succeeded',
         });
         if (cancelled) return;
         if (result.user) qc.setQueryData(['me'], result.user);
@@ -98,6 +111,7 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
           'payment_id',
           'paymentId',
           'subscription_id',
+          'subscriptionId',
           'email',
         ].forEach((k) => url.searchParams.delete(k));
         window.history.replaceState({}, '', url.pathname + url.search);

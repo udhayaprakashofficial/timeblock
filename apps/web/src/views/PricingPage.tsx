@@ -216,6 +216,8 @@ export function PricingPage({
     const status = (params.get('status') || '').toLowerCase();
     const paymentId =
       params.get('payment_id') || params.get('paymentId') || '';
+    const subscriptionId =
+      params.get('subscription_id') || params.get('subscriptionId') || '';
     const buy = params.get('buy');
 
     if (status === 'failed' || status === 'cancelled') {
@@ -233,21 +235,28 @@ export function PricingPage({
       return;
     }
 
-    // Real Dodo return: confirm only with payment_id (never bare "success")
-    if (
-      signedIn &&
-      user &&
-      !isPro &&
-      (status === 'succeeded' || status === 'success') &&
-      paymentId
-    ) {
+    const okStatus =
+      status === 'succeeded' || status === 'success' || status === 'active';
+    const idIsPay = /^pay_[\w-]+$/i.test(paymentId);
+    const idIsSub =
+      /^sub_[\w-]+$/i.test(subscriptionId) ||
+      /^sub_[\w-]+$/i.test(paymentId);
+
+    // Real Dodo return: payment_id (one-time) or subscription_id (Pro monthly)
+    if (signedIn && user && !isPro && okStatus && (idIsPay || idIsSub)) {
       let cancelled = false;
       setCheckoutBanner('success');
       void (async () => {
         try {
           const result = await api.post<{ user?: UserDto }>(
             '/api/billing/confirm',
-            { paymentId, status: 'succeeded' },
+            {
+              paymentId: idIsPay ? paymentId : undefined,
+              subscriptionId: idIsSub
+                ? subscriptionId || paymentId
+                : undefined,
+              status: status || 'succeeded',
+            },
           );
           if (cancelled) return;
           if (result.user) qc.setQueryData(['me'], result.user);
@@ -259,6 +268,7 @@ export function PricingPage({
             'payment_id',
             'paymentId',
             'subscription_id',
+            'subscriptionId',
             'email',
           ].forEach((k) => url.searchParams.delete(k));
           window.history.replaceState({}, '', url.pathname + url.search);
@@ -271,7 +281,7 @@ export function PricingPage({
       };
     }
 
-    if (status === 'succeeded' || status === 'success') {
+    if (okStatus) {
       setCheckoutBanner('success');
     }
   }, [signedIn, user, isPro, qc]);

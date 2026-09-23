@@ -250,102 +250,139 @@ export class BillingService {
   }
 
   /**
-   * After Dodo redirects back with ?status=succeeded&payment_id=pay_…
-   * Marks Pro only after a real payment id is present and verified with Dodo
-   * (or accepted from a signed redirect when the API key is not configured yet).
-   * Never activates from a bare client "I paid" claim with no payment_id.
+   * After Dodo redirects back:
+   *   one-time:  ?status=succeeded&payment_id=pay_…
+   *   subscription (Pro $10/mo): ?status=active&subscription_id=sub_…
+   * Marks Pro with a real pay_/sub_ id. Verifies via Dodo API when
+   * DODO_PAYMENTS_API_KEY is set; otherwise accepts the signed-in redirect
+   * (webhooks still recommended for renewals / missed redirects).
    */
   async confirmCheckoutReturn(input: {
     userId: string;
     email: string;
     paymentId?: string | null;
+    subscriptionId?: string | null;
     status?: string | null;
   }): Promise<{ ok: boolean; plan: 'free' | 'pro'; verified: boolean }> {
     const status = (input.status || '').toLowerCase();
-    if (status && status !== 'succeeded' && status !== 'success') {
+    const okStatuses = new Set(['succeeded', 'success', 'active']);
+    if (status && !okStatuses.has(status)) {
       throw new BadRequestException('Checkout did not succeed');
     }
 
-    const paymentId = input.paymentId?.trim() || '';
-    if (!paymentId || !/^pay_[\w-]+$/i.test(paymentId)) {
+    let paymentId = input.paymentId?.trim() || '';
+    let subscriptionId = input.subscriptionId?.trim() || '';
+
+    // Clients sometimes put sub_ in the paymentId field from a generic param
+    if (!subscriptionId && /^sub_[\w-]+$/i.test(paymentId)) {
+      subscriptionId = paymentId;
+      paymentId = '';
+    }
+
+    const hasPay = Boolean(paymentId && /^pay_[\w-]+$/i.test(paymentId));
+    const hasSub = Boolean(
+      subscriptionId && /^sub_[\w-]+$/i.test(subscriptionId),
+    );
+    if (!hasPay && !hasSub) {
       throw new BadRequestException(
-        'A Dodo payment_id is required to confirm Pro. Complete checkout and return from Dodo — do not mark paid manually.',
+        'A Dodo payment_id or subscription_id is required to confirm Pro. Complete checkout and return from Dodo.',
       );
     }
 
     let verified = false;
     let customerId: string | null = null;
-    let subscriptionId: string | null = null;
     let paidAt = new Date();
 
     const apiKey = process.env.DODO_PAYMENTS_API_KEY?.trim();
     if (apiKey) {
-      const res = await fetch(
-        `${this.apiBase()}/payments/${encodeURIComponent(paymentId)}`,
-        { headers: { Authorization: `Bearer ${apiKey}` } },
-      );
-      if (!res.ok) {
-        throw new BadRequestException(
-          'Could not verify this payment with Dodo. If you just paid, wait a moment and refresh — or contact support with your receipt.',
+      if (hasPay) {
+        const res = await fetch(
+          `${this.apiBase()}/payments/${encodeURIComponent(paymentId)}`,
+          { headers: { Authorization: `Bearer ${apiKey}` } },
         );
-      }
-      const pay = (await res.json()) as {
-        status?: string;
-        created_at?: string;
-        customer?: { customer_id?: string; email?: string };
-        customer_id?: string;
-        subscription_id?: string;
-        metadata?: Record<string, unknown>;
-        product_cart?: Array<{ product_id?: string }>;
-      };
-      const payStatus = (pay.status || '').toLowerCase();
-      if (payStatus && payStatus !== 'succeeded' && payStatus !== 'success') {
-        throw new BadRequestException(`Payment status is ${pay.status}`);
-      }
-      const metaUser =
-        typeof pay.metadata?.userId === 'string'
-          ? pay.metadata.userId
-          : typeof pay.metadata?.user_id === 'string'
-            ? pay.metadata.user_id
-            : null;
-      const payEmail = pay.customer?.email?.toLowerCase() || null;
-      const emailMatch =
-        payEmail && payEmail === input.email.toLowerCase();
-      const userMatch = metaUser && metaUser === input.userId;
-      if (!userMatch && !emailMatch) {
-        throw new BadRequestException(
-          'This payment does not belong to your Cupkey account',
+        if (!res.ok) {
+          throw new BadRequestException(
+            'Could not verify this payment with Dodo. If you just paid, wait a moment and refresh — or contact support with your receipt.',
+          );
+        }
+        const pay = (await res.json()) as {
+          status?: string;
+          created_at?: string;
+          customer?: { customer_id?: string; email?: string };
+          customer_id?: string;
+          subscription_id?: string;
+          metadata?: Record<string, unknown>;
+          product_cart?: Array<{ product_id?: string }>;
+        };
+        const payStatus = (pay.status || '').toLowerCase();
+        if (payStatus && !okStatuses.has(payStatus)) {
+          throw new BadRequestException(`Payment status is ${pay.status}`);
+        }
+        this.assertPaymentBelongsToUser(pay, input);
+        verified = true;
+        customerId = pay.customer_id || pay.customer?.customer_id || null;
+        if (
+          !subscriptionId &&
+          typeof pay.subscription_id === 'string'
+        ) {
+          subscriptionId = pay.subscription_id;
+        }
+        if (pay.created_at) {
+          const parsed = new Date(pay.created_at);
+          if (!Number.isNaN(parsed.getTime())) paidAt = parsed;
+        }
+      } else {
+        const res = await fetch(
+          `${this.apiBase()}/subscriptions/${encodeURIComponent(subscriptionId)}`,
+          { headers: { Authorization: `Bearer ${apiKey}` } },
         );
-      }
-      const cartProduct =
-        Array.isArray(pay.product_cart) &&
-        typeof pay.product_cart[0]?.product_id === 'string'
-          ? pay.product_cart[0].product_id
-          : null;
-      if (cartProduct && cartProduct !== this.proProductId()) {
-        throw new BadRequestException('Payment is not for Cupkey Pro');
-      }
-      verified = true;
-      customerId = pay.customer_id || pay.customer?.customer_id || null;
-      subscriptionId =
-        typeof pay.subscription_id === 'string' ? pay.subscription_id : null;
-      if (pay.created_at) {
-        const parsed = new Date(pay.created_at);
-        if (!Number.isNaN(parsed.getTime())) paidAt = parsed;
+        if (!res.ok) {
+          throw new BadRequestException(
+            'Could not verify this subscription with Dodo. If you just paid, wait a moment and refresh — or contact support with your receipt.',
+          );
+        }
+        const sub = (await res.json()) as {
+          status?: string;
+          created_at?: string;
+          customer?: { customer_id?: string; email?: string };
+          customer_id?: string;
+          subscription_id?: string;
+          metadata?: Record<string, unknown>;
+          product_id?: string;
+        };
+        const subStatus = (sub.status || '').toLowerCase();
+        if (
+          subStatus &&
+          !okStatuses.has(subStatus) &&
+          subStatus !== 'pending'
+        ) {
+          throw new BadRequestException(
+            `Subscription status is ${sub.status}`,
+          );
+        }
+        this.assertPaymentBelongsToUser(sub, input);
+        if (sub.product_id && sub.product_id !== this.proProductId()) {
+          throw new BadRequestException('Payment is not for Cupkey Pro');
+        }
+        verified = true;
+        customerId = sub.customer_id || sub.customer?.customer_id || null;
+        if (sub.created_at) {
+          const parsed = new Date(sub.created_at);
+          if (!Number.isNaN(parsed.getTime())) paidAt = parsed;
+        }
       }
     } else if (!status) {
-      // Without API key we only accept an explicit succeeded redirect + payment_id
       throw new BadRequestException(
-        'Payment verification is not configured. Set DODO_PAYMENTS_API_KEY or complete checkout so Dodo redirects with status=succeeded.',
+        'Payment verification is not configured. Set DODO_PAYMENTS_API_KEY or complete checkout so Dodo redirects with status.',
       );
     }
 
-    // Idempotent: same payment already applied
+    // Idempotent: same payment / subscription already applied
     const existing = await this.getBillingProfile(input.userId);
     if (
       existing.plan === 'pro' &&
-      existing.dodoPaymentId &&
-      existing.dodoPaymentId === paymentId
+      ((hasPay && existing.dodoPaymentId === paymentId) ||
+        (hasSub && existing.dodoSubscriptionId === subscriptionId))
     ) {
       return { ok: true, plan: 'pro', verified: true };
     }
@@ -355,14 +392,46 @@ export class BillingService {
       // Paid = locked; admin activates when AI features go live
       planStatus: 'pending_activation',
       dodoCustomerId: customerId,
-      dodoSubscriptionId: subscriptionId,
-      dodoPaymentId: paymentId,
+      dodoSubscriptionId: hasSub ? subscriptionId : null,
+      dodoPaymentId: hasPay ? paymentId : null,
       proPaidAt: paidAt,
     });
     this.logger.log(
-      `Pro paid (pending activation) for ${input.userId} payment=${paymentId} verified=${verified}`,
+      `Pro paid (pending activation) for ${input.userId} payment=${paymentId || 'n/a'} sub=${subscriptionId || 'n/a'} verified=${verified}`,
     );
     return { ok: true, plan: 'pro', verified };
+  }
+
+  private assertPaymentBelongsToUser(
+    pay: {
+      customer?: { email?: string };
+      metadata?: Record<string, unknown>;
+      product_cart?: Array<{ product_id?: string }>;
+    },
+    input: { userId: string; email: string },
+  ) {
+    const metaUser =
+      typeof pay.metadata?.userId === 'string'
+        ? pay.metadata.userId
+        : typeof pay.metadata?.user_id === 'string'
+          ? pay.metadata.user_id
+          : null;
+    const payEmail = pay.customer?.email?.toLowerCase() || null;
+    const emailMatch = payEmail && payEmail === input.email.toLowerCase();
+    const userMatch = metaUser && metaUser === input.userId;
+    if (!userMatch && !emailMatch) {
+      throw new BadRequestException(
+        'This payment does not belong to your Cupkey account',
+      );
+    }
+    const cartProduct =
+      Array.isArray(pay.product_cart) &&
+      typeof pay.product_cart[0]?.product_id === 'string'
+        ? pay.product_cart[0].product_id
+        : null;
+    if (cartProduct && cartProduct !== this.proProductId()) {
+      throw new BadRequestException('Payment is not for Cupkey Pro');
+    }
   }
 
   private extractUserId(data: Record<string, unknown>): string | null {
