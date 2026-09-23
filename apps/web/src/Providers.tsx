@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ClerkProvider } from '@clerk/clerk-react';
 import { App } from './AppRoot';
 import { StoreProvider } from './store/StoreProvider';
+import { ThemeProvider } from './theme';
 
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(
@@ -26,7 +27,9 @@ export function Providers({ children }: { children: ReactNode }) {
   const tree = (
     <StoreProvider>
       <QueryClientProvider client={queryClient}>
-        <App>{children}</App>
+        <ThemeProvider>
+          <App>{children}</App>
+        </ThemeProvider>
       </QueryClientProvider>
     </StoreProvider>
   );

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useClerk } from '@clerk/clerk-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
+import { UiTooltip } from '../components/ui-hints/UiTooltip';
 
 /** Isolated module so Clerk hooks share the same React instance as the app. */
 export function ClerkLogout({ onLoggedOut }: { onLoggedOut: () => void }) {
@@ -32,18 +33,18 @@ export function ClerkLogout({ onLoggedOut }: { onLoggedOut: () => void }) {
   };
 
   return (
-    <button
-      className="btn btn-ghost sidebar-logout"
-      type="button"
-      aria-label="Log out"
-      title="Log out"
-      disabled={busy}
-      onClick={() => void logout()}
-    >
-      <span className="nav-icon" aria-hidden>
-        ↩
-      </span>
-      <span className="nav-tooltip">Log out</span>
-    </button>
+    <UiTooltip label="Log out" placement="right" className="nav-tip-wrap">
+      <button
+        className="btn btn-ghost sidebar-logout"
+        type="button"
+        aria-label="Log out"
+        disabled={busy}
+        onClick={() => void logout()}
+      >
+        <span className="nav-icon" aria-hidden>
+          ↩
+        </span>
+      </button>
+    </UiTooltip>
   );
 }

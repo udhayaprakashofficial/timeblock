@@ -6,7 +6,13 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { CalendarProvider } from '@prisma/client';
-import type { AuthConfigDto, ThemePreference, UserDto } from '@timeblock/shared-types';
+import type {
+  AuthConfigDto,
+  TaskDto,
+  ThemePreference,
+  UserDto,
+  Weekday,
+} from '@timeblock/shared-types';
 import { PrismaService } from '../prisma/prisma.service';
 import { LocalUserStore } from '../auth/local-user.store';
 import { LocalDataStore } from '../auth/local-data.store';
@@ -16,6 +22,9 @@ import { CryptoService } from '../crypto/crypto.service';
 import { createId } from '../supabase/create-id';
 import { normalizeTimeZone, todayInTimeZone } from '../common/time.util';
 import { SchedulerService } from '../tasks/scheduler.service';
+import { TasksService } from '../tasks/tasks.service';
+import { ScheduleTemplatesService } from '../schedule/schedule.service';
+import { BrevoMailService } from '../mail/brevo-mail.service';
 
 @Injectable()
 export class UsersService {
@@ -29,7 +38,83 @@ export class UsersService {
     private readonly authService: AuthService,
     @Inject(forwardRef(() => SchedulerService))
     private readonly scheduler: SchedulerService,
+    @Inject(forwardRef(() => TasksService))
+    private readonly tasks: TasksService,
+    private readonly schedule: ScheduleTemplatesService,
+    private readonly mail: BrevoMailService,
   ) {}
+
+  /**
+   * Single round-trip for onboarding finish: mark complete, save schedule,
+   * seed today's tasks (+ recurring templates). Much faster than N client calls.
+   */
+  async finishOnboarding(
+    userId: string,
+    body: {
+      weekdays?: number[];
+      workStart?: string;
+      workEnd?: string;
+      breaks?: Array<{ name: string; start: string; end: string }>;
+      tasks?: Array<{
+        name: string;
+        estimatedMinutes: number;
+        recurring?: boolean;
+      }>;
+      createTasks?: boolean;
+      /** Browser IANA zone — must be set before seeding so tasks land on the user's civil today */
+      timezone?: string;
+    },
+  ): Promise<{ user: UserDto; tasks: TaskDto[] }> {
+    const weekdays = (
+      Array.isArray(body.weekdays) && body.weekdays.length
+        ? body.weekdays
+        : [1, 2, 3, 4, 5]
+    ).filter((d) => d >= 0 && d <= 6) as Weekday[];
+
+    const tz = body.timezone?.trim()
+      ? normalizeTimeZone(body.timezone)
+      : undefined;
+
+    // Set timezone BEFORE seeding — otherwise UTC "today" can be yesterday in IST
+    // and tasks get carried into backlog while the plan looks empty.
+    const user = await this.updateProfile(userId, {
+      onboardingCompleted: true,
+      ...(tz ? { timezone: tz } : {}),
+    });
+
+    try {
+      await this.schedule.upsertSelectedDays(userId, weekdays, {
+        workStart: body.workStart?.trim() || '09:00',
+        workEnd: body.workEnd?.trim() || '18:00',
+        breaks: (body.breaks ?? [])
+          .filter((b) => b?.name?.trim())
+          .map((b) => ({
+            name: b.name.trim(),
+            start: b.start || '12:00',
+            end: b.end || '13:00',
+          })),
+      });
+    } catch (err) {
+      console.warn(
+        '[onboarding] schedule save failed',
+        err instanceof Error ? err.message : err,
+      );
+    }
+
+    let tasks: TaskDto[] = [];
+    if (body.createTasks !== false && Array.isArray(body.tasks) && body.tasks.length) {
+      try {
+        tasks = await this.tasks.seedOnboarding(userId, body.tasks, weekdays);
+      } catch (err) {
+        console.warn(
+          '[onboarding] task seed failed',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    return { user: { ...user, onboardingCompleted: true }, tasks };
+  }
 
   authConfig(): AuthConfigDto {
     const googleOAuth = Boolean(
@@ -59,12 +144,21 @@ export class UsersService {
     if (userId.startsWith('local_')) {
       const local = this.localUsers.findById(userId);
       if (!local) throw new NotFoundException('User not found');
-      return this.dtoFromParts(
-        {
-          ...local,
-          onboardingCompleted: local.onboardingCompleted !== false,
-        },
-        local.connectedProviders,
+      const overlay = this.localUsers.getOnboardingCompleted(userId);
+      return this.finalizeOnboardingFlag(
+        this.dtoFromParts(
+          {
+            ...local,
+            onboardingCompleted:
+              local.onboardingCompleted === true || overlay === true
+                ? true
+                : local.onboardingCompleted === false
+                  ? false
+                  : undefined,
+          },
+          local.connectedProviders,
+        ),
+        userId,
       );
     }
     try {
@@ -73,19 +167,116 @@ export class UsersService {
         include: { oauthAccounts: true },
       });
       if (!user) throw new NotFoundException('User not found');
-      return this.toDto(user);
+      return this.finalizeOnboardingFlag(this.toDto(user), userId);
     } catch (err) {
       if (err instanceof NotFoundException) throw err;
       if (this.supabase.isConfigured()) {
         const user = await this.supabase.getUserById(userId);
         if (user) {
           const providers = await this.supabase.listOAuthProviders(user.id);
-          return this.dtoFromParts(user, providers);
+          return this.finalizeOnboardingFlag(
+            this.dtoFromParts(user, providers),
+            userId,
+          );
         }
         throw new NotFoundException('User not found');
       }
       throw err;
     }
+  }
+
+  /**
+   * Onboarding is only for brand-new signups.
+   * Existing / returning accounts never re-enter setup.
+   */
+  private async finalizeOnboardingFlag(
+    dto: UserDto,
+    userId: string,
+  ): Promise<UserDto> {
+    if (dto.onboardingCompleted === true) {
+      this.localUsers.setOnboardingCompleted(userId, true);
+      return dto;
+    }
+    if (this.localUsers.getOnboardingCompleted(userId) === true) {
+      return { ...dto, onboardingCompleted: true };
+    }
+    // Account already has work — treat as finished even if the flag was wrong
+    if (await this.userHasAnyTasks(userId)) {
+      await this.persistOnboardingCompleted(userId);
+      return { ...dto, onboardingCompleted: true };
+    }
+    return dto;
+  }
+
+  /** Returning logins skip onboarding (signup-only flow). */
+  private async markReturningUserOnboarded(dto: UserDto): Promise<UserDto> {
+    if (dto.onboardingCompleted === true) return dto;
+    await this.persistOnboardingCompleted(dto.id);
+    return { ...dto, onboardingCompleted: true };
+  }
+
+  private async persistOnboardingCompleted(userId: string): Promise<void> {
+    this.localUsers.setOnboardingCompleted(userId, true);
+    if (userId.startsWith('local_')) {
+      const local = this.localUsers.findById(userId);
+      if (local) {
+        local.onboardingCompleted = true;
+        this.localUsers.save(local);
+      }
+      return;
+    }
+    try {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { onboardingCompleted: true },
+      });
+    } catch {
+      /* REST */
+    }
+    if (this.supabase.isConfigured()) {
+      try {
+        await this.supabase.patch('User', `id=eq.${userId}`, {
+          onboardingCompleted: true,
+          updatedAt: new Date().toISOString(),
+        });
+      } catch {
+        /* column may be missing */
+      }
+    }
+  }
+
+  private async userHasAnyTasks(userId: string): Promise<boolean> {
+    if (userId.startsWith('local_')) {
+      try {
+        if (this.localData.listBacklog(userId).length > 0) return true;
+        const tz = await this.getTimeZone(userId);
+        const today = todayInTimeZone(tz);
+        return this.localData.listTasks(userId, today).length > 0;
+      } catch {
+        return false;
+      }
+    }
+    try {
+      const row = await this.prisma.task.findFirst({
+        where: { userId },
+        select: { id: true },
+      });
+      return Boolean(row);
+    } catch {
+      /* REST */
+    }
+    if (this.supabase.isConfigured()) {
+      try {
+        const rows = await this.supabase.select('Task', 'id', {
+          filter: `userId=eq.${userId}`,
+          limit: 1,
+        });
+        return rows.length > 0;
+      } catch {
+        return false;
+      }
+    }
+    return false;
   }
 
   /** Resolve IANA timezone for scheduling (falls back to UTC). */
@@ -130,9 +321,11 @@ export class UsersService {
       throw new BadRequestException('Missing Google profile or access token');
     }
 
-    const viaRest = async (): Promise<UserDto> => {
+    const viaRest = async (): Promise<{ dto: UserDto; isNew: boolean }> => {
       if (!this.supabase.isConfigured()) throw new Error('REST not configured');
       await this.supabase.ping();
+      const prior = await this.supabase.getUserByEmail(email);
+      const isNew = !prior;
       const user = await this.supabase.upsertGoogleUser({
         email,
         name,
@@ -143,18 +336,26 @@ export class UsersService {
           : null,
       });
       const providers = await this.supabase.listOAuthProviders(user.id);
-      try {
-        await this.seedDefaultScheduleRest(user.id);
-      } catch (e) {
-        console.warn('[auth] schedule seed via REST failed', e);
+      if (isNew) {
+        try {
+          await this.seedDefaultScheduleRest(user.id);
+        } catch (e) {
+          console.warn('[auth] schedule seed via REST failed', e);
+        }
       }
-      return this.dtoFromParts(user, providers);
+      return { dto: this.dtoFromParts(user, providers), isNew };
     };
 
     // Prefer Supabase HTTPS REST when keys are set (works without Postgres :5432)
     if (this.supabase.isConfigured()) {
       try {
-        return await viaRest();
+        const { dto, isNew } = await viaRest();
+        if (isNew) {
+          this.notifyWelcome(email, name);
+          return { ...dto, onboardingCompleted: false };
+        }
+        // Existing Google account — never re-show first-time setup
+        return this.markReturningUserOnboarded(dto);
       } catch (restErr) {
         console.warn(
           '[auth] Supabase REST failed — trying Prisma',
@@ -164,6 +365,8 @@ export class UsersService {
     }
 
     try {
+      const prior = await this.prisma.user.findUnique({ where: { email } });
+      const isNew = !prior;
       const user = await this.authService.upsertOAuthUser({
         provider: CalendarProvider.google,
         providerAccountId: googleId,
@@ -171,9 +374,13 @@ export class UsersService {
         name,
         accessToken,
         refreshToken: input.refreshToken,
-        scope: 'calendar.readonly email profile',
+        scope: 'calendar.readonly gmail.send email profile',
       });
-      return this.getMe(user.id);
+      if (isNew) {
+        this.notifyWelcome(email, name);
+        return { ...(await this.getMe(user.id)), onboardingCompleted: false };
+      }
+      return this.markReturningUserOnboarded(await this.getMe(user.id));
     } catch (err) {
       console.error(
         '[auth] Google login failed against Supabase',
@@ -247,6 +454,13 @@ export class UsersService {
         : {}),
     };
 
+    if (body.onboardingCompleted !== undefined) {
+      this.localUsers.setOnboardingCompleted(
+        userId,
+        Boolean(body.onboardingCompleted),
+      );
+    }
+
     if (userId.startsWith('local_')) {
       const local = this.localUsers.findById(userId);
       if (!local) throw new NotFoundException('User not found');
@@ -296,9 +510,15 @@ export class UsersService {
     prevTz: string | undefined,
     tz: string | undefined,
   ) {
-    if (!tz || !prevTz || tz === prevTz || userId.startsWith('local_')) return;
+    if (!tz || !prevTz || tz === prevTz) return;
     try {
-      await this.scheduler.rescheduleDay(userId, todayInTimeZone(tz));
+      const oldToday = todayInTimeZone(prevTz);
+      const newToday = todayInTimeZone(tz);
+      if (oldToday !== newToday) {
+        // Civil date shifted (e.g. UTC→IST overnight): move unfinished work onto the new today
+        await this.tasks.moveUnfinishedDayToDate(userId, oldToday, newToday);
+      }
+      await this.scheduler.rescheduleDayPreferRest(userId, newToday);
     } catch (err) {
       console.warn(
         '[users] reschedule after timezone change failed',
@@ -399,6 +619,18 @@ export class UsersService {
     }
   }
 
+  private queueWelcome(email: string, name?: string) {
+    void this.mail
+      .sendWelcomeEmail({ toEmail: email, toName: name })
+      .catch(() => undefined);
+  }
+
+  private notifyWelcome(email: string, name?: string) {
+    void this.mail
+      .sendWelcomeEmail({ toEmail: email, toName: name })
+      .catch(() => undefined);
+  }
+
   async signupWithPassword(input: {
     email: string;
     password: string;
@@ -432,6 +664,7 @@ export class UsersService {
         } catch {
           /* optional */
         }
+        this.notifyWelcome(email, name);
         return {
           ...this.dtoFromParts(user, []),
           onboardingCompleted: false,
@@ -454,6 +687,7 @@ export class UsersService {
         data: { email, name, passwordHash, onboardingCompleted: false },
         include: { oauthAccounts: true },
       });
+      this.notifyWelcome(email, name);
       return this.toDto(user);
     } catch (err) {
       if (err instanceof BadRequestException) throw err;
@@ -476,6 +710,7 @@ export class UsersService {
     } catch {
       /* optional */
     }
+    this.notifyWelcome(email, name);
     return {
       ...this.dtoFromParts(local, local.connectedProviders),
       onboardingCompleted: false,
@@ -498,7 +733,9 @@ export class UsersService {
         const user = await this.supabase.getUserByEmail(email);
         if (user?.passwordHash && this.crypto.verifyPassword(password, user.passwordHash)) {
           const providers = await this.supabase.listOAuthProviders(user.id);
-          return this.dtoFromParts(user, providers);
+          return this.markReturningUserOnboarded(
+            this.dtoFromParts(user, providers),
+          );
         }
         if (user && !user.passwordHash) {
           throw new BadRequestException(
@@ -523,7 +760,7 @@ export class UsersService {
         include: { oauthAccounts: true },
       });
       if (user?.passwordHash && this.crypto.verifyPassword(password, user.passwordHash)) {
-        return this.toDto(user);
+        return this.markReturningUserOnboarded(this.toDto(user));
       }
       if (user && !user.passwordHash) {
         throw new BadRequestException(
@@ -539,7 +776,9 @@ export class UsersService {
 
     const local = this.localUsers.findByEmail(email);
     if (local?.passwordHash && this.crypto.verifyPassword(password, local.passwordHash)) {
-      return this.dtoFromParts(local, local.connectedProviders);
+      return this.markReturningUserOnboarded(
+        this.dtoFromParts(local, local.connectedProviders),
+      );
     }
     if (local && !local.passwordHash) {
       throw new BadRequestException(
@@ -593,7 +832,8 @@ export class UsersService {
         Number(user.defaultTaskMinutes) >= 5
           ? Math.round(Number(user.defaultTaskMinutes))
           : 30,
-      // Missing field (older rows / REST without column) → already onboarded
+      // Explicit false = first-time signup still in setup.
+      // Missing/null/true = done (legacy rows never re-enter onboarding).
       onboardingCompleted: user.onboardingCompleted !== false,
       connectedProviders: providers as UserDto['connectedProviders'],
     };

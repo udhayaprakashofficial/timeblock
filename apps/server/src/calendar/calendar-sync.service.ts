@@ -359,6 +359,111 @@ export class CalendarSyncService {
     return oauth2;
   }
 
+  /**
+   * Send email from the user's connected Google / Gmail account.
+   * Requires gmail.send scope (re-sign-in with Google if missing).
+   */
+  async sendGmailAsUser(
+    userId: string,
+    input: {
+      toEmail: string;
+      subject: string;
+      textBody: string;
+      htmlBody?: string;
+      fromName?: string;
+      fromEmail?: string;
+    },
+  ): Promise<{ ok: true } | { ok: false; error: string; needsReconnect?: boolean }> {
+    const auth = await this.getGoogleClient(userId);
+    if (!auth) {
+      return {
+        ok: false,
+        needsReconnect: true,
+        error:
+          'Connect Google (Sign in with Google) so Cupkey can send from your Gmail.',
+      };
+    }
+
+    const to = input.toEmail.trim().toLowerCase();
+    const fromEmail = (input.fromEmail || '').trim().toLowerCase();
+    const fromName = (input.fromName || '').trim().slice(0, 80);
+    const subject = input.subject.replace(/[\r\n]+/g, ' ').slice(0, 200);
+
+    const fromHeader = fromEmail
+      ? fromName
+        ? `${rfc5322Atom(fromName)} <${fromEmail}>`
+        : fromEmail
+      : undefined;
+
+    const boundary = `cupkey_${Date.now().toString(36)}`;
+    const lines = [
+      `To: ${to}`,
+      ...(fromHeader ? [`From: ${fromHeader}`] : []),
+      `Subject: ${encodeSubject(subject)}`,
+      'MIME-Version: 1.0',
+    ];
+
+    if (input.htmlBody?.trim()) {
+      lines.push(`Content-Type: multipart/alternative; boundary="${boundary}"`, '');
+      lines.push(`--${boundary}`);
+      lines.push('Content-Type: text/plain; charset="UTF-8"', '');
+      lines.push(input.textBody);
+      lines.push(`--${boundary}`);
+      lines.push('Content-Type: text/html; charset="UTF-8"', '');
+      lines.push(input.htmlBody);
+      lines.push(`--${boundary}--`);
+    } else {
+      lines.push('Content-Type: text/plain; charset="UTF-8"', '');
+      lines.push(input.textBody);
+    }
+
+    const raw = Buffer.from(lines.join('\r\n'))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+
+    try {
+      const gmail = google.gmail({ version: 'v1', auth });
+      await gmail.users.messages.send({
+        userId: 'me',
+        requestBody: { raw },
+      });
+      return { ok: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Gmail send failed for ${userId}: ${msg.slice(0, 280)}`);
+      if (
+        /insufficient|Insufficient Permission|ACCESS_TOKEN_SCOPE|gmail\.send|Request had insufficient/i.test(
+          msg,
+        )
+      ) {
+        return {
+          ok: false,
+          needsReconnect: true,
+          error:
+            'Gmail permission missing. Sign out and Sign in with Google again to allow sending from your account.',
+        };
+      }
+      if (/Gmail API has not been used|ACCESS_NOT_CONFIGURED|gmail\.googleapis/i.test(msg)) {
+        return {
+          ok: false,
+          error:
+            'Gmail API is not enabled for this Google Cloud project. Enable Gmail API, then try again.',
+        };
+      }
+      if (/invalid_grant|Token has been expired|invalid authentication/i.test(msg)) {
+        return {
+          ok: false,
+          needsReconnect: true,
+          error:
+            'Google access expired. Sign in with Google again, then send the timesheet.',
+        };
+      }
+      return { ok: false, error: `Could not send from Gmail: ${msg.slice(0, 180)}` };
+    }
+  }
+
   private async syncGoogle(userId: string) {
     const auth = await this.getGoogleClient(userId);
     if (!auth) return;
@@ -562,4 +667,16 @@ export class CalendarSyncService {
     );
     return json.access_token;
   }
+}
+
+function rfc5322Atom(name: string): string {
+  // Quote display names that need it
+  if (/^[\w .'-]+$/u.test(name) && !/[\\"]/.test(name)) return name;
+  return `"${name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function encodeSubject(subject: string): string {
+  // Encode non-ASCII subject lines for MIME
+  if (/^[\x20-\x7E]*$/.test(subject)) return subject;
+  return `=?UTF-8?B?${Buffer.from(subject, 'utf8').toString('base64')}?=`;
 }

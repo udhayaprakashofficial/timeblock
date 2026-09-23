@@ -10,6 +10,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type {
+  CreateRecurringTaskDto,
   CreateTaskDto,
   ReorderTasksDto,
   ScheduleBacklogTaskDto,
@@ -27,6 +28,24 @@ export class TasksController {
   @Get('backlog')
   listBacklog(@CurrentUserId() userId: string) {
     return this.tasksService.listBacklog(userId);
+  }
+
+  @Get('recurring')
+  listRecurring(@CurrentUserId() userId: string) {
+    return this.tasksService.listRecurring(userId);
+  }
+
+  @Post('recurring')
+  createRecurring(
+    @CurrentUserId() userId: string,
+    @Body() body: CreateRecurringTaskDto,
+  ) {
+    return this.tasksService.createRecurring(userId, body);
+  }
+
+  @Delete('recurring/:id')
+  deleteRecurring(@CurrentUserId() userId: string, @Param('id') id: string) {
+    return this.tasksService.deleteRecurring(userId, id);
   }
 
   @Get()

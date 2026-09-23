@@ -10,6 +10,7 @@ import { LocalUserStore } from './local-user.store';
 import { LocalDataStore } from './local-data.store';
 import { UsersModule } from '../users/users.module';
 import { CalendarModule } from '../calendar/calendar.module';
+import { MailModule } from '../mail/mail.module';
 
 const oauthProviders = [];
 if (
@@ -24,6 +25,7 @@ if (
     PassportModule.register({ session: false }),
     forwardRef(() => UsersModule),
     forwardRef(() => CalendarModule),
+    MailModule,
   ],
   providers: [
     AuthService,

@@ -5,6 +5,7 @@ import { resolve } from 'path';
 import type {
   CreateTaskDto,
   DailyScheduleTemplateDto,
+  RecurringTaskDto,
   StatsOverviewDto,
   TaskDto,
   UpsertScheduleTemplateDto,
@@ -39,6 +40,7 @@ type LocalTask = {
   scheduleLocked?: boolean;
   meetLink?: string | null;
   sourceProvider?: string | null;
+  sourceExternalId?: string | null;
   notes?: string | null;
   inBacklog?: boolean;
 };
@@ -54,9 +56,19 @@ type LocalTemplate = {
   breaks: LocalBreak[];
 };
 
+type LocalRecurring = {
+  id: string;
+  userId: string;
+  name: string;
+  estimatedMinutes: number;
+  weekdays: Weekday[];
+  active: boolean;
+};
+
 type StoreFile = {
   tasks: LocalTask[];
   schedules: LocalTemplate[];
+  recurring?: LocalRecurring[];
 };
 
 @Injectable()
@@ -65,11 +77,16 @@ export class LocalDataStore {
   private readonly file = resolve(this.dir, 'local-app.json');
 
   private read(): StoreFile {
-    if (!existsSync(this.file)) return { tasks: [], schedules: [] };
+    if (!existsSync(this.file)) return { tasks: [], schedules: [], recurring: [] };
     try {
-      return JSON.parse(readFileSync(this.file, 'utf8')) as StoreFile;
+      const raw = JSON.parse(readFileSync(this.file, 'utf8')) as StoreFile;
+      return {
+        tasks: raw.tasks ?? [],
+        schedules: raw.schedules ?? [],
+        recurring: raw.recurring ?? [],
+      };
     } catch {
-      return { tasks: [], schedules: [] };
+      return { tasks: [], schedules: [], recurring: [] };
     }
   }
 
@@ -230,6 +247,44 @@ export class LocalDataStore {
     return count;
   }
 
+  /** Move unfinished (incl. backlog) tasks from fromDate onto toDate for packing. */
+  moveUnfinishedDayToDate(
+    userId: string,
+    fromDate: string,
+    toDate: string,
+  ): number {
+    if (!fromDate || !toDate || fromDate === toDate) return 0;
+    const db = this.read();
+    const dayTasks = db.tasks.filter(
+      (x) => x.userId === userId && x.date === toDate && !x.inBacklog,
+    );
+    let order =
+      dayTasks.reduce((max, x) => Math.max(max, x.order), -1) + 1;
+    let count = 0;
+    for (const t of db.tasks) {
+      if (
+        t.userId !== userId ||
+        t.date !== fromDate ||
+        t.scheduleLocked ||
+        t.status === 'completed'
+      ) {
+        continue;
+      }
+      t.date = toDate;
+      t.inBacklog = false;
+      t.scheduledStart = null;
+      t.scheduledEnd = null;
+      t.scheduleLocked = false;
+      t.order = order++;
+      count += 1;
+    }
+    if (count) {
+      this.write(db);
+      this.rescheduleDay(userId, toDate);
+    }
+    return count;
+  }
+
   scheduleFromBacklog(userId: string, taskId: string, dateStr: string): TaskDto {
     const db = this.read();
     const t = db.tasks.find((x) => x.id === taskId && x.userId === userId);
@@ -253,9 +308,20 @@ export class LocalDataStore {
     scheduledStart?: Date | string | null;
     scheduledEnd?: Date | string | null;
     scheduleLocked?: boolean;
+    sourceProvider?: string | null;
+    sourceExternalId?: string | null;
   }): TaskDto {
     this.ensureDefaultSchedule(userId);
     const db = this.read();
+    if (dto.sourceProvider && dto.sourceExternalId) {
+      const existing = db.tasks.find(
+        (t) =>
+          t.userId === userId &&
+          t.sourceProvider === dto.sourceProvider &&
+          t.sourceExternalId === dto.sourceExternalId,
+      );
+      if (existing) return this.toDto(existing);
+    }
     const dayTasks = db.tasks.filter(
       (t) => t.userId === userId && t.date === dto.date && !t.inBacklog,
     );
@@ -283,6 +349,8 @@ export class LocalDataStore {
       scheduledStart,
       scheduledEnd,
       scheduleLocked,
+      sourceProvider: dto.sourceProvider ?? null,
+      sourceExternalId: dto.sourceExternalId ?? null,
       notes: null,
       inBacklog: false,
       actualMinutes: 0,
@@ -294,6 +362,86 @@ export class LocalDataStore {
     return this.toDto(
       this.read().tasks.find((t) => t.id === task.id)!,
     );
+  }
+
+  listRecurring(userId: string): RecurringTaskDto[] {
+    return (this.read().recurring ?? [])
+      .filter((r) => r.userId === userId)
+      .map((r) => ({
+        id: r.id,
+        name: r.name,
+        estimatedMinutes: r.estimatedMinutes,
+        weekdays: r.weekdays,
+        active: r.active,
+      }));
+  }
+
+  createRecurring(
+    userId: string,
+    input: {
+      name: string;
+      estimatedMinutes: number;
+      weekdays: Weekday[];
+      active?: boolean;
+    },
+  ): RecurringTaskDto {
+    const db = this.read();
+    if (!db.recurring) db.recurring = [];
+    const row: LocalRecurring = {
+      id: `lrec_${randomBytes(8).toString('hex')}`,
+      userId,
+      name: input.name.trim(),
+      estimatedMinutes: Math.max(5, Math.min(480, input.estimatedMinutes || 30)),
+      weekdays: [...new Set(input.weekdays)].sort() as Weekday[],
+      active: input.active !== false,
+    };
+    db.recurring.push(row);
+    this.write(db);
+    return {
+      id: row.id,
+      name: row.name,
+      estimatedMinutes: row.estimatedMinutes,
+      weekdays: row.weekdays,
+      active: row.active,
+    };
+  }
+
+  deleteRecurring(userId: string, id: string): void {
+    const db = this.read();
+    db.recurring = (db.recurring ?? []).filter(
+      (r) => !(r.id === id && r.userId === userId),
+    );
+    this.write(db);
+  }
+
+  /** Create today's instances for active templates matching the weekday. */
+  materializeRecurring(userId: string, dateStr: string): number {
+    const day = new Date(`${dateStr}T12:00:00`);
+    if (Number.isNaN(day.getTime())) return 0;
+    const weekday = day.getDay() as Weekday;
+    const templates = this.listRecurring(userId).filter(
+      (t) => t.active && t.weekdays.includes(weekday),
+    );
+    let created = 0;
+    for (const t of templates) {
+      const externalId = `${t.id}:${dateStr}`;
+      const before = this.read().tasks.find(
+        (x) =>
+          x.userId === userId &&
+          x.sourceProvider === 'recurring' &&
+          x.sourceExternalId === externalId,
+      );
+      if (before) continue;
+      this.createTask(userId, {
+        date: dateStr,
+        name: t.name,
+        estimatedMinutes: t.estimatedMinutes,
+        sourceProvider: 'recurring',
+        sourceExternalId: externalId,
+      });
+      created += 1;
+    }
+    return created;
   }
 
   reorderTasks(userId: string, dateStr: string, taskIds: string[]): TaskDto[] {
@@ -416,6 +564,9 @@ export class LocalDataStore {
     if (!t) throw new Error('Task not found');
     if (t.status === 'completed') throw new Error('Task already completed');
     if (t.activeEntryId) throw new Error('Timer already running for this task');
+    // Block timers for future civil days (UTC fallback — local store has no user TZ)
+    const todayUtc = new Date().toISOString().slice(0, 10);
+    if (t.date > todayUtc) throw new Error('Cannot start a timer on a future day');
     // Stop any other running timers for this user
     for (const other of db.tasks) {
       if (other.userId !== userId || other.id === taskId) continue;
@@ -755,6 +906,7 @@ export class LocalDataStore {
       scheduleLocked: Boolean(t.scheduleLocked),
       meetLink: t.meetLink ?? null,
       sourceProvider: t.sourceProvider ?? null,
+      sourceExternalId: t.sourceExternalId ?? null,
       notes: t.notes ?? null,
       inBacklog: Boolean(t.inBacklog),
     };

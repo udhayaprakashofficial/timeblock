@@ -134,6 +134,53 @@ export class ScheduleTemplatesService {
     }
   }
 
+  /**
+   * Onboarding: write selected weekdays once, then a single reschedule.
+   * Avoids N× reschedule cost of calling upsert per weekday.
+   */
+  async upsertSelectedDays(
+    userId: string,
+    weekdays: Weekday[],
+    dto: Omit<UpsertScheduleTemplateDto, 'weekday'>,
+  ): Promise<DailyScheduleTemplateDto[]> {
+    const days = [...new Set(weekdays)].filter((d) => d >= 0 && d <= 6) as Weekday[];
+    if (!days.length) return [];
+
+    const fromDb = await this.viaDb(userId, async (id) => {
+      const rows: DailyScheduleTemplateDto[] = [];
+      await Promise.all(
+        days.map(async (weekday) => {
+          const row = await this.supabase.upsertSchedule(id, {
+            ...dto,
+            weekday,
+          });
+          rows.push(row as DailyScheduleTemplateDto);
+        }),
+      );
+      await this.rescheduleAfter(id);
+      return rows;
+    });
+    if (fromDb !== null) return fromDb;
+
+    if (userId.startsWith('local_')) {
+      return days.map((weekday) =>
+        this.local.upsertSchedule(userId, { ...dto, weekday }),
+      );
+    }
+    try {
+      const rows: DailyScheduleTemplateDto[] = [];
+      for (const weekday of days) {
+        rows.push(await this.writeTemplate(userId, { ...dto, weekday }));
+      }
+      await this.rescheduleUpcoming(userId);
+      return rows;
+    } catch {
+      return days.map((weekday) =>
+        this.local.upsertSchedule(userId, { ...dto, weekday }),
+      );
+    }
+  }
+
   async applyToAllDays(
     userId: string,
     dto: Omit<UpsertScheduleTemplateDto, 'weekday'>,

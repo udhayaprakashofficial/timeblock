@@ -54,6 +54,48 @@ export class UsersController {
     return res.json(me);
   }
 
+  /** One-shot onboarding finish — schedule + tasks + completed flag. */
+  @Post('me/finish-onboarding')
+  async finishOnboarding(
+    @Req() req: Request,
+    @Res() res: Response,
+    @Body()
+    body: {
+      weekdays?: number[];
+      workStart?: string;
+      workEnd?: string;
+      breaks?: Array<{ name: string; start: string; end: string }>;
+      tasks?: Array<{
+        name: string;
+        estimatedMinutes: number;
+        recurring?: boolean;
+      }>;
+      createTasks?: boolean;
+      timezone?: string;
+    },
+  ) {
+    const userId = req.session?.userId;
+    if (!userId) {
+      return res.status(401).json({ message: 'Not authenticated' });
+    }
+    try {
+      const result = await this.usersService.finishOnboarding(userId, body ?? {});
+      return res.json(result);
+    } catch (err) {
+      if (err instanceof HttpException) {
+        const raw = err.getResponse();
+        const message =
+          typeof raw === 'string'
+            ? raw
+            : Array.isArray((raw as { message?: unknown }).message)
+              ? String((raw as { message: string[] }).message[0])
+              : String((raw as { message?: string }).message ?? err.message);
+        return res.status(err.getStatus()).json({ message });
+      }
+      throw err;
+    }
+  }
+
   @Post('me/password')
   async changePassword(
     @Req() req: Request,

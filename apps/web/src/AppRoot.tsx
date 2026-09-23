@@ -7,24 +7,27 @@ import {
   useEffect,
   useMemo,
   useState,
+  useRef,
   lazy,
   Suspense,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ThemePreference, UserDto } from '@timeblock/shared-types';
-import { api, detectBrowserTimeZone, AUTH_LOST_EVENT } from './api';
-import { ThemeProvider, useTheme } from './theme';
+import { api, detectBrowserTimeZone, AUTH_LOST_EVENT, todayISO } from './api';
+import { ThemeForceLight, ThemeSeed, useTheme } from './theme';
 import { RightPanel } from './components/RightPanel';
 import { TopbarPulse } from './components/TopbarPulse';
 import { TopbarSearch } from './components/TopbarSearch';
 import { CupkeyLogo } from './components/CupkeyLogo';
-import { ContextTipBanner } from './components/ui-hints';
 import { HINTS } from './components/ui-hints/hints';
+import { UiTooltip } from './components/ui-hints/UiTooltip';
 import { onAvatarChange, readAvatar } from './components/user-avatar';
 import { LoginScreen } from './auth/SignInCard';
 import { UserProvider } from './user-context';
 import { DataBootstrap } from './store/DataBootstrap';
+import { useAppSelector } from './store/hooks';
 import { OnboardingFlow } from './views/OnboardingFlow';
 import './auth/auth.css';
 
@@ -32,6 +35,40 @@ import './auth/auth.css';
 const loginCodeInflight = new Map<string, Promise<UserDto>>();
 
 const AUTH_USER_KEY = 'timeblock.sessionUser';
+const ONBOARD_DONE_PREFIX = 'tb.onboardingDone.';
+
+function onboardDoneKey(userId: string) {
+  return ONBOARD_DONE_PREFIX + userId;
+}
+
+function markOnboardingDone(userId: string) {
+  try {
+    localStorage.setItem(onboardDoneKey(userId), '1');
+    sessionStorage.setItem(onboardDoneKey(userId), '1');
+  } catch {
+    /* ignore */
+  }
+}
+
+function readOnboardingDone(userId: string): boolean {
+  try {
+    return (
+      localStorage.getItem(onboardDoneKey(userId)) === '1' ||
+      sessionStorage.getItem(onboardDoneKey(userId)) === '1'
+    );
+  } catch {
+    return false;
+  }
+}
+
+function clearOnboardingDone(userId: string) {
+  try {
+    localStorage.removeItem(onboardDoneKey(userId));
+    sessionStorage.removeItem(onboardDoneKey(userId));
+  } catch {
+    /* ignore */
+  }
+}
 
 const ClerkLogoutLazy = lazy(() =>
   import('./auth/ClerkLogout').then((m) => ({ default: m.ClerkLogout })),
@@ -49,6 +86,9 @@ function isValidUser(value: unknown): value is UserDto {
 }
 
 function normalizeUser(user: UserDto): UserDto {
+  const stickyDone = readOnboardingDone(user.id);
+  const completed = user.onboardingCompleted === true || stickyDone;
+  if (completed) markOnboardingDone(user.id);
   return {
     ...user,
     theme: user.theme === 'dark' ? 'dark' : 'light',
@@ -57,12 +97,12 @@ function normalizeUser(user: UserDto): UserDto {
       Number.isFinite(user.defaultTaskMinutes) && user.defaultTaskMinutes >= 5
         ? Math.round(user.defaultTaskMinutes)
         : 30,
-    onboardingCompleted: user.onboardingCompleted !== false,
+    onboardingCompleted: completed,
   };
 }
 
 function needsOnboarding(user: UserDto | null | undefined): boolean {
-  return Boolean(user && user.onboardingCompleted === false);
+  return Boolean(user && user.onboardingCompleted !== true);
 }
 
 function readCachedUser(): UserDto | null {
@@ -115,74 +155,152 @@ function NavItem({
 }) {
   const pathname = usePathname();
   const active = exact ? pathname === href : pathname.startsWith(href);
-  return (
+  const link = (
     <Link
       href={href}
       className={`nav-link${active ? ' active' : ''}`}
-      data-tooltip={title}
       aria-label={title}
     >
       {children}
-      {title ? (
-        <span className="nav-tooltip">
-          <strong className="nav-tooltip-title">{title}</strong>
-          {tip ? <span className="nav-tooltip-body">{tip}</span> : null}
-        </span>
-      ) : null}
     </Link>
   );
-}
-
-function ExternalNavItem({
-  href,
-  children,
-  title,
-  tip,
-}: {
-  href: string;
-  children: ReactNode;
-  title: string;
-  tip?: string;
-}) {
+  if (!title) return link;
   return (
-    <a
-      href={href}
-      className="nav-link"
-      data-tooltip={title}
-      aria-label={title}
-      target="_blank"
-      rel="noopener noreferrer"
-    >
-      {children}
-      <span className="nav-tooltip">
-        <strong className="nav-tooltip-title">{title}</strong>
-        {tip ? <span className="nav-tooltip-body">{tip}</span> : null}
-      </span>
-    </a>
+    <UiTooltip label={title} body={tip} placement="right" className="nav-tip-wrap">
+      {link}
+    </UiTooltip>
   );
 }
 
 function RailAvatar({ name, userId }: { name: string; userId: string }) {
   const [photo, setPhoto] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(
+    null,
+  );
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<number | null>(null);
+
   useEffect(() => {
     setPhoto(readAvatar(userId));
     return onAvatarChange(() => setPhoto(readAvatar(userId)));
   }, [userId]);
+
+  const place = useCallback(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setCoords({
+      top: r.top + r.height / 2,
+      left: r.right + 12,
+    });
+  }, []);
+
+  const openMenu = useCallback(() => {
+    if (closeTimer.current) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+    place();
+    setOpen(true);
+  }, [place]);
+
+  const scheduleClose = useCallback(() => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => {
+      setOpen(false);
+      closeTimer.current = null;
+    }, 120);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onMove = () => place();
+    window.addEventListener('resize', onMove);
+    window.addEventListener('scroll', onMove, true);
+    return () => {
+      window.removeEventListener('resize', onMove);
+      window.removeEventListener('scroll', onMove, true);
+    };
+  }, [open, place]);
+
+  useEffect(
+    () => () => {
+      if (closeTimer.current) window.clearTimeout(closeTimer.current);
+    },
+    [],
+  );
+
+  const items = [
+    { href: '/settings', label: 'Profile', external: false },
+    { href: '/settings?panel=account', label: 'Account', external: false },
+    { href: '/settings?panel=help', label: 'Help', external: false },
+    { href: FEEDBACK_URL, label: 'Feedback', external: true },
+  ] as const;
+
   return (
-    <Link
-      href="/settings"
-      className="sidebar-rail-avatar"
-      data-tooltip={name}
-      aria-label={`${name} — open profile`}
+    <div
+      ref={wrapRef}
+      className="rail-avatar-menu"
+      onMouseEnter={openMenu}
+      onMouseLeave={scheduleClose}
     >
-      <span className="sidebar-rail-avatar-face">
-        {photo ? <img src={photo} alt="" /> : initials(name)}
-      </span>
-      <span className="nav-tooltip">
-        <strong className="nav-tooltip-title">{name}</strong>
-        <span className="nav-tooltip-body">Profile, timezone, schedule</span>
-      </span>
-    </Link>
+      <button
+        type="button"
+        className="sidebar-rail-avatar"
+        aria-label={`${name} — account menu`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onFocus={openMenu}
+        onClick={openMenu}
+      >
+        <span className="sidebar-rail-avatar-face">
+          {photo ? <img src={photo} alt="" /> : initials(name)}
+        </span>
+      </button>
+      {open &&
+        coords &&
+        createPortal(
+          <div
+            className="rail-avatar-flyout"
+            role="menu"
+            aria-label="Account"
+            style={{
+              top: coords.top,
+              left: coords.left,
+            }}
+            onMouseEnter={openMenu}
+            onMouseLeave={scheduleClose}
+          >
+            {items.map((item) =>
+              item.external ? (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  role="menuitem"
+                  className="rail-avatar-flyout-item"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setOpen(false)}
+                >
+                  {item.label}
+                </a>
+              ) : (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  role="menuitem"
+                  className="rail-avatar-flyout-item"
+                  onClick={() => setOpen(false)}
+                >
+                  {item.label}
+                </Link>
+              ),
+            )}
+          </div>,
+          document.body,
+        )}
+    </div>
   );
 }
 
@@ -215,19 +333,19 @@ function LogoutButton({ onLoggedOut }: { onLoggedOut: () => void }) {
   };
 
   return (
-    <button
-      className="btn btn-ghost sidebar-logout"
-      type="button"
-      aria-label="Log out"
-      title="Log out"
-      disabled={busy}
-      onClick={() => void logout()}
-    >
-      <span className="nav-icon" aria-hidden>
-        ↩
-      </span>
-      <span className="nav-tooltip">Log out</span>
-    </button>
+    <UiTooltip label="Log out" placement="right" className="nav-tip-wrap">
+      <button
+        className="btn btn-ghost sidebar-logout"
+        type="button"
+        aria-label="Log out"
+        disabled={busy}
+        onClick={() => void logout()}
+      >
+        <span className="nav-icon" aria-hidden>
+          ↩
+        </span>
+      </button>
+    </UiTooltip>
   );
 }
 
@@ -237,13 +355,65 @@ function greetingForHour(h: number) {
   return 'Good evening';
 }
 
+/** Full-screen gate until today’s tasks/stats bootstrap finishes. */
+function DashboardReadyGate({
+  userId,
+  timeZone,
+  onReady,
+  children,
+}: {
+  userId: string;
+  timeZone?: string | null;
+  onReady?: () => void;
+  children: ReactNode;
+}) {
+  const bootstrappedFor = useAppSelector((s) => s.stats.bootstrappedFor);
+  const date = todayISO(timeZone);
+  const key = `${userId}:${date}`;
+  const ready = bootstrappedFor === key;
+  const [timedOut, setTimedOut] = useState(false);
+
+  useEffect(() => {
+    if (ready) return;
+    const t = window.setTimeout(() => setTimedOut(true), 8_000);
+    return () => window.clearTimeout(t);
+  }, [ready]);
+
+  const show = ready || timedOut;
+
+  useEffect(() => {
+    if (show) onReady?.();
+  }, [show, onReady]);
+
+  return (
+    <>
+      {!show && (
+        <div className="dash-boot-screen" role="status" aria-live="polite">
+          <CupkeyLogo size={40} title="Cupkey" />
+          <p className="dash-boot-label">Building your day…</p>
+        </div>
+      )}
+      <div
+        className={
+          show ? 'dash-boot-frame' : 'dash-boot-frame dash-boot-hidden'
+        }
+        aria-hidden={!show}
+      >
+        {children}
+      </div>
+    </>
+  );
+}
+
 function Shell({
   user,
   onLoggedOut,
+  onDashboardReady,
   children,
 }: {
   user: UserDto;
   onLoggedOut: () => void;
+  onDashboardReady?: () => void;
   children: ReactNode;
 }) {
   const { theme, setTheme } = useTheme();
@@ -289,14 +459,9 @@ function Shell({
     }
   }, [displayUser.timezone]);
 
-  useEffect(() => {
-    // Match product mock: dark orange dashboard by default
-    if (user.theme === 'light' || user.theme === 'dark') {
-      setTheme(user.theme);
-    } else {
-      setTheme('dark');
-    }
-  }, [user.theme, setTheme]);
+  // Theme comes from ThemeProvider preference + optimistic toggle.
+  // Do NOT sync user.theme → setTheme here — that snaps the UI back when
+  // /me refetch or timezone patch returns before the theme PATCH lands.
 
   useEffect(() => {
     const tz = detectBrowserTimeZone();
@@ -304,8 +469,17 @@ function Shell({
     void api
       .patch<UserDto>('/api/users/me', { timezone: tz })
       .then((data) => {
-        qc.setQueryData(['me'], data);
-        writeCachedUser(data);
+        // Preserve any theme the user just toggled (don't let tz PATCH clobber it)
+        const current = qc.getQueryData<UserDto | null>(['me']);
+        const merged = normalizeUser({
+          ...data,
+          theme:
+            current?.theme === 'light' || current?.theme === 'dark'
+              ? current.theme
+              : data.theme,
+        });
+        qc.setQueryData(['me'], merged);
+        writeCachedUser(merged);
         void qc.invalidateQueries({ queryKey: ['tasks'] });
         void qc.invalidateQueries({ queryKey: ['events'] });
         void qc.invalidateQueries({ queryKey: ['stats'] });
@@ -329,21 +503,34 @@ function Shell({
   const persistTheme = useMutation({
     mutationFn: (next: ThemePreference) =>
       api.patch<UserDto>('/api/users/me', { theme: next }),
-    onSuccess: (data) => {
-      qc.setQueryData(['me'], data);
-      writeCachedUser(data);
+    onSuccess: (data, next) => {
+      const merged = normalizeUser({ ...data, theme: next });
+      qc.setQueryData(['me'], merged);
+      writeCachedUser(merged);
+    },
+    onError: () => {
+      // Keep local theme — server sync is best-effort
     },
   });
 
   const onToggleTheme = useCallback(() => {
     const next: ThemePreference = theme === 'light' ? 'dark' : 'light';
+    // Apply immediately (localStorage + DOM) — do not wait on /me
     setTheme(next);
+    const optimistic = normalizeUser({ ...user, theme: next });
+    qc.setQueryData(['me'], optimistic);
+    writeCachedUser(optimistic);
     persistTheme.mutate(next);
-  }, [theme, setTheme, persistTheme]);
+  }, [theme, setTheme, persistTheme, user, qc]);
 
   return (
     <UserProvider user={displayUser}>
     <DataBootstrap userId={displayUser.id} timeZone={displayUser.timezone} />
+    <DashboardReadyGate
+      userId={displayUser.id}
+      timeZone={displayUser.timezone}
+      onReady={onDashboardReady}
+    >
     <div
       className={`app-shell${
         pathname.startsWith('/badges') || pathname.startsWith('/settings')
@@ -423,16 +610,6 @@ function Shell({
         </nav>
 
         <div className="sidebar-footer">
-          <ExternalNavItem
-            href={FEEDBACK_URL}
-            title={HINTS['nav.feedback'].title}
-            tip={HINTS['nav.feedback'].body}
-          >
-            <span className="nav-icon" aria-hidden>
-              ✎
-            </span>
-            <span className="nav-label">Feedback</span>
-          </ExternalNavItem>
           <RailAvatar name={user.name} userId={user.id} />
           <LogoutButton onLoggedOut={onLoggedOut} />
         </div>
@@ -471,7 +648,11 @@ function Shell({
           <button
             className="btn btn-outline btn-pill topbar-theme"
             type="button"
-            onClick={onToggleTheme}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onToggleTheme();
+            }}
             aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
           >
             {theme === 'light' ? 'Dark' : 'Light'}
@@ -481,7 +662,6 @@ function Shell({
 
       <div className="main">
         <div className="content">
-          <ContextTipBanner />
           {offline && (
             <div
               className="card"
@@ -504,6 +684,7 @@ function Shell({
       {!pathname.startsWith('/badges') &&
         !pathname.startsWith('/settings') && <RightPanel user={displayUser} />}
     </div>
+    </DashboardReadyGate>
     </UserProvider>
   );
 }
@@ -515,11 +696,17 @@ export function App({ children }: { children: ReactNode }) {
   const isLanding = pathname === '/';
   const isLogin = pathname === '/login';
   const isOnboarding = pathname.startsWith('/onboarding');
-  const isPublic = isLanding || isLogin;
+  const isSharedTimesheet = pathname.startsWith('/share/');
+  const isPublic = isLanding || isLogin || isSharedTimesheet;
   const [sessionUser, setSessionUser] = useState<UserDto | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [exchanging, setExchanging] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [enteringDashboard, setEnteringDashboard] = useState(false);
+
+  const clearEnteringDashboard = useCallback(() => {
+    setEnteringDashboard(false);
+  }, []);
 
   useEffect(() => {
     setSessionUser(readCachedUser());
@@ -531,7 +718,10 @@ export function App({ children }: { children: ReactNode }) {
 
   const me = useQuery({
     queryKey: ['me'],
-    queryFn: () => api.get<UserDto | null>('/api/users/me'),
+    queryFn: async () => {
+      const u = await api.get<UserDto | null>('/api/users/me');
+      return u ? normalizeUser(u) : null;
+    },
     retry: 2,
     staleTime: 30_000,
     refetchOnMount: true,
@@ -556,15 +746,21 @@ export function App({ children }: { children: ReactNode }) {
       writeCachedUser(normalized);
       setSessionUser(normalized);
       qc.setQueryData(['me'], normalized);
-      router.replace(
-        needsOnboarding(normalized) ? '/onboarding' : '/schedule',
-      );
+      if (!needsOnboarding(normalized)) {
+        setEnteringDashboard(true);
+        router.replace('/schedule');
+      } else {
+        setEnteringDashboard(false);
+        router.replace('/onboarding');
+      }
     },
     [qc, router],
   );
 
   const handleLoggedOut = useCallback(() => {
     setLoggingOut(true);
+    const priorId = sessionUser?.id;
+    if (priorId) clearOnboardingDone(priorId);
     writeCachedUser(null);
     setSessionUser(null);
     qc.setQueryData(['me'], null);
@@ -577,7 +773,7 @@ export function App({ children }: { children: ReactNode }) {
       /* ignore */
     }
     router.replace('/login');
-  }, [qc, router]);
+  }, [qc, router, sessionUser?.id]);
 
   useEffect(() => {
     const onAuthLost = () => {
@@ -661,12 +857,13 @@ export function App({ children }: { children: ReactNode }) {
     if (!user) return;
 
     // First-time users: Signup/Login → Onboarding → Dashboard
-    if (needsOnboarding(user) && !isOnboarding) {
+    if (needsOnboarding(user) && !isOnboarding && !isSharedTimesheet) {
       router.replace('/onboarding');
       return;
     }
-    // Returning users (or finished onboard): stay off login/landing/onboarding
-    if (!needsOnboarding(user) && (isLanding || isLogin || isOnboarding)) {
+    // Finished users: leave landing/login. Never auto-leave /onboarding —
+    // only Build day / Skip navigates via onFinished → handleSignedIn.
+    if (!needsOnboarding(user) && (isLanding || isLogin)) {
       router.replace('/schedule');
     }
   }, [
@@ -677,6 +874,7 @@ export function App({ children }: { children: ReactNode }) {
     isLanding,
     isLogin,
     isOnboarding,
+    isSharedTimesheet,
     router,
   ]);
 
@@ -701,7 +899,7 @@ export function App({ children }: { children: ReactNode }) {
   ]);
 
   let body: ReactNode;
-  if (exchanging || (!hydrated && !isLanding)) {
+  if (exchanging || (!hydrated && !isLanding && !isSharedTimesheet)) {
     body = (
       <div className="auth-screen">
         <div className="auth-card">
@@ -710,7 +908,7 @@ export function App({ children }: { children: ReactNode }) {
       </div>
     );
   } else if (!user) {
-    if (isLanding) {
+    if (isLanding || isSharedTimesheet) {
       body = children;
     } else if (isLogin) {
       body = <LoginScreen onSignedIn={handleSignedIn} />;
@@ -741,31 +939,45 @@ export function App({ children }: { children: ReactNode }) {
         </div>
       );
     }
+  } else if (isSharedTimesheet) {
+    // View-only share links — no dashboard chrome
+    body = children;
+  } else if (needsOnboarding(user)) {
+    // Show setup immediately even if URL is still /login or / — don't wait
+    // on router.replace('/onboarding') or a dead web process, which left users
+    // stuck on "Opening setup…".
+    body = <OnboardingFlow user={user} onFinished={handleSignedIn} />;
   } else if (isLanding || isLogin) {
-    // Still on a public URL while session is warm — wait for replace
+    // Session ready, still on a public URL — brief handoff to /schedule
     body = (
       <div className="auth-screen">
         <div className="auth-card">
-          <p className="auth-loading">
-            {needsOnboarding(user) ? 'Opening setup…' : 'Opening your schedule…'}
-          </p>
+          <p className="auth-loading">Opening your schedule…</p>
         </div>
       </div>
     );
-  } else if (isOnboarding || needsOnboarding(user)) {
+  } else if (isOnboarding) {
     body = <OnboardingFlow user={user} onFinished={handleSignedIn} />;
   } else {
     body = (
-      <Shell user={user} onLoggedOut={handleLoggedOut}>
+      <Shell
+        user={user}
+        onLoggedOut={handleLoggedOut}
+        onDashboardReady={clearEnteringDashboard}
+      >
         {children}
       </Shell>
     );
   }
 
   return (
-    <ThemeProvider forceLight={(isPublic && !user) || isOnboarding || needsOnboarding(user)}>
+    <>
+      <ThemeForceLight
+        active={(isPublic && !user) || isOnboarding || needsOnboarding(user)}
+      />
+      {user ? <ThemeSeed preference={user.theme} /> : null}
       {body}
-    </ThemeProvider>
+    </>
   );
 }
 

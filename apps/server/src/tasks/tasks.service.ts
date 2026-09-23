@@ -1,9 +1,12 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import type {
+  CreateRecurringTaskDto,
   CreateTaskDto,
+  RecurringTaskDto,
   ScheduleBacklogTaskDto,
   TaskDto,
   UpdateTaskDto,
+  Weekday,
 } from '@timeblock/shared-types';
 import { PrismaService } from '../prisma/prisma.service';
 import { SchedulerService } from './scheduler.service';
@@ -192,8 +195,159 @@ export class TasksService {
     }
   }
 
+  /** Move unfinished tasks from one civil day onto another and clear backlog flag. */
+  async moveUnfinishedDayToDate(
+    userId: string,
+    fromDate: string,
+    toDate: string,
+  ): Promise<number> {
+    if (!fromDate || !toDate || fromDate === toDate) return 0;
+
+    const fromDb = await this.viaDb(userId, async (id) => {
+      const rows = await this.supabase.select<{ id: string }>(
+        'Task',
+        'id',
+        {
+          filter: `userId=eq.${id}&date=eq.${fromDate}&scheduleLocked=eq.false&status=in.(pending,in_progress)`,
+        },
+      );
+      const now = new Date().toISOString();
+      let orderBase = 0;
+      try {
+        const existing = await this.supabase.select<{ order: number }>(
+          'Task',
+          'order',
+          {
+            filter: `userId=eq.${id}&date=eq.${toDate}&inBacklog=eq.false`,
+            order: 'order.desc',
+            limit: 1,
+          },
+        );
+        orderBase = (existing[0]?.order ?? -1) + 1;
+      } catch {
+        orderBase = 0;
+      }
+      let n = 0;
+      for (const row of rows) {
+        await this.supabase.patch('Task', `id=eq.${row.id}`, {
+          date: toDate,
+          inBacklog: false,
+          scheduledStart: null,
+          scheduledEnd: null,
+          scheduleLocked: false,
+          order: orderBase + n,
+          updatedAt: now,
+        });
+        n += 1;
+      }
+      return n;
+    });
+    if (fromDb != null) return fromDb;
+
+    if (userId.startsWith('local_')) {
+      return this.local.moveUnfinishedDayToDate(userId, fromDate, toDate);
+    }
+    try {
+      const tasks = await this.prisma.task.findMany({
+        where: {
+          userId,
+          date: dateOnly(fromDate),
+          scheduleLocked: false,
+          status: { in: ['pending', 'in_progress'] },
+        },
+        orderBy: { order: 'asc' },
+      });
+      if (!tasks.length) return 0;
+      const max = await this.prisma.task.aggregate({
+        where: { userId, date: dateOnly(toDate), inBacklog: false },
+        _max: { order: true },
+      });
+      let order = (max._max.order ?? -1) + 1;
+      for (const t of tasks) {
+        await this.prisma.task.update({
+          where: { id: t.id },
+          data: {
+            date: dateOnly(toDate),
+            inBacklog: false,
+            scheduledStart: null,
+            scheduledEnd: null,
+            scheduleLocked: false,
+            order: order++,
+          },
+        });
+      }
+      return tasks.length;
+    } catch {
+      return this.local.moveUnfinishedDayToDate(userId, fromDate, toDate);
+    }
+  }
+
+  /**
+   * If today's plan is empty but backlog has unfinished work from yesterday
+   * (or same day that failed packing), put those on the plan once.
+   * Fixes UTC-vs-local onboarding seed without surprising users who already
+   * have a populated day.
+   */
+  private async placeBacklogOnEmptyToday(
+    userId: string,
+    dateStr: string,
+  ): Promise<void> {
+    const tz = await this.resolveTimeZone(userId);
+    const today = todayInTimeZone(tz);
+    if (dateStr !== today) return;
+
+    const yesterday = (() => {
+      const d = new Date(`${today}T12:00:00Z`);
+      d.setUTCDate(d.getUTCDate() - 1);
+      return d.toISOString().slice(0, 10);
+    })();
+
+    const fromDb = await this.viaDb(userId, async (id) => {
+      const planned = (
+        await this.supabase.listTasks(id, today)
+      ).filter((t) => !t.inBacklog);
+      if (planned.length > 0) return 0;
+      const backlog = await this.supabase.listBacklogTasks(id);
+      const seen = new Set<string>();
+      const candidates = backlog.filter((t) => {
+        if (t.status === 'completed' || t.scheduleLocked) return false;
+        if (t.date !== yesterday && t.date !== today) return false;
+        const key = t.name.trim().toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      if (!candidates.length) return 0;
+      for (const t of candidates) {
+        await this.supabase.scheduleFromBacklog(id, t.id, today);
+      }
+      await this.scheduler.rescheduleDayPreferRest(id, today);
+      return candidates.length;
+    });
+    if (fromDb != null) return;
+
+    const planned = this.local.listTasks(userId, today);
+    if (planned.length > 0) return;
+    const backlog = this.local.listBacklog(userId);
+    const seen = new Set<string>();
+    const candidates = backlog.filter((t) => {
+      if (t.status === 'completed' || t.scheduleLocked) return false;
+      if (t.date !== yesterday && t.date !== today) return false;
+      const key = t.name.trim().toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (!candidates.length) return;
+    for (const t of candidates) {
+      this.local.scheduleFromBacklog(userId, t.id, today);
+    }
+  }
+
   async list(userId: string, dateStr: string): Promise<TaskDto[]> {
     await this.carryOverUnfinished(userId);
+    await this.placeBacklogOnEmptyToday(userId, dateStr);
+    await this.materializeRecurring(userId, dateStr);
 
     const fromDb = await this.viaDb(userId, (id) =>
       this.supabase.listTasks(id, dateStr) as Promise<TaskDto[]>,
@@ -213,6 +367,250 @@ export class TasksService {
       return tasks.map((t) => this.mapTask(t));
     } catch {
       return this.local.listTasks(userId, dateStr);
+    }
+  }
+
+  async listRecurring(userId: string): Promise<RecurringTaskDto[]> {
+    const fromDb = await this.viaDb(userId, async (id) => {
+      const rows = await this.supabase.listRecurringTemplates(id);
+      return rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        estimatedMinutes: r.estimatedMinutes,
+        weekdays: r.weekdays as Weekday[],
+        active: r.active,
+      }));
+    });
+    if (fromDb) return fromDb;
+
+    if (userId.startsWith('local_')) {
+      return this.local.listRecurring(userId);
+    }
+    try {
+      const rows = await this.prisma.recurringTaskTemplate.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'asc' },
+      });
+      return rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        estimatedMinutes: r.estimatedMinutes,
+        weekdays: (Array.isArray(r.weekdays) ? r.weekdays : []) as Weekday[],
+        active: r.active,
+      }));
+    } catch {
+      return this.local.listRecurring(userId);
+    }
+  }
+
+  async createRecurring(
+    userId: string,
+    dto: CreateRecurringTaskDto,
+  ): Promise<RecurringTaskDto> {
+    const name = dto.name?.trim();
+    if (!name) throw new BadRequestException('Name is required');
+    const weekdays = [...new Set(dto.weekdays ?? [])].filter(
+      (d) => d >= 0 && d <= 6,
+    ) as Weekday[];
+    if (!weekdays.length) {
+      throw new BadRequestException('Pick at least one weekday');
+    }
+    let estimatedMinutes = Number(dto.estimatedMinutes);
+    if (!Number.isFinite(estimatedMinutes) || estimatedMinutes < 5) {
+      estimatedMinutes = 30;
+    }
+    estimatedMinutes = Math.min(480, Math.round(estimatedMinutes));
+
+    const payload = {
+      name,
+      estimatedMinutes,
+      weekdays,
+      active: dto.active !== false,
+    };
+
+    const fromDb = await this.viaDb(userId, async (id) => {
+      return this.supabase.createRecurringTemplate(id, payload);
+    });
+    if (fromDb) {
+      const tz = await this.resolveTimeZone(userId);
+      await this.materializeRecurring(userId, todayInTimeZone(tz));
+      return {
+        id: fromDb.id,
+        name: fromDb.name,
+        estimatedMinutes: fromDb.estimatedMinutes,
+        weekdays: fromDb.weekdays as Weekday[],
+        active: fromDb.active,
+      };
+    }
+
+    // When REST is configured, skip Prisma (often unreachable) and write
+    // today's task into the primary Task store so the dashboard list sees it.
+    if (userId.startsWith('local_') || this.db.useDb()) {
+      const created = this.local.createRecurring(userId, payload);
+      const tz = await this.resolveTimeZone(userId);
+      const today = todayInTimeZone(tz);
+      this.local.materializeRecurring(userId, today);
+      if (this.db.useDb()) {
+        try {
+          await this.create(userId, {
+            date: today,
+            name: payload.name,
+            estimatedMinutes: payload.estimatedMinutes,
+          });
+        } catch {
+          /* local copy remains */
+        }
+      }
+      return created;
+    }
+    try {
+      const created = await this.prisma.recurringTaskTemplate.create({
+        data: {
+          userId,
+          name: payload.name,
+          estimatedMinutes: payload.estimatedMinutes,
+          weekdays: payload.weekdays,
+          active: payload.active,
+        },
+      });
+      const tz = await this.resolveTimeZone(userId);
+      await this.materializeRecurring(userId, todayInTimeZone(tz));
+      return {
+        id: created.id,
+        name: created.name,
+        estimatedMinutes: created.estimatedMinutes,
+        weekdays: (Array.isArray(created.weekdays)
+          ? created.weekdays
+          : []) as Weekday[],
+        active: created.active,
+      };
+    } catch {
+      const created = this.local.createRecurring(userId, payload);
+      const tz = await this.resolveTimeZone(userId);
+      const today = todayInTimeZone(tz);
+      this.local.materializeRecurring(userId, today);
+      try {
+        await this.create(userId, {
+          date: today,
+          name: payload.name,
+          estimatedMinutes: payload.estimatedMinutes,
+        });
+      } catch {
+        /* local materialize already has a copy */
+      }
+      return created;
+    }
+  }
+
+  async deleteRecurring(userId: string, id: string): Promise<{ ok: true }> {
+    const fromDb = await this.viaDb(userId, async (uid) => {
+      await this.supabase.deleteRecurringTemplate(uid, id);
+      return { ok: true as const };
+    });
+    if (fromDb) return fromDb;
+
+    if (userId.startsWith('local_')) {
+      this.local.deleteRecurring(userId, id);
+      return { ok: true };
+    }
+    try {
+      await this.prisma.recurringTaskTemplate.deleteMany({
+        where: { id, userId },
+      });
+      return { ok: true };
+    } catch {
+      this.local.deleteRecurring(userId, id);
+      return { ok: true };
+    }
+  }
+
+  /** Create Task rows for active templates that match this calendar date. */
+  async materializeRecurring(userId: string, dateStr: string): Promise<number> {
+    const day = new Date(`${dateStr}T12:00:00`);
+    if (Number.isNaN(day.getTime())) return 0;
+    const weekday = day.getDay() as Weekday;
+
+    const fromDb = await this.viaDb(userId, async (id) => {
+      const templates = (await this.supabase.listRecurringTemplates(id)).filter(
+        (t) => t.active && t.weekdays.includes(weekday),
+      );
+      let created = 0;
+      for (const t of templates) {
+        const externalId = `${t.id}:${dateStr}`;
+        try {
+          const before = await this.supabase.listTasks(id, dateStr);
+          if (
+            before.some(
+              (x) =>
+                x.sourceProvider === 'recurring' &&
+                x.sourceExternalId === externalId,
+            )
+          ) {
+            continue;
+          }
+          // Also skip if sourceExternalId isn't returned — check by notes pattern via name+provider
+          await this.supabase.createTask(id, {
+            date: dateStr,
+            name: t.name,
+            estimatedMinutes: t.estimatedMinutes,
+            sourceProvider: 'recurring',
+            sourceExternalId: externalId,
+          });
+          created += 1;
+        } catch {
+          /* ignore one template failure */
+        }
+      }
+      if (created) {
+        await this.scheduler.rescheduleDayPreferRest(id, dateStr);
+      }
+      return created;
+    });
+    if (fromDb != null) return fromDb;
+
+    if (userId.startsWith('local_')) {
+      const n = this.local.materializeRecurring(userId, dateStr);
+      return n;
+    }
+    try {
+      const templates = await this.prisma.recurringTaskTemplate.findMany({
+        where: { userId, active: true },
+      });
+      let created = 0;
+      for (const t of templates) {
+        const days = (Array.isArray(t.weekdays) ? t.weekdays : []) as number[];
+        if (!days.includes(weekday)) continue;
+        const externalId = `${t.id}:${dateStr}`;
+        const existing = await this.prisma.task.findFirst({
+          where: {
+            userId,
+            sourceProvider: 'recurring',
+            sourceExternalId: externalId,
+          },
+        });
+        if (existing) continue;
+        const max = await this.prisma.task.aggregate({
+          where: { userId, date: dateOnly(dateStr), inBacklog: false },
+          _max: { order: true },
+        });
+        await this.prisma.task.create({
+          data: {
+            userId,
+            date: dateOnly(dateStr),
+            name: t.name,
+            estimatedMinutes: t.estimatedMinutes,
+            order: (max._max.order ?? -1) + 1,
+            sourceProvider: 'recurring',
+            sourceExternalId: externalId,
+            inBacklog: false,
+          },
+        });
+        created += 1;
+      }
+      if (created) await this.scheduler.rescheduleDay(userId, dateStr);
+      return created;
+    } catch {
+      return this.local.materializeRecurring(userId, dateStr);
     }
   }
 
@@ -241,6 +639,87 @@ export class TasksService {
     } catch {
       return this.local.listBacklog(userId);
     }
+  }
+
+  /**
+   * Fast onboarding seed: create today's tasks once, reschedule once,
+   * then best-effort recurring templates (no per-template materialize).
+   */
+  async seedOnboarding(
+    userId: string,
+    plans: Array<{
+      name: string;
+      estimatedMinutes: number;
+      recurring?: boolean;
+    }>,
+    weekdays: Weekday[],
+  ): Promise<TaskDto[]> {
+    const tz = await this.resolveTimeZone(userId);
+    const today = todayInTimeZone(tz);
+    const cleaned = plans
+      .map((p) => ({
+        name: (p.name ?? '').trim(),
+        estimatedMinutes: Math.max(
+          5,
+          Math.min(480, Math.round(Number(p.estimatedMinutes) || 30)),
+        ),
+        recurring: Boolean(p.recurring),
+      }))
+      .filter((p) => p.name);
+
+    if (!cleaned.length) return this.list(userId, today);
+
+    const days = [...new Set(weekdays)].filter((d) => d >= 0 && d <= 6) as Weekday[];
+
+    const fromDb = await this.viaDb(userId, async (id) => {
+      // Sequential creates so order stays stable; skip per-task reschedule.
+      for (const p of cleaned) {
+        await this.supabase.createTask(id, {
+          date: today,
+          name: p.name,
+          estimatedMinutes: p.estimatedMinutes,
+          inBacklog: false,
+        });
+      }
+      await this.scheduler.rescheduleDayPreferRest(id, today);
+
+      // Recurring templates — fire in parallel, ignore failures (table may be missing)
+      await Promise.all(
+        cleaned
+          .filter((p) => p.recurring && days.length)
+          .map((p) =>
+            this.supabase
+              .createRecurringTemplate(id, {
+                name: p.name,
+                estimatedMinutes: p.estimatedMinutes,
+                weekdays: days,
+                active: true,
+              })
+              .catch(() => null),
+          ),
+      );
+
+      return this.supabase.listTasks(id, today) as Promise<TaskDto[]>;
+    });
+    if (fromDb) return fromDb.filter((t) => !t.inBacklog);
+
+    // Local / offline path
+    for (const p of cleaned) {
+      this.local.createTask(userId, {
+        date: today,
+        name: p.name,
+        estimatedMinutes: p.estimatedMinutes,
+      });
+      if (p.recurring && days.length) {
+        this.local.createRecurring(userId, {
+          name: p.name,
+          estimatedMinutes: p.estimatedMinutes,
+          weekdays: days,
+          active: true,
+        });
+      }
+    }
+    return this.local.listTasks(userId, today);
   }
 
   async create(userId: string, dto: CreateTaskDto): Promise<TaskDto> {
@@ -682,6 +1161,7 @@ export class TasksService {
     meetLink?: string | null;
     scheduleLocked?: boolean;
     sourceProvider?: string | null;
+    sourceExternalId?: string | null;
     inBacklog?: boolean;
     timeEntries: Array<{
       id: string;
@@ -710,6 +1190,7 @@ export class TasksService {
       meetLink: t.meetLink ?? null,
       scheduleLocked: Boolean(t.scheduleLocked),
       sourceProvider: t.sourceProvider ?? null,
+      sourceExternalId: t.sourceExternalId ?? null,
       inBacklog: Boolean(t.inBacklog),
     };
   }

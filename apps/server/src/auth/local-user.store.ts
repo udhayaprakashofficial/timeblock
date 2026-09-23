@@ -19,6 +19,8 @@ export type LocalUser = {
 
 type StoreFile = {
   users: LocalUser[];
+  /** Overlay for any user id when DB column is missing / unreachable */
+  onboardingCompletedByUserId?: Record<string, boolean>;
 };
 
 /**
@@ -100,6 +102,20 @@ export class LocalUserStore {
   findByEmail(email: string): LocalUser | null {
     const e = email.trim().toLowerCase();
     return this.read().users.find((u) => u.email === e) ?? null;
+  }
+
+  /** Persist onboarding flag even when Supabase User column is missing. */
+  setOnboardingCompleted(userId: string, value: boolean) {
+    const db = this.read();
+    const map = { ...(db.onboardingCompletedByUserId ?? {}) };
+    map[userId] = value;
+    db.onboardingCompletedByUserId = map;
+    this.write(db);
+  }
+
+  getOnboardingCompleted(userId: string): boolean | undefined {
+    const v = this.read().onboardingCompletedByUserId?.[userId];
+    return typeof v === 'boolean' ? v : undefined;
   }
 
   upsertPassword(input: {

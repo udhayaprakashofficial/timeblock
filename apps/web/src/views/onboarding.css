@@ -9,21 +9,12 @@
   font-family: inherit;
 }
 
-.onboard-screen.is-finale {
-  background: #201e1d;
-  color: #f3f2f2;
-}
-
 .onboard-top {
   display: flex;
   align-items: center;
   gap: 24px;
   padding: 18px 36px;
   border-bottom: 2px solid rgba(32, 30, 29, 0.35);
-}
-
-.onboard-screen.is-finale .onboard-top {
-  border-bottom-color: rgba(243, 242, 242, 0.25);
 }
 
 .onboard-progress {
@@ -39,10 +30,6 @@
   background: rgba(32, 30, 29, 0.16);
 }
 
-.onboard-screen.is-finale .onboard-progress span {
-  background: rgba(243, 242, 242, 0.18);
-}
-
 .onboard-progress span.is-done {
   background: #ff5722;
 }
@@ -53,10 +40,6 @@
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: rgba(32, 30, 29, 0.5);
-}
-
-.onboard-screen.is-finale .onboard-step-label {
-  color: rgba(243, 242, 242, 0.5);
 }
 
 .onboard-skip,
@@ -106,7 +89,7 @@
 }
 
 .onboard-sub.is-light {
-  color: rgba(243, 242, 242, 0.65);
+  color: rgba(32, 30, 29, 0.62);
 }
 
 .onboard-kicker {
@@ -290,6 +273,114 @@
   min-height: 220px;
 }
 
+.onboard-timeline {
+  flex: 1;
+  display: flex;
+  gap: 12px;
+  min-height: 280px;
+  margin-top: 4px;
+}
+
+.onboard-timeline-hours {
+  position: relative;
+  width: 46px;
+  flex-shrink: 0;
+}
+
+.onboard-timeline-hour {
+  position: absolute;
+  left: 0;
+  transform: translateY(-50%);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(32, 30, 29, 0.45);
+  line-height: 1;
+}
+
+.onboard-timeline-rail {
+  position: relative;
+  flex: 1;
+  background: #fff;
+  border: 1px solid rgba(32, 30, 29, 0.16);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.onboard-timeline-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.onboard-timeline-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: rgba(32, 30, 29, 0.1);
+}
+
+.onboard-timeline-empty {
+  position: absolute;
+  inset: 12px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(32, 30, 29, 0.4);
+  background: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent 7px,
+    rgba(32, 30, 29, 0.05) 7px,
+    rgba(32, 30, 29, 0.05) 8px
+  );
+  border-radius: 10px;
+}
+
+.onboard-timeline-block {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  box-sizing: border-box;
+  border-radius: 10px;
+  padding: 8px 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-height: 28px;
+}
+
+.onboard-timeline-block strong {
+  font-size: 0.92rem;
+  font-weight: 700;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.onboard-timeline-block span {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.onboard-timeline-block.is-break {
+  background: #ffe8d6;
+  border: 1px solid #ffb07a;
+  color: #c2410c;
+}
+
+.onboard-timeline-block.is-task {
+  background: #ffe8d6;
+  border: 1px solid #ffb07a;
+  color: #c2410c;
+}
+
 .onboard-preview-hours {
   display: flex;
   flex-direction: column;
@@ -466,15 +557,15 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  background: rgba(243, 242, 242, 0.08);
-  border: 1px solid rgba(243, 242, 242, 0.25);
+  background: #fff;
+  border: 1px solid rgba(32, 30, 29, 0.2);
   padding: 12px 14px;
 }
 
 .onboard-plan-row input {
   border: none;
   background: transparent;
-  color: #f3f2f2;
+  color: #201e1d;
   font-size: 0.95rem;
   font-weight: 700;
   outline: none;
@@ -488,24 +579,43 @@
 .onboard-plan-mins {
   width: 64px;
   text-align: right;
-  color: #ff8a50 !important;
+  color: #ff5722 !important;
 }
 
 .onboard-plan-unit {
-  color: #ff8a50;
+  color: #ff5722;
   font-weight: 800;
   font-size: 0.85rem;
+}
+
+.onboard-plan-recur {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(32, 30, 29, 0.55);
+  cursor: pointer;
+  user-select: none;
+}
+
+.onboard-plan-recur input {
+  width: 14px;
+  height: 14px;
+  accent-color: #ff5722;
+  cursor: pointer;
 }
 
 .onboard-plan-remove {
   flex-shrink: 0;
   font-size: 12px !important;
-  color: rgba(243, 242, 242, 0.55) !important;
+  color: rgba(32, 30, 29, 0.45) !important;
   padding: 4px 8px !important;
 }
 
 .onboard-plan-remove:hover {
-  color: #ff8a50 !important;
+  color: #ff5722 !important;
 }
 
 .onboard-add-plan {
@@ -513,8 +623,8 @@
   margin-top: 4px;
   border-style: dashed;
   background: transparent !important;
-  color: rgba(243, 242, 242, 0.7) !important;
-  border-color: rgba(243, 242, 242, 0.35) !important;
+  color: rgba(32, 30, 29, 0.55) !important;
+  border-color: rgba(32, 30, 29, 0.28) !important;
 }
 
 .onboard-finale-cta {
@@ -543,12 +653,45 @@
 
 .onboard-finale-card.is-muted {
   background: transparent;
-  border: 1px dashed rgba(243, 242, 242, 0.35);
-  color: rgba(243, 242, 242, 0.55);
+  border: 1px dashed rgba(32, 30, 29, 0.28);
+  color: rgba(32, 30, 29, 0.5);
 }
 
 .onboard-error {
   margin: 12px 44px 20px;
   color: #f87171;
   font-size: 0.9rem;
+}
+
+/* Full-viewport loader while finishing onboarding → dashboard */
+.onboard-boot-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background:
+    radial-gradient(
+      ellipse 70% 45% at 50% 18%,
+      rgba(255, 87, 34, 0.16),
+      transparent
+    ),
+    #f3f2f2;
+}
+
+.onboard-boot-label {
+  margin: 8px 0 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #201e1d;
+  letter-spacing: -0.01em;
+}
+
+.onboard-boot-sub {
+  margin: 0;
+  font-size: 0.88rem;
+  color: rgba(32, 30, 29, 0.55);
 }

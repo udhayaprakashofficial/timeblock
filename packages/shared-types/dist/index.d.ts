@@ -56,6 +56,8 @@ export interface TaskDto {
     meetLink?: string | null;
     scheduleLocked?: boolean;
     sourceProvider?: string | null;
+    /** Stable id for calendar/recurring materialization */
+    sourceExternalId?: string | null;
     /** Unscheduled unfinished work waiting for a future day */
     inBacklog?: boolean;
 }
@@ -68,6 +70,21 @@ export interface CreateTaskDto {
     startTime?: string;
     /** HH:MM wall clock in the user's timezone — locks the task to this slot */
     endTime?: string;
+}
+/** Recurring task that materializes onto matching weekdays */
+export interface RecurringTaskDto {
+    id: string;
+    name: string;
+    estimatedMinutes: number;
+    /** 0=Sun … 6=Sat */
+    weekdays: Weekday[];
+    active: boolean;
+}
+export interface CreateRecurringTaskDto {
+    name: string;
+    estimatedMinutes?: number;
+    weekdays: Weekday[];
+    active?: boolean;
 }
 export interface UpdateTaskDto {
     name?: string;

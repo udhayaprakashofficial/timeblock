@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { StatsOverviewDto } from '@timeblock/shared-types';
-import { todayISO } from '../api';
+import { api, todayISO } from '../api';
 import { useAppDispatch, useAppSelector } from './hooks';
 import { fetchBacklog, fetchTasks } from './tasksSlice';
 import {
@@ -38,7 +38,6 @@ export function DataBootstrap({
     dispatch(hydrateStatsFromCache(date));
 
     const cached = (
-      // read after hydrate via getState is awkward; seed RQ from session in parallel
       typeof window !== 'undefined'
         ? (() => {
             try {
@@ -53,6 +52,13 @@ export function DataBootstrap({
     if (cached) {
       qc.setQueryData(['stats', date], cached);
     }
+
+    // Prefetch schedule template in parallel with tasks/stats (non-blocking).
+    void qc.prefetchQuery({
+      queryKey: ['schedule'],
+      queryFn: () => api.get('/api/schedule'),
+      staleTime: 60_000,
+    });
 
     void Promise.all([
       dispatch(fetchStats(date)).then((action) => {

@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -13,10 +14,13 @@ import type { ThemePreference } from '@timeblock/shared-types';
 
 type Theme = ThemePreference;
 
+const STORAGE_KEY = 'tb.theme';
+
 const ThemeContext = createContext<{
   theme: Theme;
   setTheme: (theme: Theme) => void;
   toggle: () => void;
+  setForceLight: (force: boolean) => void;
 } | null>(null);
 
 function systemTheme(): Theme {
@@ -26,55 +30,66 @@ function systemTheme(): Theme {
     : 'light';
 }
 
-/**
- * Theme is never stored in localStorage.
- * Logged-out: OS preference only.
- * Logged-in: parent passes DB value via `preference` and persists with `onPersist`.
- * Public marketing pages can force light so dark OS theme does not fight landing CSS.
- */
-export function ThemeProvider({
-  children,
-  preference,
-  onPersist,
-  forceLight = false,
-}: {
-  children: ReactNode;
-  preference?: Theme | null;
-  onPersist?: (theme: Theme) => void;
-  forceLight?: boolean;
-}) {
-  const [theme, setThemeState] = useState<Theme>(
-    () => preference ?? systemTheme(),
+function readStored(): Theme | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const v = localStorage.getItem(STORAGE_KEY);
+    return v === 'light' || v === 'dark' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStored(theme: Theme) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(STORAGE_KEY, theme);
+  } catch {
+    /* private mode */
+  }
+}
+
+function applyDomTheme(theme: Theme, forceLight: boolean) {
+  if (typeof document === 'undefined') return;
+  document.documentElement.setAttribute(
+    'data-theme',
+    forceLight ? 'light' : theme,
   );
+}
+
+/**
+ * Theme is local state + localStorage. Server preference only seeds when unset.
+ * Toggles apply instantly and are never overwritten by /me refetches.
+ */
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  const [theme, setThemeState] = useState<Theme>(
+    () => readStored() ?? systemTheme(),
+  );
+  const [forceLight, setForceLightState] = useState(false);
+  const forceLightRef = useRef(false);
+  forceLightRef.current = forceLight;
 
   useEffect(() => {
-    if (preference === 'light' || preference === 'dark') {
-      setThemeState(preference);
-    }
-  }, [preference]);
-
-  useEffect(() => {
-    document.documentElement.setAttribute(
-      'data-theme',
-      forceLight ? 'light' : theme,
-    );
+    applyDomTheme(theme, forceLight);
   }, [theme, forceLight]);
 
-  const setTheme = useCallback(
-    (next: Theme) => {
-      setThemeState(next);
-      onPersist?.(next);
-    },
-    [onPersist],
-  );
+  const setForceLight = useCallback((force: boolean) => {
+    setForceLightState(force);
+  }, []);
+
+  const setTheme = useCallback((next: Theme) => {
+    writeStored(next);
+    setThemeState(next);
+    applyDomTheme(next, forceLightRef.current);
+  }, []);
 
   const toggle = useCallback(() => {
     setTheme(theme === 'light' ? 'dark' : 'light');
   }, [setTheme, theme]);
 
   const value = useMemo(
-    () => ({ theme, setTheme, toggle }),
-    [theme, setTheme, toggle],
+    () => ({ theme, setTheme, toggle, setForceLight }),
+    [theme, setTheme, toggle, setForceLight],
   );
 
   return (
@@ -82,15 +97,50 @@ export function ThemeProvider({
   );
 }
 
+/** Marketing/onboarding can force light without remounting the provider. */
+export function ThemeForceLight({ active }: { active: boolean }) {
+  const { setForceLight } = useTheme();
+  useEffect(() => {
+    setForceLight(active);
+    return () => setForceLight(false);
+  }, [active, setForceLight]);
+  return null;
+}
+
+/** Seed from /me once when the user has no local theme choice yet. */
+export function ThemeSeed({ preference }: { preference?: Theme | null }) {
+  const { setTheme } = useTheme();
+  const done = useRef(false);
+  useEffect(() => {
+    if (done.current) return;
+    if (readStored()) {
+      done.current = true;
+      return;
+    }
+    if (preference === 'light' || preference === 'dark') {
+      done.current = true;
+      setTheme(preference);
+    }
+  }, [preference, setTheme]);
+  return null;
+}
+
 export function useTheme() {
   const ctx = useContext(ThemeContext);
   if (!ctx) {
-    // Never crash the app on HMR / duplicate-module edge cases
-    const theme = systemTheme();
+    const theme = readStored() ?? systemTheme();
     return {
       theme,
-      setTheme: () => undefined,
-      toggle: () => undefined,
+      setTheme: (next: Theme) => {
+        writeStored(next);
+        applyDomTheme(next, false);
+      },
+      toggle: () => {
+        const next: Theme = theme === 'light' ? 'dark' : 'light';
+        writeStored(next);
+        applyDomTheme(next, false);
+      },
+      setForceLight: (_force: boolean) => undefined,
     };
   }
   return ctx;

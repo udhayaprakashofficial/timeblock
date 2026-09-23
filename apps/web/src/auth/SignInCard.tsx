@@ -205,8 +205,7 @@ function AuthCard({
       <style>{AUTH_CRITICAL_CSS}</style>
       <section className="auth-kit-left">
         <Link href="/" className="auth-kit-logo" aria-label="Cupkey home">
-          <CupkeyLogo size={30} title="Cupkey" />
-          <span>cupkey</span>
+          <CupkeyLogo variant="wordmark" size={28} title="Cupkey" />
         </Link>
 
         <p className="auth-kit-kicker">Plan the day in 4 minutes</p>

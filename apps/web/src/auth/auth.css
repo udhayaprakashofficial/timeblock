@@ -322,6 +322,10 @@
   align-self: flex-start;
 }
 
+.auth-kit-logo .cupkey-logo-wordmark img {
+  filter: none;
+}
+
 .auth-kit-kicker {
   margin: 48px 0 14px;
   font-size: 0.78rem;

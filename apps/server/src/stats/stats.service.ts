@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import type {
   DayUtilizationDto,
   EodSheetDto,
@@ -11,8 +11,11 @@ import type {
 import { PrismaService } from '../prisma/prisma.service';
 import { SchedulerService } from '../tasks/scheduler.service';
 import { LocalDataStore } from '../auth/local-data.store';
+import { LocalUserStore } from '../auth/local-user.store';
 import { SupabaseRestService } from '../supabase/supabase-rest.service';
 import { DbBridgeService } from '../supabase/db-bridge.service';
+import { BrevoMailService } from '../mail/brevo-mail.service';
+import { CalendarSyncService } from '../calendar/calendar-sync.service';
 import {
   addDays,
   dateOnly,
@@ -20,6 +23,10 @@ import {
   startOfWeek,
 } from '../common/time.util';
 import { buildEffortSummary } from './effort-badges';
+import {
+  createTimesheetShareToken,
+  verifyTimesheetShareToken,
+} from './timesheet-share.util';
 
 type TaskLike = {
   id: string;
@@ -41,8 +48,11 @@ export class StatsService {
     private readonly prisma: PrismaService,
     private readonly scheduler: SchedulerService,
     private readonly local: LocalDataStore,
+    private readonly localUsers: LocalUserStore,
     private readonly supabase: SupabaseRestService,
     private readonly db: DbBridgeService,
+    private readonly mail: BrevoMailService,
+    private readonly calendar: CalendarSyncService,
   ) {}
 
   async overview(userId: string, dateStr: string): Promise<StatsOverviewDto> {
@@ -266,7 +276,8 @@ export class StatsService {
     if (this.db.useDb()) {
       try {
         const id = await this.db.resolveUserId(userId);
-        const list = await this.supabase.listTasks(id, dateStr);
+        // Include backlog-dated rows so past days still appear after carry-over
+        const list = await this.supabase.listAllTasksForDate(id, dateStr);
         tasks = list.map((t) => ({
           id: t.id,
           name: t.name,
@@ -319,6 +330,139 @@ export class StatsService {
       }
     }
     return this.buildEod(dateStr, tasks);
+  }
+
+  async createTimesheetShare(
+    userId: string,
+    dateStr: string,
+  ): Promise<{ token: string; path: string; url: string; expiresAt: string }> {
+    const date = dateStr.slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException('Invalid date');
+    }
+    // Ensure the sheet can be built for this user/day
+    await this.eodSheet(userId, date);
+    const token = createTimesheetShareToken(userId, date, 30);
+    const payload = verifyTimesheetShareToken(token)!;
+    const path = `/share/timesheet/${token}`;
+    return {
+      token,
+      path,
+      url: `${this.mail.appPublicUrl()}${path}`,
+      expiresAt: new Date(payload.e).toISOString(),
+    };
+  }
+
+  async emailTimesheetShare(
+    userId: string,
+    body: { date?: string; toEmail?: string; origin?: string },
+  ): Promise<{ ok: true; url: string; toEmail: string }> {
+    const toEmail = String(body?.toEmail ?? '')
+      .trim()
+      .toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(toEmail)) {
+      throw new BadRequestException('Enter a valid email address');
+    }
+    const share = await this.createTimesheetShare(
+      userId,
+      String(body?.date ?? ''),
+    );
+    const origin = String(body?.origin ?? '')
+      .trim()
+      .replace(/\/$/, '');
+    const shareUrl =
+      origin && /^https?:\/\//i.test(origin)
+        ? `${origin}${share.path}`
+        : share.url;
+    const employee = await this.resolveEmployee(userId);
+    const workDate = String(body?.date ?? '').slice(0, 10);
+    let dateLabel = workDate;
+    try {
+      dateLabel = new Date(`${workDate}T12:00:00`).toLocaleDateString(
+        undefined,
+        {
+          weekday: 'long',
+          month: 'long',
+          day: 'numeric',
+          year: 'numeric',
+        },
+      );
+    } catch {
+      /* keep workDate */
+    }
+
+    const sent = await this.calendar.sendGmailAsUser(userId, {
+      toEmail,
+      fromName: employee.name,
+      fromEmail: employee.email,
+      subject: `Timesheet — ${dateLabel}`,
+      textBody: [
+        'Hi,',
+        '',
+        `Please find my timesheet for ${dateLabel} (${workDate}):`,
+        '',
+        shareUrl,
+        '',
+        'View-only link · valid 30 days · no login needed.',
+        '',
+        'Thanks,',
+        employee.name,
+      ].join('\n'),
+      htmlBody: `<p>Hi,</p>
+<p>Please find my timesheet for <strong>${escapeHtml(dateLabel)}</strong> (${escapeHtml(workDate)}):</p>
+<p><a href="${escapeHtml(shareUrl)}">${escapeHtml(shareUrl)}</a></p>
+<p style="color:#71717a;font-size:13px;">View-only · valid 30 days · no login needed.</p>
+<p>Thanks,<br/>${escapeHtml(employee.name)}</p>`,
+    });
+    if (!sent.ok) {
+      throw new BadRequestException(sent.error);
+    }
+    return { ok: true, url: shareUrl, toEmail };
+  }
+
+  async getSharedTimesheet(token: string): Promise<{
+    employee: { name: string; email: string };
+    sheetNo: string;
+    sheet: EodSheetDto;
+    expiresAt: string;
+  }> {
+    const payload = verifyTimesheetShareToken(token);
+    if (!payload) {
+      throw new NotFoundException('Share link is invalid or expired');
+    }
+    const sheet = await this.eodSheet(payload.u, payload.d);
+    const employee = await this.resolveEmployee(payload.u);
+    const sheetNo = `TS-${payload.d.replace(/-/g, '')}-${payload.u.slice(-4).toUpperCase()}`;
+    return {
+      employee,
+      sheetNo,
+      sheet,
+      expiresAt: new Date(payload.e).toISOString(),
+    };
+  }
+
+  private async resolveEmployee(userId: string): Promise<{
+    name: string;
+    email: string;
+  }> {
+    if (userId.startsWith('local_')) {
+      const local = this.localUsers.findById(userId);
+      if (local) return { name: local.name, email: local.email };
+    }
+    try {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      if (user) return { name: user.name, email: user.email };
+    } catch {
+      /* REST */
+    }
+    if (this.supabase.isConfigured()) {
+      const user = await this.supabase.getUserById(userId);
+      if (user) return { name: user.name, email: user.email };
+    }
+    return { name: 'Cupkey user', email: '' };
   }
 
   private buildWeekly(
@@ -516,4 +660,12 @@ export class StatsService {
       scheduleLocked: t.scheduleLocked,
     }));
   }
+}
+
+function escapeHtml(s: string) {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }

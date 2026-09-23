@@ -597,38 +597,37 @@ export function SettingsPage({ user }: { user: UserDto }) {
           )}
 
           {panel === 'help' && (
-            <section className="settings-panel">
-              <div className="settings-panel-head is-plain">
-                <div>
-                  <p className="settings-kicker">Help</p>
-                  <h2 className="settings-panel-title">Talk to Cupkey</h2>
-                  <p className="settings-meta">
-                    Questions about your plan, calendar, or timesheet.
-                  </p>
+            <>
+              <section className="settings-panel">
+                <div className="settings-panel-head is-plain">
+                  <div>
+                    <p className="settings-kicker">Help</p>
+                    <h2 className="settings-panel-title">Contact support</h2>
+                    <p className="settings-meta">
+                      Questions about your plan, calendar, or timesheet.
+                    </p>
+                  </div>
                 </div>
-              </div>
-              <a className="btn btn-primary settings-help-mail" href="mailto:hello@cupkey.io">
-                hello@cupkey.io
-              </a>
-              <div className="settings-panel-head is-plain settings-feedback-block">
-                <div>
-                  <p className="settings-kicker">Feedback</p>
-                  <h2 className="settings-panel-title">Shape the roadmap</h2>
-                  <p className="settings-meta">
-                    Request features, vote on ideas, or report what gets in your way.
-                  </p>
+                <div className="settings-fields">
+                  <div className="settings-field">
+                    <span>Email</span>
+                    <div className="settings-help-address">hello@cupkey.io</div>
+                  </div>
                 </div>
-              </div>
-              <a
-                className="btn btn-ghost settings-help-mail"
-                href="https://cupkey.featurebase.app/"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Open feedback board
-              </a>
-              <DemoVideoCard />
-            </section>
+                <div className="settings-panel-actions">
+                  <a
+                    className="btn btn-primary"
+                    href="mailto:hello@cupkey.io"
+                  >
+                    Email support
+                  </a>
+                </div>
+              </section>
+
+              <section className="settings-panel settings-demo">
+                <DemoVideoCard />
+              </section>
+            </>
           )}
         </div>
       </div>

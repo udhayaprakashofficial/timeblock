@@ -78,7 +78,7 @@ export class GoogleOAuthRegistrar implements OnModuleInit {
           name: profile.displayName || email,
           accessToken,
           refreshToken,
-          scope: 'calendar.readonly email profile',
+          scope: 'calendar.readonly gmail.send email profile',
           linkToUserId: req.session?.userId,
         });
         done(null, user);
@@ -99,6 +99,7 @@ export class GoogleOAuthRegistrar implements OnModuleInit {
             'email',
             'profile',
             'https://www.googleapis.com/auth/calendar.readonly',
+            'https://www.googleapis.com/auth/gmail.send',
           ],
         },
         verify as never,

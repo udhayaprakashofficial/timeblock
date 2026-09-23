@@ -8,6 +8,8 @@ import {
 } from './shareFormat';
 import { downloadNodePng } from './downloadPng';
 import { CloseIcon, DownloadIcon } from './ShareIcons';
+import { onAvatarChange, readAvatar } from '../user-avatar';
+import { useAppUserOptional } from '../../user-context';
 import './share.css';
 
 export type ShareTab =
@@ -25,6 +27,61 @@ type Props = {
   initialTab?: ShareTab;
 };
 
+type SharePerson = {
+  name: string;
+  photo: string | null;
+};
+
+function useSharePerson(): SharePerson | null {
+  const user = useAppUserOptional();
+  const [photo, setPhoto] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setPhoto(null);
+      return;
+    }
+    setPhoto(readAvatar(user.id));
+    return onAvatarChange(() => setPhoto(readAvatar(user.id)));
+  }, [user?.id]);
+
+  if (!user?.name?.trim()) return null;
+  return { name: user.name.trim(), photo };
+}
+
+function initialsFrom(name: string): string {
+  const parts = name.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0]![0] ?? ''}${parts[1]![0] ?? ''}`.toUpperCase();
+  }
+  return name.slice(0, 2).toUpperCase();
+}
+
+function PersonRow({
+  person,
+  tone = 'light',
+}: {
+  person: SharePerson;
+  tone?: 'light' | 'dark';
+}) {
+  return (
+    <div className={`share-person share-person-${tone}`}>
+      <div className="share-person-avatar" aria-hidden>
+        {person.photo ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={person.photo} alt="" />
+        ) : (
+          <span>{initialsFrom(person.name)}</span>
+        )}
+      </div>
+      <div className="share-person-meta">
+        <strong>{person.name}</strong>
+        <span>cupkey.io</span>
+      </div>
+    </div>
+  );
+}
+
 export function ShareStudio({
   open,
   onClose,
@@ -36,6 +93,7 @@ export function ShareStudio({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const person = useSharePerson();
 
   useEffect(() => {
     if (open) setTab(initialTab);
@@ -103,11 +161,21 @@ export function ShareStudio({
         </nav>
 
         <div className="share-stage" ref={stageRef}>
-          {active === 'linkedin' && week ? <LinkedInCard week={week} /> : null}
-          {active === 'wrapped' && week ? <WrappedCard week={week} /> : null}
-          {active === 'story' && week ? <StoryCard week={week} /> : null}
-          {active === 'square' && week ? <SquareCard week={week} /> : null}
-          {active === 'badge' && badge ? <BadgeCard badge={badge} /> : null}
+          {active === 'linkedin' && week ? (
+            <LinkedInCard week={week} person={person} />
+          ) : null}
+          {active === 'wrapped' && week ? (
+            <WrappedCard week={week} person={person} />
+          ) : null}
+          {active === 'story' && week ? (
+            <StoryCard week={week} person={person} />
+          ) : null}
+          {active === 'square' && week ? (
+            <SquareCard week={week} person={person} />
+          ) : null}
+          {active === 'badge' && badge ? (
+            <BadgeCard badge={badge} person={person} />
+          ) : null}
         </div>
 
         <footer className="share-studio-foot">
@@ -134,7 +202,13 @@ function Mark() {
   );
 }
 
-function LinkedInCard({ week }: { week: ShareWeekPayload }) {
+function LinkedInCard({
+  week,
+  person,
+}: {
+  week: ShareWeekPayload;
+  person: SharePerson | null;
+}) {
   const max = Math.max(1, ...week.days.map((d) => d.actualMinutes));
   const best = week.days.reduce(
     (a, b) => (b.actualMinutes > a.actualMinutes ? b : a),
@@ -144,6 +218,7 @@ function LinkedInCard({ week }: { week: ShareWeekPayload }) {
     <div className="share-card share-linkedin" data-share-card>
       <div className="share-linkedin-copy">
         <p className="share-eyebrow">{week.weekLabel}</p>
+        {person ? <PersonRow person={person} tone="light" /> : null}
         <h3>
           {formatHm(week.actualMinutes)} of
           <br />
@@ -160,7 +235,7 @@ function LinkedInCard({ week }: { week: ShareWeekPayload }) {
         </p>
         <div className="share-brand-row">
           <Mark />
-          <span>Tracked with Cupkey</span>
+          <span>cupkey.io</span>
         </div>
       </div>
       <div className="share-linkedin-bars">
@@ -192,11 +267,18 @@ function LinkedInCard({ week }: { week: ShareWeekPayload }) {
   );
 }
 
-function WrappedCard({ week }: { week: ShareWeekPayload }) {
+function WrappedCard({
+  week,
+  person,
+}: {
+  week: ShareWeekPayload;
+  person: SharePerson | null;
+}) {
   const hours = Math.round(week.actualMinutes / 60);
   return (
     <div className="share-card share-wrapped" data-share-card>
       <p className="share-eyebrow">Cupkey Wrapped · {new Date().getFullYear()}</p>
+      {person ? <PersonRow person={person} tone="dark" /> : null}
       <p className="share-sub">Your week, in minutes you actually logged</p>
       <div className="share-wrapped-hero">
         <span>You spent</span>
@@ -235,7 +317,13 @@ function WrappedCard({ week }: { week: ShareWeekPayload }) {
   );
 }
 
-function StoryCard({ week }: { week: ShareWeekPayload }) {
+function StoryCard({
+  week,
+  person,
+}: {
+  week: ShareWeekPayload;
+  person: SharePerson | null;
+}) {
   const max = Math.max(1, ...week.days.map((d) => d.actualMinutes));
   const best = week.days.reduce(
     (a, b) => (b.actualMinutes > a.actualMinutes ? b : a),
@@ -251,6 +339,7 @@ function StoryCard({ week }: { week: ShareWeekPayload }) {
           <Mark />
           <span>Cupkey · Story</span>
         </div>
+        {person ? <PersonRow person={person} tone="dark" /> : null}
         <p className="share-story-week">{week.weekLabel}</p>
         <div className="share-story-time" aria-label={formatHm(week.actualMinutes)}>
           <strong>{hours}</strong>
@@ -303,7 +392,6 @@ function StoryCard({ week }: { week: ShareWeekPayload }) {
         </div>
 
         <div className="share-story-foot">
-          <span>Tracked with Cupkey</span>
           <span>cupkey.io</span>
         </div>
       </div>
@@ -311,7 +399,13 @@ function StoryCard({ week }: { week: ShareWeekPayload }) {
   );
 }
 
-function SquareCard({ week }: { week: ShareWeekPayload }) {
+function SquareCard({
+  week,
+  person,
+}: {
+  week: ShareWeekPayload;
+  person: SharePerson | null;
+}) {
   const max = Math.max(1, ...week.days.map((d) => d.actualMinutes));
   return (
     <div className="share-card share-square" data-share-card>
@@ -323,6 +417,7 @@ function SquareCard({ week }: { week: ShareWeekPayload }) {
           </svg>
         </span>
       </div>
+      {person ? <PersonRow person={person} tone="dark" /> : null}
       <strong className="share-square-num">{week.completed}</strong>
       <p className="share-square-line">tasks closed in</p>
       <p className="share-square-focus">
@@ -335,15 +430,20 @@ function SquareCard({ week }: { week: ShareWeekPayload }) {
           return <i key={d.date} style={{ height: `${pct}%` }} />;
         })}
       </div>
-      <div className="share-square-foot">
-        <span>Cupkey</span>
+        <div className="share-square-foot">
         <span>cupkey.io</span>
       </div>
     </div>
   );
 }
 
-function BadgeCard({ badge }: { badge: ShareBadgePayload }) {
+function BadgeCard({
+  badge,
+  person,
+}: {
+  badge: ShareBadgePayload;
+  person: SharePerson | null;
+}) {
   const days = badge.days?.length
     ? badge.days
     : ['MON', 'TUE', 'WED', 'THU', 'FRI'];
@@ -360,6 +460,7 @@ function BadgeCard({ badge }: { badge: ShareBadgePayload }) {
           <h3>{badge.title}</h3>
         </div>
       </div>
+      {person ? <PersonRow person={person} tone="dark" /> : null}
       <p className="share-lede">{badge.body}</p>
       <div className="share-badge-days">
         {days.map((d, i) => (

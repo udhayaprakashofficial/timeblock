@@ -527,6 +527,24 @@
   color: #ff6a33;
 }
 
+[data-theme='dark'] .dash-queue .add-task-date {
+  flex-shrink: 0;
+  max-width: 9.25rem;
+  background: #161616 !important;
+  border: 1px solid #2a2a2a !important;
+  color: #ddd !important;
+  border-radius: 8px;
+  padding: 5px 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color-scheme: dark;
+}
+
+[data-theme='dark'] .dash-queue .add-task-composer.is-future .add-task-date {
+  border-color: rgba(255, 106, 51, 0.45) !important;
+  color: #ff8a50 !important;
+}
+
 [data-theme='dark'] .dash-queue .add-task-times {
   flex-shrink: 0;
   display: inline-flex;
@@ -757,9 +775,12 @@
 [data-theme='dark'] .right-panel.dash-side {
   background: #0a0a0a;
   border-left: 1px solid #1a1a1a;
-  padding: 14px 12px;
+  padding: 14px 12px 28px;
   gap: 12px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-height: 0;
+  max-height: 100%;
 }
 
 [data-theme='dark'] .side-card {

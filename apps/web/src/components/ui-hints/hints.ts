@@ -15,6 +15,7 @@ export type HintId =
   | 'dash.queue'
   | 'dash.backlog'
   | 'dash.pin'
+  | 'dash.scheduleDate'
   | 'side.focus'
   | 'side.load'
   | 'side.coach'
@@ -91,7 +92,12 @@ export const HINTS: Record<HintId, HintCopy> = {
   'dash.pin': {
     id: 'dash.pin',
     title: 'Pin time',
-    body: 'Lock a start–end so Cupkey places the task at that wall-clock slot.',
+    body: 'Lock a start–end on the chosen date so Cupkey places the task at that wall-clock slot.',
+  },
+  'dash.scheduleDate': {
+    id: 'dash.scheduleDate',
+    title: 'Schedule date',
+    body: 'Pick today or a future day. Use Pin to lock a specific start–end time on that day.',
   },
   'side.focus': {
     id: 'side.focus',

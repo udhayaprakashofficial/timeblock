@@ -3,6 +3,7 @@ import { CalendarProvider } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../crypto/crypto.service';
 import { SupabaseRestService } from '../supabase/supabase-rest.service';
+import { BrevoMailService } from '../mail/brevo-mail.service';
 
 @Injectable()
 export class AuthService {
@@ -10,6 +11,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
     @Optional() private readonly supabase?: SupabaseRestService,
+    @Optional() private readonly mail?: BrevoMailService,
   ) {}
 
   async upsertOAuthUser(input: {
@@ -48,6 +50,7 @@ export class AuthService {
       user = await this.prisma.user.findUnique({ where: { email: input.email } });
     }
 
+    let isNew = false;
     if (!user) {
       user = await this.prisma.user.create({
         data: {
@@ -55,6 +58,13 @@ export class AuthService {
           name: input.name,
           onboardingCompleted: false,
         },
+      });
+      isNew = true;
+    } else if (user.onboardingCompleted !== true) {
+      // Returning account — never send them through first-time setup again
+      user = await this.prisma.user.update({
+        where: { id: user.id },
+        data: { onboardingCompleted: true },
       });
     }
 
@@ -86,6 +96,12 @@ export class AuthService {
         scope: input.scope,
       },
     });
+
+    if (isNew) {
+      void this.mail
+        ?.sendWelcomeEmail({ toEmail: input.email, toName: input.name })
+        .catch(() => undefined);
+    }
 
     return user;
   }

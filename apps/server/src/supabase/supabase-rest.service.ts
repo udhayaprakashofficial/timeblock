@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { createId } from './create-id';
-import { dayBoundsInTimeZone, toUtcIso, parseHm, combineDateAndMinutes, elapsedMinutes, entryActualMinutes } from '../common/time.util';
+import { dayBoundsInTimeZone, toUtcIso, parseHm, combineDateAndMinutes, elapsedMinutes, entryActualMinutes, todayInTimeZone, normalizeTimeZone } from '../common/time.util';
 
 type Json = Record<string, unknown>;
 
@@ -216,7 +216,7 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       theme: string;
       timezone: string;
       onboardingCompleted?: boolean;
-    }>('User', 'id,name,email,theme,timezone,defaultTaskMinutes', {
+    }>('User', 'id,name,email,theme,timezone,defaultTaskMinutes,onboardingCompleted', {
       filter: `email=eq.${encodeURIComponent(email)}`,
       limit: 1,
     });
@@ -294,7 +294,7 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       const patch: Record<string, unknown> = {
         providerAccountId: input.googleId,
         accessTokenEncrypted: input.accessTokenEncrypted,
-        scope: 'calendar.readonly email profile',
+        scope: 'calendar.readonly gmail.send email profile',
         updatedAt: now,
       };
       // Never wipe an existing refresh token when GIS login omits one
@@ -310,7 +310,7 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
         providerAccountId: input.googleId,
         accessTokenEncrypted: input.accessTokenEncrypted,
         refreshTokenEncrypted: input.refreshTokenEncrypted ?? null,
-        scope: 'calendar.readonly email profile',
+        scope: 'calendar.readonly gmail.send email profile',
         createdAt: now,
         updatedAt: now,
       });
@@ -328,10 +328,15 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       theme: string;
       timezone: string;
       passwordHash: string | null;
-    }>('User', 'id,name,email,theme,timezone,passwordHash,defaultTaskMinutes', {
-      filter: `email=eq.${encodeURIComponent(email.toLowerCase())}`,
-      limit: 1,
-    });
+      onboardingCompleted?: boolean;
+    }>(
+      'User',
+      'id,name,email,theme,timezone,passwordHash,defaultTaskMinutes,onboardingCompleted',
+      {
+        filter: `email=eq.${encodeURIComponent(email.toLowerCase())}`,
+        limit: 1,
+      },
+    );
     return rows[0] ?? null;
   }
 
@@ -350,6 +355,7 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       });
       return rows[0] ?? null;
     } catch {
+      // Column may not exist yet — do not force false (that bounced finished users).
       const rows = await this.select<{
         id: string;
         name: string;
@@ -360,7 +366,7 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
         filter: `id=eq.${id}`,
         limit: 1,
       });
-      return rows[0] ? { ...rows[0], onboardingCompleted: true } : null;
+      return rows[0] ?? null;
     }
   }
 
@@ -631,6 +637,55 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
     return out;
   }
 
+  /** Every task dated that day (plan + backlog) — for timesheet / share history. */
+  async listAllTasksForDate(userId: string, dateStr: string) {
+    const rows = await this.select<Record<string, unknown>>('Task', '*', {
+      filter: `userId=eq.${userId}&date=eq.${dateStr}`,
+      order: 'order.asc',
+    });
+    const out = [];
+    for (const t of rows) {
+      let entries = await this.select<Record<string, unknown>>(
+        'TimeEntry',
+        '*',
+        { filter: `taskId=eq.${t.id}` },
+      );
+      for (const e of entries) {
+        if (!e.endedAt || !e.startedAt) continue;
+        const correct = entryActualMinutes(e);
+        const stored = Number(e.actualMinutes) || 0;
+        if (correct > 0 && Math.abs(correct - stored) > 5) {
+          await this.patch('TimeEntry', `id=eq.${e.id}`, {
+            actualMinutes: correct,
+          });
+          e.actualMinutes = correct;
+        }
+      }
+      const logged = entries.reduce(
+        (sum, e) => sum + entryActualMinutes(e),
+        0,
+      );
+      if (String(t.status) === 'completed' && logged <= 0) {
+        const mins = Math.max(1, Number(t.estimatedMinutes) || 30);
+        const endedAt = new Date();
+        const startedAt = new Date(endedAt.getTime() - mins * 60_000);
+        await this.insert('TimeEntry', {
+          id: createId(),
+          taskId: String(t.id),
+          startedAt: startedAt.toISOString(),
+          endedAt: endedAt.toISOString(),
+          actualMinutes: mins,
+          createdAt: endedAt.toISOString(),
+        });
+        entries = await this.select<Record<string, unknown>>('TimeEntry', '*', {
+          filter: `taskId=eq.${t.id}`,
+        });
+      }
+      out.push(this.mapTaskRow(t, entries));
+    }
+    return out;
+  }
+
   async listBacklogTasks(userId: string) {
     try {
       const rows = await this.select<Record<string, unknown>>('Task', '*', {
@@ -719,8 +774,21 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       scheduledEnd?: string | null;
       scheduleLocked?: boolean;
       inBacklog?: boolean;
+      sourceProvider?: string | null;
+      sourceExternalId?: string | null;
     },
   ) {
+    if (dto.sourceProvider && dto.sourceExternalId) {
+      const existing = await this.select<{ id: string }>('Task', 'id', {
+        filter: `userId=eq.${userId}&sourceProvider=eq.${encodeURIComponent(dto.sourceProvider)}&sourceExternalId=eq.${encodeURIComponent(dto.sourceExternalId)}`,
+        limit: 1,
+      }).catch(() => []);
+      if (existing[0]?.id) {
+        const list = await this.listTasks(userId, dto.date);
+        const found = list.find((t) => t.id === existing[0]!.id);
+        if (found) return found;
+      }
+    }
     const existing = await this.select<{ order: number }>('Task', 'order', {
       filter: `userId=eq.${userId}&date=eq.${dto.date}&inBacklog=eq.false`,
       order: 'order.desc',
@@ -752,6 +820,8 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       createdAt: now,
       updatedAt: now,
     };
+    if (dto.sourceProvider) payload.sourceProvider = dto.sourceProvider;
+    if (dto.sourceExternalId) payload.sourceExternalId = dto.sourceExternalId;
     if (!inBacklog) payload.inBacklog = false;
     else payload.inBacklog = true;
     let created: Record<string, unknown>[];
@@ -759,6 +829,8 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       created = await this.insert<Record<string, unknown>>('Task', payload);
     } catch {
       delete payload.inBacklog;
+      delete payload.sourceProvider;
+      delete payload.sourceExternalId;
       created = await this.insert<Record<string, unknown>>('Task', payload);
     }
     return this.mapTaskRow(
@@ -1080,6 +1152,13 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
     if (String(rows[0].status) === 'completed') {
       throw new Error('Task already completed');
     }
+    const taskDate = String(rows[0].date ?? '').slice(0, 10);
+    const user = await this.getUserById(userId);
+    const tz = normalizeTimeZone(user?.timezone);
+    const today = todayInTimeZone(tz);
+    if (taskDate > today) {
+      throw new Error('Cannot start a timer on a future day');
+    }
     const entries = await this.select<Record<string, unknown>>('TimeEntry', '*', {
       filter: `taskId=eq.${taskId}`,
     });
@@ -1101,7 +1180,7 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       status: 'in_progress',
       updatedAt: now,
     });
-    return (await this.listTasks(userId, String(rows[0].date).slice(0, 10))).find(
+    return (await this.listTasks(userId, taskDate)).find(
       (t) => t.id === taskId,
     );
   }
@@ -1235,8 +1314,74 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       meetLink: t.meetLink ? String(t.meetLink) : null,
       scheduleLocked: Boolean(t.scheduleLocked),
       sourceProvider: t.sourceProvider ? String(t.sourceProvider) : null,
+      sourceExternalId: t.sourceExternalId
+        ? String(t.sourceExternalId)
+        : null,
       notes: t.notes != null ? String(t.notes) : null,
       inBacklog: Boolean(t.inBacklog),
     };
+  }
+
+  async listRecurringTemplates(userId: string) {
+    const rows = await this.select<{
+      id: string;
+      name: string;
+      estimatedMinutes: number;
+      weekdays: unknown;
+      active: boolean;
+    }>('RecurringTaskTemplate', 'id,name,estimatedMinutes,weekdays,active', {
+      filter: `userId=eq.${userId}`,
+      order: 'createdAt.asc',
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      estimatedMinutes: r.estimatedMinutes,
+      weekdays: (Array.isArray(r.weekdays) ? r.weekdays : []) as number[],
+      active: r.active !== false,
+    }));
+  }
+
+  async createRecurringTemplate(
+    userId: string,
+    input: {
+      name: string;
+      estimatedMinutes: number;
+      weekdays: number[];
+      active?: boolean;
+    },
+  ) {
+    const id = createId();
+    const now = new Date().toISOString();
+    const created = await this.insert<{
+      id: string;
+      name: string;
+      estimatedMinutes: number;
+      weekdays: unknown;
+      active: boolean;
+    }>('RecurringTaskTemplate', {
+      id,
+      userId,
+      name: input.name.trim(),
+      estimatedMinutes: input.estimatedMinutes,
+      weekdays: input.weekdays,
+      active: input.active !== false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const row = created[0];
+    return {
+      id: row?.id ?? id,
+      name: row?.name ?? input.name.trim(),
+      estimatedMinutes: row?.estimatedMinutes ?? input.estimatedMinutes,
+      weekdays: (Array.isArray(row?.weekdays)
+        ? row!.weekdays
+        : input.weekdays) as number[],
+      active: row?.active !== false,
+    };
+  }
+
+  async deleteRecurringTemplate(userId: string, id: string) {
+    await this.delete('RecurringTaskTemplate', `id=eq.${id}&userId=eq.${userId}`);
   }
 }

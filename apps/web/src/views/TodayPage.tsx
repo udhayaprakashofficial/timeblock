@@ -176,6 +176,8 @@ export function TodayPage({
   const dispatch = useAppDispatch();
   const [name, setName] = useState('');
   const [pinTime, setPinTime] = useState(false);
+  /** Day the new task is created on — defaults to the plan day being viewed */
+  const [scheduleDate, setScheduleDate] = useState(date);
   const defaultStart = () => {
     const now = nowMinutes(timeZone);
     const rounded = Math.ceil((now + 1) / 15) * 15;
@@ -192,6 +194,9 @@ export function TodayPage({
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   const reduxTasks = useAppSelector((s) => s.tasks.byDate[date] ?? EMPTY_TASKS);
+  const scheduleDayTasks = useAppSelector(
+    (s) => s.tasks.byDate[scheduleDate] ?? EMPTY_TASKS,
+  );
   const backlogTasks = useAppSelector((s) => s.tasks.backlog);
   const createPending = useAppSelector((s) =>
     s.tasks.pendingKeys.some((k) => k.startsWith('create:')),
@@ -202,6 +207,16 @@ export function TodayPage({
   useEffect(() => {
     if (isToday && date !== today) setDate(today);
   }, [today, isToday, date]);
+
+  // Composer date follows the plan day unless the user is mid-edit (handled in onChange)
+  useEffect(() => {
+    setScheduleDate(date);
+  }, [date]);
+
+  // Prefetch the day we're scheduling onto (for optimistic packing)
+  useEffect(() => {
+    if (scheduleDate !== date) void dispatch(fetchTasks(scheduleDate));
+  }, [dispatch, scheduleDate, date]);
 
   useEffect(() => {
     const focusNew = () => {
@@ -245,6 +260,15 @@ export function TodayPage({
     retry: 2,
   });
 
+  const pinnedStartForDate = (targetDate: string) => {
+    if (targetDate === today) return defaultStart();
+    const wd = new Date(`${targetDate}T12:00:00Z`).getUTCDay();
+    const tpl = scheduleQ.data?.find((t) => t.weekday === wd);
+    const ws = tpl?.workStart?.trim();
+    if (ws && /^\d{1,2}:\d{2}/.test(ws)) return ws.slice(0, 5);
+    return '09:00';
+  };
+
   const invalidateStats = () => {
     void qc.invalidateQueries({ queryKey: ['stats', date] });
     void qc.invalidateQueries({ queryKey: ['eod', date] });
@@ -271,6 +295,9 @@ export function TodayPage({
       nameInputRef.current?.focus();
       return;
     }
+    const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(scheduleDate)
+      ? scheduleDate
+      : date;
     let estimatedMinutes = defaultTaskMinutes;
     let start: string | undefined;
     let end: string | undefined;
@@ -296,12 +323,14 @@ export function TodayPage({
     }
 
     const tid = tasksActions.tempId();
-    const weekdayNow = new Date(`${date}T12:00:00Z`).getUTCDay();
+    const weekdayNow = new Date(`${targetDate}T12:00:00Z`).getUTCDay();
     const dayTemplate = scheduleQ.data?.find((t) => t.weekday === weekdayNow);
+    const packTasks =
+      targetDate === date ? reduxTasks : scheduleDayTasks;
     const slot = nextOptimisticSlot({
-      date,
+      date: targetDate,
       durationMin: estimatedMinutes,
-      tasks: reduxTasks,
+      tasks: packTasks,
       timeZone,
       pinStart: start,
       pinEnd: end,
@@ -319,7 +348,7 @@ export function TodayPage({
     dispatch(
       tasksActions.optimisticCreate({
         tempId: tid,
-        date,
+        date: targetDate,
         name: trimmed,
         estimatedMinutes,
         scheduledStart: slot.scheduledStart,
@@ -327,14 +356,17 @@ export function TodayPage({
         scheduleLocked: Boolean(start && end),
       }),
     );
-    const nextStart = defaultStart();
+    const nextStart = pinnedStartForDate(targetDate);
     setStartTime(nextStart);
     setEndTime(defaultEnd(nextStart));
     nameInputRef.current?.focus();
 
+    // Jump the plan to the day we just scheduled so the task is visible
+    if (targetDate !== date) setDate(targetDate);
+
     void dispatch(
       createTaskOptimistic({
-        date,
+        date: targetDate,
         name: trimmed,
         estimatedMinutes,
         startTime: start,
@@ -348,11 +380,21 @@ export function TodayPage({
           setCreateHint(
             `"${task.name}" had no free work-hour slot — check Backlog or Pin time.`,
           );
+        } else if (targetDate > today) {
+          setCreateHint(`Scheduled on ${formatBacklogDay(targetDate, timeZone)}.`);
         }
         // Reconcile packing with server in the background (UI already updated)
-        void dispatch(fetchTasks(date));
+        void dispatch(fetchTasks(targetDate));
         void dispatch(fetchBacklog());
-        invalidateStats();
+        void qc.invalidateQueries({ queryKey: ['stats', targetDate] });
+        void qc.invalidateQueries({ queryKey: ['eod', targetDate] });
+        void qc.invalidateQueries({ queryKey: ['weekly'] });
+        void qc.invalidateQueries({ queryKey: ['events', targetDate] });
+        void dispatch(fetchStats(targetDate)).then((action) => {
+          if (fetchStats.fulfilled.match(action)) {
+            qc.setQueryData(['stats', targetDate], action.payload.stats);
+          }
+        });
       }
     });
   };
@@ -369,7 +411,9 @@ export function TodayPage({
   const dayEndMin = template ? parseHm(template.workEnd) : null;
   const hasSchedule = dayStartMin !== null && dayEndMin !== null;
 
-  // Expand timeline to cover work hours, every scheduled block, and “now”
+  // Expand timeline to cover work hours and scheduled blocks.
+  // Outside work hours, do NOT pull the viewport to midnight/late night —
+  // that left an empty black plan with only the “now” line (tasks far below).
   const { viewStartMin, viewEndMin } = useMemo(() => {
     if (!hasSchedule) {
       return {
@@ -394,8 +438,11 @@ export function TodayPage({
     }
     if (isToday) {
       const now = nowMinutes(timeZone);
-      bump(now);
-      end = Math.max(end, now + 120);
+      // Only stretch for “now” when we’re near the workday
+      if (now >= dayStartMin! - 60 && now <= dayEndMin! + 180) {
+        bump(now);
+        end = Math.max(end, now + 120);
+      }
     }
     // Keep a little padding so evening cards aren’t flush to the edge
     end = Math.max(end, dayEndMin! + 30);
@@ -440,16 +487,35 @@ export function TodayPage({
     return Math.min(MAX_PX_PER_MIN, Math.max(MIN_PX_PER_MIN, fit));
   }, [span, viewportH]);
 
-  // Scroll plan to “now” (or first post-work task) so evening blocks aren’t off-screen
+  // Scroll plan to the useful part of the day:
+  // before work → work start; during work → near now; after work → late day.
   useEffect(() => {
     const el = viewportRef.current;
     if (!el || viewStartMin == null || !span) return;
-    const targetMin = isToday
-      ? Math.max(nowMinutes(timeZone) - 30, viewStartMin)
-      : viewStartMin;
+    let targetMin = viewStartMin;
+    if (isToday && dayStartMin != null && dayEndMin != null) {
+      const now = nowMinutes(timeZone);
+      if (now < dayStartMin) {
+        targetMin = dayStartMin;
+      } else if (now > dayEndMin + 30) {
+        targetMin = Math.max(dayStartMin, dayEndMin - 90);
+      } else {
+        targetMin = Math.max(now - 30, viewStartMin);
+      }
+    }
     const top = Math.max(0, (targetMin - viewStartMin) * pxPerMin - 24);
     el.scrollTo({ top, behavior: 'smooth' });
-  }, [date, viewStartMin, pxPerMin, span, isToday, timeZone, tasks.length]);
+  }, [
+    date,
+    viewStartMin,
+    pxPerMin,
+    span,
+    isToday,
+    timeZone,
+    tasks.length,
+    dayStartMin,
+    dayEndMin,
+  ]);
 
   const hourMarks = useMemo(() => {
     if (viewStartMin === null || viewEndMin === null) return [];
@@ -461,11 +527,17 @@ export function TodayPage({
   }, [viewStartMin, viewEndMin]);
 
   const nowMin = nowMinutes(timeZone);
+  // Hide the now line outside the workday so midnight doesn’t paint an empty plan
   const showNow =
     viewStartMin !== null &&
     viewEndMin !== null &&
     nowMin >= viewStartMin &&
-    nowMin <= viewEndMin;
+    nowMin <= viewEndMin &&
+    !(
+      dayStartMin != null &&
+      dayEndMin != null &&
+      (nowMin < dayStartMin - 15 || nowMin > dayEndMin + 120)
+    );
 
   // Prefer locked Meet tasks on the timeline; only draw orphan calendar events
   const orphanEvents = useMemo(() => {
@@ -891,7 +963,7 @@ export function TodayPage({
           </div>
 
           <form
-            className={`add-task-composer${pinTime ? ' is-pinning' : ''}`}
+            className={`add-task-composer${pinTime || scheduleDate !== date ? ' is-pinning' : ''}${scheduleDate !== today ? ' is-future' : ''}`}
             onSubmit={submitNewTask}
           >
             <input
@@ -910,6 +982,25 @@ export function TodayPage({
               }}
               aria-invalid={Boolean(formError)}
             />
+            <label className="add-task-date-wrap" title="Schedule day">
+              <input
+                type="date"
+                className="add-task-date"
+                value={scheduleDate}
+                onChange={(e) => {
+                  const next = e.target.value || date;
+                  setScheduleDate(next);
+                  if (formError) setFormError(null);
+                  if (createHint) setCreateHint(null);
+                  if (pinTime) {
+                    const s = pinnedStartForDate(next);
+                    setStartTime(s);
+                    setEndTime(defaultEnd(s));
+                  }
+                }}
+                aria-label="Schedule date"
+              />
+            </label>
             <span className="add-task-dur" title="Default duration">
               {pinTime
                 ? `${Math.max(5, parseHm(endTime) - parseHm(startTime))}m`
@@ -921,7 +1012,17 @@ export function TodayPage({
                 className={`add-task-pin-btn${pinTime ? ' is-on' : ''}`}
                 aria-pressed={pinTime}
                 aria-label="Pin time"
-                onClick={() => setPinTime((v) => !v)}
+                onClick={() => {
+                  setPinTime((v) => {
+                    const next = !v;
+                    if (next) {
+                      const s = pinnedStartForDate(scheduleDate);
+                      setStartTime(s);
+                      setEndTime(defaultEnd(s));
+                    }
+                    return next;
+                  });
+                }}
               >
                 Pin
               </button>
@@ -963,7 +1064,7 @@ export function TodayPage({
               type="submit"
               disabled={createPending || !name.trim()}
             >
-              {createPending ? 'Adding' : 'Add'}
+              {createPending ? 'Adding' : scheduleDate > today ? 'Schedule' : 'Add'}
             </button>
           </form>
           {(formError || createErrorRedux) && (
@@ -1082,6 +1183,7 @@ function SessionBanner({
   const tag =
     mode === 'live' ? 'In session' : mode === 'now' ? 'Now' : 'Up next';
   const kind = task.scheduleLocked || task.meetLink ? 'Meeting' : 'Deep work';
+  const isFutureDay = task.date > todayISO(timeZone);
 
   return (
     <div className={`session-banner is-${mode}`}>
@@ -1136,15 +1238,17 @@ function SessionBanner({
           <button
             type="button"
             className="btn btn-outline btn-pill session-pause"
-            disabled={busy || task.status === 'completed'}
-            onClick={() =>
+            disabled={busy || task.status === 'completed' || isFutureDay}
+            title={isFutureDay ? 'Timer unlocks on that day' : undefined}
+            onClick={() => {
+              if (isFutureDay) return;
               void run(async () => {
                 dispatch(tasksActions.optimisticStart({ taskId: task.id }));
                 await dispatch(
                   startTimerOptimistic({ taskId: task.id, date: task.date }),
                 );
-              })
-            }
+              });
+            }}
           >
             Start
           </button>
@@ -1328,6 +1432,9 @@ function SortableTask({
   const locked = Boolean(task.scheduleLocked);
   const done = task.status === 'completed';
   const running = Boolean(task.activeEntryId);
+  const today = todayISO(timeZone);
+  const isFutureDay = task.date > today;
+  const canStartTimer = !done && !isFutureDay;
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState(task.name);
@@ -1884,15 +1991,23 @@ function SortableTask({
           <button
             className="btn btn-primary btn-pill btn-sm queue-start"
             type="button"
-            disabled={done || busy}
-            onClick={() =>
+            disabled={!canStartTimer || busy}
+            title={
+              isFutureDay
+                ? 'Timer unlocks on that day'
+                : done
+                  ? 'Already done'
+                  : 'Start timer'
+            }
+            onClick={() => {
+              if (!canStartTimer) return;
               void runAction(async () => {
                 dispatch(tasksActions.optimisticStart({ taskId: task.id }));
                 await dispatch(
                   startTimerOptimistic({ taskId: task.id, date: task.date }),
                 );
-              })
-            }
+              });
+            }}
           >
             {busy ? '…' : 'Start'}
           </button>
