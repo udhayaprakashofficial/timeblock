@@ -1,11 +1,31 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import * as https from 'node:https';
+import * as dns from 'node:dns';
 
 export type BrevoSendResult = { ok: true } | { ok: false; error: string };
 
+/** Prefer IPv4 so Brevo IP allowlists / Vercel egress behave predictably. */
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch {
+  /* Node < 17 */
+}
+
 @Injectable()
-export class BrevoMailService {
+export class BrevoMailService implements OnModuleInit {
   private readonly logger = new Logger(BrevoMailService.name);
+
+  onModuleInit() {
+    if (this.isConfigured()) {
+      this.logger.log(
+        `Brevo mail ready (sender=${process.env.BREVO_SENDER_EMAIL?.trim()})`,
+      );
+    } else {
+      this.logger.warn(
+        'Brevo not configured — set BREVO_API_KEY and BREVO_SENDER_EMAIL or welcome emails will be skipped',
+      );
+    }
+  }
 
   isConfigured() {
     return Boolean(
@@ -43,7 +63,7 @@ export class BrevoMailService {
     toName?: string;
   }): Promise<boolean> {
     if (!this.isConfigured()) {
-      this.logger.debug(
+      this.logger.warn(
         'Brevo not configured (BREVO_API_KEY / BREVO_SENDER_EMAIL) — skip welcome email',
       );
       return false;
@@ -131,7 +151,8 @@ Open your dashboard: ${dashboardUrl}
 </body>
 </html>`;
 
-    const result = await this.sendTransactional({
+    // Retry once — Vercel cold starts + Brevo blips are common.
+    let result = await this.sendTransactional({
       toEmail: input.toEmail,
       toName: firstName,
       subject: 'Welcome to the Cupkey club',
@@ -139,6 +160,27 @@ Open your dashboard: ${dashboardUrl}
       textContent,
       replyToSender: true,
     });
+    if (!result.ok) {
+      this.logger.warn(
+        `Welcome email first attempt failed for ${input.toEmail}: ${result.error}`,
+      );
+      await sleep(400);
+      result = await this.sendTransactional({
+        toEmail: input.toEmail,
+        toName: firstName,
+        subject: 'Welcome to the Cupkey club',
+        htmlContent,
+        textContent,
+        replyToSender: true,
+      });
+    }
+    if (result.ok) {
+      this.logger.log(`Welcome email sent to ${input.toEmail}`);
+    } else {
+      this.logger.warn(
+        `Welcome email failed for ${input.toEmail}: ${result.error}`,
+      );
+    }
     return result.ok;
   }
 
@@ -273,6 +315,7 @@ This link works for 30 days.
         path: '/v3/smtp/email',
         apiKey,
         payload,
+        timeoutMs: 12_000,
       });
 
       if (status < 200 || status >= 300) {
@@ -295,6 +338,7 @@ function httpsJsonRequest(input: {
   path: string;
   apiKey: string;
   payload?: string;
+  timeoutMs?: number;
 }): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const req = https.request(
@@ -303,6 +347,7 @@ function httpsJsonRequest(input: {
         path: input.path,
         method: input.method,
         family: 4,
+        servername: 'api.brevo.com',
         headers: {
           accept: 'application/json',
           'content-type': 'application/json',
@@ -323,6 +368,9 @@ function httpsJsonRequest(input: {
         });
       },
     );
+    req.setTimeout(input.timeoutMs ?? 12_000, () => {
+      req.destroy(new Error('Brevo request timed out'));
+    });
     req.on('error', reject);
     if (input.payload) req.write(input.payload);
     req.end();
@@ -368,4 +416,8 @@ function escapeHtml(s: string) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

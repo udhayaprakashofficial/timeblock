@@ -98,9 +98,15 @@ export class AuthService {
     });
 
     if (isNew) {
-      void this.mail
-        ?.sendWelcomeEmail({ toEmail: input.email, toName: input.name })
-        .catch(() => undefined);
+      // Await on Vercel — fire-and-forget is frozen when the response returns.
+      try {
+        await this.mail?.sendWelcomeEmail({
+          toEmail: input.email,
+          toName: input.name,
+        });
+      } catch {
+        /* signup must not fail if mail is down */
+      }
     }
 
     return user;

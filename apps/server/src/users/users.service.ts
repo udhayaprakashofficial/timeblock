@@ -352,7 +352,7 @@ export class UsersService {
       try {
         const { dto, isNew } = await viaRest();
         if (isNew) {
-          this.notifyWelcome(email, name);
+          await this.notifyWelcome(email, name);
           return { ...dto, onboardingCompleted: false };
         }
         // Existing Google account — never re-show first-time setup
@@ -378,7 +378,7 @@ export class UsersService {
         scope: 'calendar.readonly gmail.send email profile',
       });
       if (isNew) {
-        this.notifyWelcome(email, name);
+        // Welcome is sent inside upsertOAuthUser (awaited for Vercel).
         return { ...(await this.getMe(user.id)), onboardingCompleted: false };
       }
       return this.markReturningUserOnboarded(await this.getMe(user.id));
@@ -621,15 +621,28 @@ export class UsersService {
   }
 
   private queueWelcome(email: string, name?: string) {
-    void this.mail
-      .sendWelcomeEmail({ toEmail: email, toName: name })
-      .catch(() => undefined);
+    return this.notifyWelcome(email, name);
   }
 
-  private notifyWelcome(email: string, name?: string) {
-    void this.mail
-      .sendWelcomeEmail({ toEmail: email, toName: name })
-      .catch(() => undefined);
+  /**
+   * On Vercel serverless, fire-and-forget promises are frozen when the
+   * response returns — so we must await the Brevo call before responding.
+   */
+  private async notifyWelcome(email: string, name?: string): Promise<void> {
+    try {
+      const ok = await this.mail.sendWelcomeEmail({
+        toEmail: email,
+        toName: name,
+      });
+      if (!ok) {
+        console.warn('[mail] welcome email did not send for', email);
+      }
+    } catch (err) {
+      console.warn(
+        '[mail] welcome email error',
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   async signupWithPassword(input: {
@@ -665,7 +678,7 @@ export class UsersService {
         } catch {
           /* optional */
         }
-        this.notifyWelcome(email, name);
+        await this.notifyWelcome(email, name);
         return {
           ...this.dtoFromParts(user, []),
           onboardingCompleted: false,
@@ -688,7 +701,7 @@ export class UsersService {
         data: { email, name, passwordHash, onboardingCompleted: false },
         include: { oauthAccounts: true },
       });
-      this.notifyWelcome(email, name);
+      await this.notifyWelcome(email, name);
       return this.toDto(user);
     } catch (err) {
       if (err instanceof BadRequestException) throw err;
@@ -716,7 +729,7 @@ export class UsersService {
     } catch {
       /* optional */
     }
-    this.notifyWelcome(email, name);
+    await this.notifyWelcome(email, name);
     return {
       ...this.dtoFromParts(local, local.connectedProviders),
       onboardingCompleted: false,
