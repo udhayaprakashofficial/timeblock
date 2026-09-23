@@ -484,22 +484,82 @@ export class UsersService {
       await this.repackTodayIfZoneChanged(userId, prevTz, tz);
       return this.getMe(userId);
     } catch (err) {
+      // Live DBs sometimes lag schema (e.g. missing onboardingCompleted) — never 500
+      // finish-onboarding over a missing optional column.
+      const withoutOnboarding = { ...data } as Record<string, unknown>;
+      delete withoutOnboarding.onboardingCompleted;
+      const canRetryPrisma = Object.keys(withoutOnboarding).length > 0;
+      if (canRetryPrisma) {
+        try {
+          await this.prisma.user.update({
+            where: { id: userId },
+            data: withoutOnboarding,
+          });
+          await this.repackTodayIfZoneChanged(userId, prevTz, tz);
+          const me = await this.getMe(userId);
+          if (body.onboardingCompleted !== undefined) {
+            this.localUsers.setOnboardingCompleted(
+              userId,
+              Boolean(body.onboardingCompleted),
+            );
+            return {
+              ...me,
+              onboardingCompleted: Boolean(body.onboardingCompleted),
+            };
+          }
+          return me;
+        } catch {
+          /* fall through to REST / soft-success */
+        }
+      }
+
       if (this.supabase.isConfigured()) {
         try {
           await this.supabase.patch('User', `id=eq.${userId}`, {
             ...data,
             updatedAt: new Date().toISOString(),
           });
-        } catch (patchErr) {
-          // Column may not exist yet on remote — still succeed for onboarding flag
-          if (body.onboardingCompleted === undefined) throw patchErr;
+        } catch {
+          // Retry without onboardingCompleted if that column is missing remotely
+          if (canRetryPrisma) {
+            try {
+              await this.supabase.patch('User', `id=eq.${userId}`, {
+                ...withoutOnboarding,
+                updatedAt: new Date().toISOString(),
+              });
+            } catch (patchErr) {
+              if (body.onboardingCompleted === undefined) throw patchErr;
+            }
+          } else if (body.onboardingCompleted === undefined) {
+            throw err;
+          }
         }
         await this.repackTodayIfZoneChanged(userId, prevTz, tz);
         const me = await this.getMe(userId);
         if (body.onboardingCompleted !== undefined) {
-          return { ...me, onboardingCompleted: Boolean(body.onboardingCompleted) };
+          return {
+            ...me,
+            onboardingCompleted: Boolean(body.onboardingCompleted),
+          };
         }
         return me;
+      }
+
+      // No REST — keep onboarding in the local overlay and return profile if readable
+      if (body.onboardingCompleted !== undefined) {
+        this.localUsers.setOnboardingCompleted(
+          userId,
+          Boolean(body.onboardingCompleted),
+        );
+        try {
+          const me = await this.getMe(userId);
+          return {
+            ...me,
+            onboardingCompleted: Boolean(body.onboardingCompleted),
+          };
+        } catch {
+          /* fall through */
+        }
       }
       throw err;
     }
