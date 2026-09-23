@@ -29,7 +29,6 @@ type BillingSummary = {
   isActive?: boolean;
   invoices: InvoiceRow[];
   invoicesAvailable: boolean;
-  webhookConfigured?: boolean;
   apiKeyConfigured?: boolean;
 };
 
@@ -64,12 +63,15 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
     const params = new URLSearchParams(window.location.search);
     const status = (params.get('status') || '').toLowerCase();
     const paymentId =
-      params.get('payment_id') ||
-      params.get('paymentId') ||
-      params.get('subscription_id') ||
-      '';
+      params.get('payment_id') || params.get('paymentId') || '';
 
     if (status !== 'succeeded' && status !== 'success') return;
+    if (!paymentId) {
+      setErr(
+        'Checkout returned without a payment id. If you were charged, contact support with your Dodo receipt — we cannot mark Pro without a verified payment.',
+      );
+      return;
+    }
 
     let cancelled = false;
     setConfirming(true);
@@ -256,41 +258,6 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
             >
               Upgrade to Pro — $10/mo
             </a>
-            {summary.data?.webhookConfigured === false ? (
-              <button
-                type="button"
-                className="sub-btn is-outline"
-                disabled={confirming}
-                onClick={() => {
-                  setConfirming(true);
-                  setErr(null);
-                  void api
-                    .post<{ user?: UserDto }>('/api/billing/confirm', {
-                      status: 'succeeded',
-                    })
-                    .then(async (result) => {
-                      if (result.user) qc.setQueryData(['me'], result.user);
-                      await qc.invalidateQueries({
-                        queryKey: ['billing-summary'],
-                      });
-                      await qc.invalidateQueries({ queryKey: ['me'] });
-                      setBanner(
-                        'Congratulations — Pro is locked in for your account.',
-                      );
-                    })
-                    .catch((e) => {
-                      setErr(
-                        e instanceof Error
-                          ? e.message
-                          : 'Could not sync payment',
-                      );
-                    })
-                    .finally(() => setConfirming(false));
-                }}
-              >
-                {confirming ? 'Syncing…' : 'I already paid — lock Pro'}
-              </button>
-            ) : null}
           </div>
         ) : isActive ? (
           <p className="sub-note">

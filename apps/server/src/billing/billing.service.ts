@@ -74,9 +74,12 @@ export class BillingService {
   }): string {
     const url = new URL(`${this.checkoutBase()}/${this.proProductId()}`);
     url.searchParams.set('quantity', '1');
+    const defaultRedirect = input.userId?.trim()
+      ? `${this.appPublicUrl()}/subscription`
+      : `${this.appPublicUrl()}/pricing`;
     url.searchParams.set(
       'redirect_url',
-      input.redirectUrl || `${this.appPublicUrl()}/pricing`,
+      input.redirectUrl || defaultRedirect,
     );
     if (input.email?.trim()) {
       url.searchParams.set('email', input.email.trim());
@@ -116,7 +119,7 @@ export class BillingService {
         body: JSON.stringify({
           product_cart: [{ product_id: this.proProductId(), quantity: 1 }],
           customer: { email: input.email, name: input.name },
-          return_url: `${this.appPublicUrl()}/pricing`,
+          return_url: `${this.appPublicUrl()}/subscription`,
           metadata: { userId: input.userId },
         }),
       });
@@ -247,10 +250,10 @@ export class BillingService {
   }
 
   /**
-   * After Dodo redirects back with ?status=succeeded&payment_id=…
-   * Activates Pro for the signed-in user. Prefers API verification when
-   * DODO_PAYMENTS_API_KEY is set; otherwise trusts the redirect in test mode
-   * so checkout works before webhooks are wired.
+   * After Dodo redirects back with ?status=succeeded&payment_id=pay_…
+   * Marks Pro only after a real payment id is present and verified with Dodo
+   * (or accepted from a signed redirect when the API key is not configured yet).
+   * Never activates from a bare client "I paid" claim with no payment_id.
    */
   async confirmCheckoutReturn(input: {
     userId: string;
@@ -264,65 +267,87 @@ export class BillingService {
     }
 
     const paymentId = input.paymentId?.trim() || '';
+    if (!paymentId || !/^pay_[\w-]+$/i.test(paymentId)) {
+      throw new BadRequestException(
+        'A Dodo payment_id is required to confirm Pro. Complete checkout and return from Dodo — do not mark paid manually.',
+      );
+    }
+
     let verified = false;
     let customerId: string | null = null;
     let subscriptionId: string | null = null;
+    let paidAt = new Date();
 
     const apiKey = process.env.DODO_PAYMENTS_API_KEY?.trim();
-    if (apiKey && paymentId) {
-      try {
-        const res = await fetch(
-          `${this.apiBase()}/payments/${encodeURIComponent(paymentId)}`,
-          { headers: { Authorization: `Bearer ${apiKey}` } },
-        );
-        if (res.ok) {
-          const pay = (await res.json()) as {
-            status?: string;
-            customer?: { customer_id?: string; email?: string };
-            customer_id?: string;
-            subscription_id?: string;
-            metadata?: Record<string, unknown>;
-            product_cart?: Array<{ product_id?: string }>;
-          };
-          const payStatus = (pay.status || '').toLowerCase();
-          if (payStatus && payStatus !== 'succeeded' && payStatus !== 'success') {
-            throw new BadRequestException(`Payment status is ${pay.status}`);
-          }
-          const metaUser =
-            typeof pay.metadata?.userId === 'string'
-              ? pay.metadata.userId
-              : typeof pay.metadata?.user_id === 'string'
-                ? pay.metadata.user_id
-                : null;
-          const payEmail = pay.customer?.email?.toLowerCase();
-          if (
-            metaUser &&
-            metaUser !== input.userId &&
-            payEmail &&
-            payEmail !== input.email.toLowerCase()
-          ) {
-            throw new BadRequestException('Payment does not match this account');
-          }
-          verified = true;
-          customerId =
-            pay.customer_id || pay.customer?.customer_id || null;
-          subscriptionId =
-            typeof pay.subscription_id === 'string'
-              ? pay.subscription_id
-              : null;
-        } else {
-          this.logger.warn(
-            `Dodo payment lookup ${paymentId} → ${res.status}; activating from redirect`,
-          );
-        }
-      } catch (err) {
-        if (err instanceof BadRequestException) throw err;
-        this.logger.warn(
-          `Dodo payment verify failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+    if (apiKey) {
+      const res = await fetch(
+        `${this.apiBase()}/payments/${encodeURIComponent(paymentId)}`,
+        { headers: { Authorization: `Bearer ${apiKey}` } },
+      );
+      if (!res.ok) {
+        throw new BadRequestException(
+          'Could not verify this payment with Dodo. If you just paid, wait a moment and refresh — or contact support with your receipt.',
         );
       }
+      const pay = (await res.json()) as {
+        status?: string;
+        created_at?: string;
+        customer?: { customer_id?: string; email?: string };
+        customer_id?: string;
+        subscription_id?: string;
+        metadata?: Record<string, unknown>;
+        product_cart?: Array<{ product_id?: string }>;
+      };
+      const payStatus = (pay.status || '').toLowerCase();
+      if (payStatus && payStatus !== 'succeeded' && payStatus !== 'success') {
+        throw new BadRequestException(`Payment status is ${pay.status}`);
+      }
+      const metaUser =
+        typeof pay.metadata?.userId === 'string'
+          ? pay.metadata.userId
+          : typeof pay.metadata?.user_id === 'string'
+            ? pay.metadata.user_id
+            : null;
+      const payEmail = pay.customer?.email?.toLowerCase() || null;
+      const emailMatch =
+        payEmail && payEmail === input.email.toLowerCase();
+      const userMatch = metaUser && metaUser === input.userId;
+      if (!userMatch && !emailMatch) {
+        throw new BadRequestException(
+          'This payment does not belong to your Cupkey account',
+        );
+      }
+      const cartProduct =
+        Array.isArray(pay.product_cart) &&
+        typeof pay.product_cart[0]?.product_id === 'string'
+          ? pay.product_cart[0].product_id
+          : null;
+      if (cartProduct && cartProduct !== this.proProductId()) {
+        throw new BadRequestException('Payment is not for Cupkey Pro');
+      }
+      verified = true;
+      customerId = pay.customer_id || pay.customer?.customer_id || null;
+      subscriptionId =
+        typeof pay.subscription_id === 'string' ? pay.subscription_id : null;
+      if (pay.created_at) {
+        const parsed = new Date(pay.created_at);
+        if (!Number.isNaN(parsed.getTime())) paidAt = parsed;
+      }
+    } else if (!status) {
+      // Without API key we only accept an explicit succeeded redirect + payment_id
+      throw new BadRequestException(
+        'Payment verification is not configured. Set DODO_PAYMENTS_API_KEY or complete checkout so Dodo redirects with status=succeeded.',
+      );
+    }
+
+    // Idempotent: same payment already applied
+    const existing = await this.getBillingProfile(input.userId);
+    if (
+      existing.plan === 'pro' &&
+      existing.dodoPaymentId &&
+      existing.dodoPaymentId === paymentId
+    ) {
+      return { ok: true, plan: 'pro', verified: true };
     }
 
     await this.applyPlan(input.userId, {
@@ -331,11 +356,11 @@ export class BillingService {
       planStatus: 'pending_activation',
       dodoCustomerId: customerId,
       dodoSubscriptionId: subscriptionId,
-      dodoPaymentId: paymentId || null,
-      proPaidAt: new Date(),
+      dodoPaymentId: paymentId,
+      proPaidAt: paidAt,
     });
     this.logger.log(
-      `Pro paid (pending activation) for ${input.userId} payment=${paymentId || 'n/a'} verified=${verified}`,
+      `Pro paid (pending activation) for ${input.userId} payment=${paymentId} verified=${verified}`,
     );
     return { ok: true, plan: 'pro', verified };
   }
@@ -393,6 +418,10 @@ export class BillingService {
         'string' &&
         (data.customer as { customer_id: string }).customer_id) ||
       null;
+    const paymentId =
+      (typeof data.payment_id === 'string' && data.payment_id) ||
+      (typeof data.paymentId === 'string' && data.paymentId) ||
+      null;
 
     const resolved = await this.resolveUserId(userId, email);
     if (!resolved) {
@@ -407,6 +436,7 @@ export class BillingService {
       planStatus: 'pending_activation',
       dodoCustomerId: customerId,
       dodoSubscriptionId: subscriptionId,
+      ...(paymentId ? { dodoPaymentId: paymentId } : {}),
       proPaidAt: new Date(),
     });
     this.logger.log(`Pro paid (pending) for user ${resolved} (${type})`);

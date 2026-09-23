@@ -13,13 +13,18 @@ function checkoutBase(): string {
   ).replace(/\/$/, '');
 }
 
-function defaultRedirectUrl(): string {
+function defaultRedirectUrl(customer?: ProCheckoutCustomer | null): string {
   if (typeof window !== 'undefined' && window.location?.origin) {
+    // Signed-in checkout returns to Subscription so we can confirm payment_id
+    if (customer?.id?.trim()) {
+      return `${window.location.origin}/subscription`;
+    }
     return `${window.location.origin}/pricing`;
   }
-  return (
+  const base = (
     process.env.NEXT_PUBLIC_APP_URL?.trim() || 'https://app.cupkey.io'
-  ).replace(/\/$/, '') + '/pricing';
+  ).replace(/\/$/, '');
+  return customer?.id?.trim() ? `${base}/subscription` : `${base}/pricing`;
 }
 
 export type ProCheckoutCustomer = {
@@ -39,7 +44,10 @@ export function buildProCheckoutUrl(
 ): string {
   const url = new URL(`${checkoutBase()}/${DODO_PRO_PRODUCT_ID}`);
   url.searchParams.set('quantity', '1');
-  url.searchParams.set('redirect_url', redirectUrl || defaultRedirectUrl());
+  url.searchParams.set(
+    'redirect_url',
+    redirectUrl || defaultRedirectUrl(customer),
+  );
 
   const email = customer?.email?.trim();
   if (email) {

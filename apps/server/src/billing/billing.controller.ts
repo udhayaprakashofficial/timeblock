@@ -91,7 +91,8 @@ export class BillingController {
 
   /**
    * Called when the browser returns from Dodo checkout
-   * (?status=succeeded&payment_id=pay_…). Activates Pro immediately.
+   * (?status=succeeded&payment_id=pay_…). Requires a real payment_id;
+   * verifies with Dodo when DODO_PAYMENTS_API_KEY is set.
    * Webhooks still recommended for renewals / missed redirects.
    */
   @Post('confirm')
@@ -103,7 +104,9 @@ export class BillingController {
   ) {
     const userId = req.session!.userId!;
     const me = await this.users.getMe(userId);
-    if (me.plan === 'pro') {
+    const paymentId = body.paymentId?.trim() || '';
+    // Already Pro with this payment — no-op. Do not accept blank confirms.
+    if (me.plan === 'pro' && me.dodoPaymentId && me.dodoPaymentId === paymentId) {
       return {
         ok: true,
         plan: 'pro' as const,
@@ -112,11 +115,20 @@ export class BillingController {
         user: me,
       };
     }
+    if (me.plan === 'pro' && !paymentId) {
+      return {
+        ok: true,
+        plan: 'pro' as const,
+        alreadyPro: true,
+        verified: Boolean(me.dodoPaymentId),
+        user: me,
+      };
+    }
     const result = await this.billing.confirmCheckoutReturn({
       userId: me.id,
       email: me.email,
       paymentId: body.paymentId,
-      status: body.status ?? 'succeeded',
+      status: body.status,
     });
     const updated = await this.users.getMe(userId);
     return { ...result, user: updated, alreadyPro: false };

@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useQueryClient } from '@tanstack/react-query';
 import type { UserDto } from '@timeblock/shared-types';
 import { CupkeyLogo } from '../components/CupkeyLogo';
+import { api } from '../api';
 import {
   buildProCheckoutUrl,
 } from '../lib/billing';
@@ -190,6 +192,7 @@ export function PricingPage({
   /** Inside dashboard shell — no marketing chrome */
   embedded?: boolean;
 }) {
+  const qc = useQueryClient();
   const joinHref = signedIn ? '/schedule' : '/login';
   const joinLabel = signedIn ? 'Open dashboard' : 'Join Cupkey';
   const isPro = user?.plan === 'pro';
@@ -211,11 +214,11 @@ export function PricingPage({
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
     const status = (params.get('status') || '').toLowerCase();
+    const paymentId =
+      params.get('payment_id') || params.get('paymentId') || '';
     const buy = params.get('buy');
 
-    if (status === 'succeeded' || status === 'success') {
-      setCheckoutBanner('success');
-    } else if (status === 'failed' || status === 'cancelled') {
+    if (status === 'failed' || status === 'cancelled') {
       setCheckoutBanner('failed');
     }
 
@@ -227,8 +230,51 @@ export function PricingPage({
           name: user.name,
         }),
       );
+      return;
     }
-  }, [signedIn, user, isPro]);
+
+    // Real Dodo return: confirm only with payment_id (never bare "success")
+    if (
+      signedIn &&
+      user &&
+      !isPro &&
+      (status === 'succeeded' || status === 'success') &&
+      paymentId
+    ) {
+      let cancelled = false;
+      setCheckoutBanner('success');
+      void (async () => {
+        try {
+          const result = await api.post<{ user?: UserDto }>(
+            '/api/billing/confirm',
+            { paymentId, status: 'succeeded' },
+          );
+          if (cancelled) return;
+          if (result.user) qc.setQueryData(['me'], result.user);
+          await qc.invalidateQueries({ queryKey: ['me'] });
+          await qc.invalidateQueries({ queryKey: ['billing-summary'] });
+          const url = new URL(window.location.href);
+          [
+            'status',
+            'payment_id',
+            'paymentId',
+            'subscription_id',
+            'email',
+          ].forEach((k) => url.searchParams.delete(k));
+          window.history.replaceState({}, '', url.pathname + url.search);
+        } catch {
+          if (!cancelled) setCheckoutBanner('failed');
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (status === 'succeeded' || status === 'success') {
+      setCheckoutBanner('success');
+    }
+  }, [signedIn, user, isPro, qc]);
 
   return (
     <div
