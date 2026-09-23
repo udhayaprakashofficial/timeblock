@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { resolve } from 'path';
 
 export type LocalUser = {
@@ -23,12 +24,20 @@ type StoreFile = {
   onboardingCompletedByUserId?: Record<string, boolean>;
 };
 
+function localDataDir() {
+  // Vercel / Lambda FS is read-only except /tmp
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    return resolve(tmpdir(), 'cupkey-data');
+  }
+  return resolve(__dirname, '../../data');
+}
+
 /**
  * File-backed user store used when Supabase/Postgres is unreachable.
  */
 @Injectable()
 export class LocalUserStore {
-  private readonly dir = resolve(__dirname, '../../data');
+  private readonly dir = localDataDir();
   private readonly file = resolve(this.dir, 'local-users.json');
 
   private read(): StoreFile {
@@ -41,8 +50,15 @@ export class LocalUserStore {
   }
 
   private write(data: StoreFile) {
-    if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true });
-    writeFileSync(this.file, JSON.stringify(data, null, 2), 'utf8');
+    try {
+      if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true });
+      writeFileSync(this.file, JSON.stringify(data, null, 2), 'utf8');
+    } catch (err) {
+      console.warn(
+        '[local-users] write skipped',
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   upsertGoogle(input: {

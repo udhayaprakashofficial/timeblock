@@ -209,17 +209,33 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
     onboardingCompleted?: boolean;
   }> {
     const email = input.email.toLowerCase();
-    const existing = await this.select<{
+    let existing: Array<{
       id: string;
       name: string;
       email: string;
       theme: string;
       timezone: string;
       onboardingCompleted?: boolean;
-    }>('User', 'id,name,email,theme,timezone,defaultTaskMinutes,onboardingCompleted', {
-      filter: `email=eq.${encodeURIComponent(email)}`,
-      limit: 1,
-    });
+    }> = [];
+    try {
+      existing = await this.select(
+        'User',
+        'id,name,email,theme,timezone,defaultTaskMinutes,onboardingCompleted',
+        {
+          filter: `email=eq.${encodeURIComponent(email)}`,
+          limit: 1,
+        },
+      );
+    } catch {
+      existing = await this.select(
+        'User',
+        'id,name,email,theme,timezone,defaultTaskMinutes',
+        {
+          filter: `email=eq.${encodeURIComponent(email)}`,
+          limit: 1,
+        },
+      );
+    }
 
     let user:
       | {
@@ -321,23 +337,37 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getUserByEmail(email: string) {
-    const rows = await this.select<{
-      id: string;
-      name: string;
-      email: string;
-      theme: string;
-      timezone: string;
-      passwordHash: string | null;
-      onboardingCompleted?: boolean;
-    }>(
-      'User',
-      'id,name,email,theme,timezone,passwordHash,defaultTaskMinutes,onboardingCompleted',
-      {
-        filter: `email=eq.${encodeURIComponent(email.toLowerCase())}`,
+    const filter = `email=eq.${encodeURIComponent(email.toLowerCase())}`;
+    try {
+      const rows = await this.select<{
+        id: string;
+        name: string;
+        email: string;
+        theme: string;
+        timezone: string;
+        passwordHash: string | null;
+        onboardingCompleted?: boolean;
+      }>(
+        'User',
+        'id,name,email,theme,timezone,passwordHash,defaultTaskMinutes,onboardingCompleted',
+        { filter, limit: 1 },
+      );
+      return rows[0] ?? null;
+    } catch {
+      // Column may not exist yet on remote
+      const rows = await this.select<{
+        id: string;
+        name: string;
+        email: string;
+        theme: string;
+        timezone: string;
+        passwordHash: string | null;
+      }>('User', 'id,name,email,theme,timezone,passwordHash,defaultTaskMinutes', {
+        filter,
         limit: 1,
-      },
-    );
-    return rows[0] ?? null;
+      });
+      return rows[0] ?? null;
+    }
   }
 
   async getUserById(id: string) {

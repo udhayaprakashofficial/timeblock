@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { resolve } from 'path';
 import type {
   CreateTaskDto,
@@ -71,9 +72,16 @@ type StoreFile = {
   recurring?: LocalRecurring[];
 };
 
+function localDataDir() {
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    return resolve(tmpdir(), 'cupkey-data');
+  }
+  return resolve(__dirname, '../../data');
+}
+
 @Injectable()
 export class LocalDataStore {
-  private readonly dir = resolve(__dirname, '../../data');
+  private readonly dir = localDataDir();
   private readonly file = resolve(this.dir, 'local-app.json');
 
   private read(): StoreFile {

@@ -697,7 +697,12 @@ export class UsersService {
       );
     }
 
-    // Offline / unreachable Supabase — keep local app usable
+    // Offline / unreachable Supabase — keep local app usable (not on Vercel)
+    if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+      throw new BadRequestException(
+        'Could not create account right now. Please try again in a moment.',
+      );
+    }
     const existingLocal = this.localUsers.findByEmail(email);
     if (existingLocal) {
       throw new BadRequestException('An account with this email already exists');
