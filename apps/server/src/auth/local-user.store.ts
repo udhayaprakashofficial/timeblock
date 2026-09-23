@@ -15,6 +15,13 @@ export type LocalUser = {
   refreshToken?: string;
   passwordHash?: string;
   onboardingCompleted?: boolean;
+  plan?: 'free' | 'pro';
+  planStatus?: string | null;
+  dodoCustomerId?: string | null;
+  dodoSubscriptionId?: string | null;
+  dodoPaymentId?: string | null;
+  proPaidAt?: string | null;
+  proActivatedAt?: string | null;
   connectedProviders: Array<'google' | 'microsoft'>;
 };
 
@@ -118,6 +125,11 @@ export class LocalUserStore {
   findByEmail(email: string): LocalUser | null {
     const e = email.trim().toLowerCase();
     return this.read().users.find((u) => u.email === e) ?? null;
+  }
+
+  /** All users (admin / billing lists). */
+  readAll(): LocalUser[] {
+    return this.read().users.slice();
   }
 
   /** Persist onboarding flag even when Supabase User column is missing. */

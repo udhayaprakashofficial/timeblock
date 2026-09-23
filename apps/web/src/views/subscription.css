@@ -1,0 +1,347 @@
+/* Dashboard subscription — status + invoices only */
+
+.sub-page {
+  max-width: 640px;
+  padding: 8px 4px 48px;
+  color: var(--text, #f5f5f7);
+}
+
+.sub-head {
+  margin-bottom: 28px;
+}
+
+.sub-kicker {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--coral, #ff5a24);
+}
+
+.sub-head h1 {
+  margin: 0 0 10px;
+  font-size: clamp(1.5rem, 2.4vw, 1.85rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text, #f5f5f7);
+}
+
+.sub-lede {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--muted, #9a9a9e);
+  max-width: 42ch;
+}
+
+.sub-card {
+  background: var(--panel, #161618);
+  border: 1px solid var(--border, #2a2a2e);
+  border-radius: 14px;
+  padding: 22px 22px 20px;
+  margin-bottom: 16px;
+}
+
+.sub-card-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.sub-label {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted, #9a9a9e);
+}
+
+.sub-plan-name {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.sub-section-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 650;
+}
+
+.sub-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sub-badge.is-free {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted, #c4c4c8);
+  border: 1px solid var(--border, #3a3a40);
+}
+
+.sub-badge.is-pending {
+  background: rgba(250, 204, 21, 0.14);
+  color: #facc15;
+  border: 1px solid rgba(250, 204, 21, 0.4);
+}
+
+.sub-congrats {
+  border-color: rgba(255, 90, 36, 0.35);
+  background: linear-gradient(
+    160deg,
+    rgba(255, 90, 36, 0.12),
+    var(--panel, #161618) 55%
+  );
+}
+
+[data-theme='light'] .sub-badge.is-pending {
+  background: #fff8e1;
+  color: #b45309;
+  border-color: #fcd34d;
+}
+
+[data-theme='light'] .sub-congrats {
+  background: linear-gradient(160deg, #fff3ee, #fff 55%);
+  border-color: #ffc9b5;
+}
+
+.sub-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin: 0 0 20px;
+  padding: 0;
+}
+
+.sub-meta div {
+  min-width: 0;
+}
+
+.sub-meta dt {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted, #9a9a9e);
+}
+
+.sub-meta dd {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 550;
+  word-break: break-word;
+}
+
+.sub-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.sub-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 10px;
+  font-size: 0.92rem;
+  font-weight: 650;
+  text-decoration: none;
+  border: none;
+  cursor: pointer;
+  box-sizing: border-box;
+  background: transparent;
+  color: inherit;
+}
+
+.sub-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.sub-btn.is-primary {
+  background: linear-gradient(120deg, #ff3d17, #ff8a3c);
+  color: #1a120f;
+}
+
+.sub-btn.is-primary:hover {
+  filter: brightness(1.05);
+}
+
+.sub-btn.is-outline {
+  background: transparent;
+  color: var(--text, #f5f5f7);
+  border: 1px solid var(--border, #3a3a40);
+}
+
+.sub-btn.is-outline:hover:not(:disabled) {
+  border-color: #ff5a24;
+  color: #ff8a3c;
+}
+
+.sub-btn.is-ghost {
+  height: 32px;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--muted, #9a9a9e);
+  font-size: 0.8rem;
+}
+
+.sub-btn.is-ghost:hover:not(:disabled) {
+  color: var(--text, #f5f5f7);
+}
+
+.sub-note {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: var(--muted, #9a9a9e);
+}
+
+.sub-empty code {
+  font-size: 0.78rem;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme='light'] .sub-empty code {
+  background: #f0f0f2;
+}
+
+.sub-error {
+  margin: 0 0 12px;
+  font-size: 0.88rem;
+  color: #f87171;
+}
+
+.sub-banner {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  color: #86efac;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.sub-hint {
+  margin: 8px 0 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--muted, #9a9a9e);
+}
+
+.sub-hint code {
+  font-size: 0.78rem;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme='light'] .sub-banner {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+  color: #1b5e20;
+}
+
+[data-theme='light'] .sub-hint code {
+  background: #f0f0f2;
+}
+
+.sub-invoice-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sub-invoice-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border, #2a2a2e);
+}
+
+.sub-invoice-list li:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.sub-invoice-list strong {
+  display: block;
+  font-size: 0.95rem;
+  margin-bottom: 2px;
+}
+
+.sub-invoice-list span {
+  font-size: 0.8rem;
+  color: var(--muted, #9a9a9e);
+}
+
+@media (max-width: 640px) {
+  .sub-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .sub-invoice-list li {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* Light theme */
+[data-theme='light'] .sub-page {
+  color: #1a1a1c;
+}
+
+[data-theme='light'] .sub-head h1 {
+  color: #1a1a1c;
+}
+
+[data-theme='light'] .sub-lede,
+[data-theme='light'] .sub-label,
+[data-theme='light'] .sub-meta dt,
+[data-theme='light'] .sub-note,
+[data-theme='light'] .sub-empty,
+[data-theme='light'] .sub-invoice-list span {
+  color: #6b6b70;
+}
+
+[data-theme='light'] .sub-card {
+  background: #fff;
+  border-color: #e6e6ea;
+}
+
+[data-theme='light'] .sub-badge.is-free {
+  background: #f3f3f5;
+  color: #4a4a50;
+  border-color: #d8d8de;
+}
+
+[data-theme='light'] .sub-btn.is-outline {
+  color: #1a1a1c;
+  border-color: #d0d0d6;
+}
+
+[data-theme='light'] .sub-invoice-list li {
+  border-top-color: #ececf0;
+}

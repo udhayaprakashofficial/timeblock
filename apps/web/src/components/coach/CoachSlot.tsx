@@ -12,14 +12,45 @@ type Props = {
   content: CoachSlotContent | null;
   onMute: (minutes: number) => void;
   onUnmute: () => void;
+  onShare?: () => void;
 };
 
 /** Right-rail dynamic Coach slot — shell stays stable across releases. */
-export function CoachSlot({ content, onMute, onUnmute }: Props) {
+export function CoachSlot({ content, onMute, onUnmute, onShare }: Props) {
   if (!content) return null;
 
   const kindLabel = COACH_KIND_LABEL[content.kind];
   const action = content.action;
+  const isRecap = content.kind === 'insight' && Boolean(content.recap);
+
+  if (isRecap && content.recap) {
+    return (
+      <div
+        className="side-card coach-card coach-slot coach-recap"
+        data-coach-kind={content.kind}
+        data-coach-id={content.id}
+      >
+        <div className="coach-recap-orb" aria-hidden />
+        <div className="coach-recap-top">
+          <span className="coach-recap-mark" aria-hidden />
+          <span className="coach-recap-week">{content.recap.weekLabel}</span>
+        </div>
+        <div className="coach-recap-main">
+          <p className="coach-recap-hours">{content.recap.hoursLabel}</p>
+          <p className="coach-recap-tagline">{content.recap.tagline}</p>
+        </div>
+        {action?.type === 'share' ? (
+          <button
+            type="button"
+            className="coach-recap-cta"
+            onClick={() => onShare?.()}
+          >
+            {action.label}
+          </button>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -72,16 +103,23 @@ export function CoachSlot({ content, onMute, onUnmute }: Props) {
       ) : null}
 
       {action?.type === 'link' ? (
-        <a
-          className="btn btn-primary btn-pill coach-cta"
-          href={action.href}
-        >
+        <a className="btn btn-primary btn-pill coach-cta" href={action.href}>
           {action.label}
         </a>
       ) : null}
 
       {action?.type === 'dismiss' ? (
         <button type="button" className="btn btn-outline btn-pill coach-cta">
+          {action.label}
+        </button>
+      ) : null}
+
+      {action?.type === 'share' ? (
+        <button
+          type="button"
+          className="btn btn-primary btn-pill coach-cta"
+          onClick={() => onShare?.()}
+        >
           {action.label}
         </button>
       ) : null}

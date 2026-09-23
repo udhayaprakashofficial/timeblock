@@ -127,7 +127,7 @@ export async function createNestApp(): Promise<NestExpressApplication> {
   const app = await NestFactory.create<NestExpressApplication>(
     AppModule,
     new ExpressAdapter(server),
-    { logger: ['error', 'warn', 'log'] },
+    { logger: ['error', 'warn', 'log'], rawBody: true },
   );
 
   server.set('trust proxy', 1);

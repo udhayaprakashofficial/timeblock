@@ -131,9 +131,34 @@ export function buildNudgeContent(
  * Example: weekly AI insight, badge challenge, demo video card.
  */
 export function buildInsightContent(
-  _ctx: CoachSlotContext,
+  ctx: CoachSlotContext,
 ): CoachSlotContent | null {
-  return null;
+  const mins = Math.max(0, Math.round(ctx.weekActualMinutes ?? 0));
+  if (mins < 15) return null;
+  // Don't cover live / in-slot focus nudges
+  if (ctx.current.mode === 'live' || ctx.current.mode === 'now') return null;
+
+  const hours = (mins / 60).toFixed(1).replace(/\.0$/, '');
+  const weekNo = ctx.weekNumber ?? 0;
+  const weekLabel = weekNo > 0 ? `RECAP / W${weekNo}` : 'RECAP';
+
+  return {
+    id: 'insight.week-recap',
+    kind: 'insight',
+    priority: 58,
+    muteable: true,
+    title: `${hours}h`,
+    body: 'of deep flow shipped this week.',
+    recap: {
+      weekLabel,
+      hoursLabel: `${hours}h`,
+      tagline: 'of deep flow shipped this week.',
+    },
+    action: {
+      type: 'share',
+      label: 'SHARE TO STORIES',
+    },
+  };
 }
 
 export function buildChallengeContent(

@@ -1,0 +1,6 @@
+-- Dodo Payments / Pro subscription fields on User
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "plan" TEXT NOT NULL DEFAULT 'free';
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "planStatus" TEXT;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "dodoCustomerId" TEXT;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "dodoSubscriptionId" TEXT;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "planUpdatedAt" TIMESTAMP(3);

@@ -184,6 +184,74 @@ Open your dashboard: ${dashboardUrl}
     return result.ok;
   }
 
+  /** Pro activated by admin when AI features go live. */
+  async sendProActivatedEmail(input: {
+    toEmail: string;
+    toName?: string;
+    activatedAt: Date;
+  }): Promise<boolean> {
+    if (!this.isConfigured()) {
+      this.logger.warn('Brevo not configured — skip Pro activated email');
+      return false;
+    }
+    const firstName = firstNameFrom(input.toName, input.toEmail);
+    const safeName = escapeHtml(firstName);
+    const dash = `${this.appPublicUrl()}/pricing`;
+    const when = input.activatedAt.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const next = new Date(input.activatedAt);
+    next.setDate(next.getDate() + 30);
+    const nextLabel = next.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+
+    const textContent = `Hey ${firstName},
+
+Great news — your Cupkey Pro plan is now active.
+
+AI features are live. Your subscription period starts ${when}.
+Your first billing cycle runs until ${nextLabel}.
+
+Open Subscription: ${dash}
+
+— Cupkey`;
+
+    const htmlContent = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;background:#f4f4f5;padding:24px;">
+<table role="presentation" width="100%"><tr><td align="center">
+<table width="560" style="background:#fff;border-radius:12px;padding:36px;border:1px solid #e4e4e7;">
+<tr><td style="font-size:16px;color:#18181b;padding-bottom:16px;">Hey ${safeName},</td></tr>
+<tr><td style="font-size:16px;color:#18181b;padding-bottom:16px;"><strong>Your Cupkey Pro plan is now active.</strong></td></tr>
+<tr><td style="font-size:15px;color:#3f3f46;line-height:1.6;padding-bottom:16px;">
+AI features are live. Your subscription countdown starts <strong>${escapeHtml(when)}</strong>.
+This billing cycle runs until <strong>${escapeHtml(nextLabel)}</strong>.
+</td></tr>
+<tr><td align="center" style="padding:20px 0;">
+<a href="${dash}" style="display:inline-block;background:#ff5722;color:#fff;text-decoration:none;font-weight:700;padding:12px 24px;border-radius:999px;">View subscription</a>
+</td></tr>
+<tr><td style="font-size:14px;color:#71717a;">— Cupkey</td></tr>
+</table></td></tr></table></body></html>`;
+
+    const result = await this.sendTransactional({
+      toEmail: input.toEmail,
+      toName: firstName,
+      subject: 'Your Cupkey Pro plan is now active',
+      htmlContent,
+      textContent,
+      replyToSender: true,
+    });
+    if (result.ok) this.logger.log(`Pro activated email → ${input.toEmail}`);
+    else
+      this.logger.warn(
+        `Pro activated email failed ${input.toEmail}: ${result.error}`,
+      );
+    return result.ok;
+  }
+
   /** Timesheet share email — returns structured result for UI errors. */
   async sendTimesheetShareEmail(input: {
     toEmail: string;

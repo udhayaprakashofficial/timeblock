@@ -913,6 +913,7 @@ export class LocalDataStore {
       scheduledEnd: t.scheduledEnd,
       actualMinutes: t.actualMinutes,
       activeEntryId: t.activeEntryId,
+      timerStartedAt: t.activeEntryId ? t.timerStartedAt ?? null : null,
       scheduleLocked: Boolean(t.scheduleLocked),
       meetLink: t.meetLink ?? null,
       sourceProvider: t.sourceProvider ?? null,

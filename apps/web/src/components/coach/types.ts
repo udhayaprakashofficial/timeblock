@@ -21,7 +21,8 @@ export type CoachSlotAction =
   | { type: 'mute'; minutes: number; label: string }
   | { type: 'unmute'; label: string }
   | { type: 'link'; href: string; label: string }
-  | { type: 'dismiss'; label: string };
+  | { type: 'dismiss'; label: string }
+  | { type: 'share'; label: string };
 
 export type CoachSlotContent = {
   /** Stable id for dismiss / analytics. */
@@ -35,6 +36,12 @@ export type CoachSlotContent = {
   action?: CoachSlotAction;
   /** Optional media for video / promo kinds. */
   mediaUrl?: string | null;
+  /** Weekly recap banner extras (insight kind). */
+  recap?: {
+    weekLabel: string;
+    hoursLabel: string;
+    tagline: string;
+  } | null;
 };
 
 export type CoachSlotContext = {
@@ -52,6 +59,9 @@ export type CoachSlotContext = {
   };
   mutedUntil: number | null;
   muteMins: number;
+  /** Logged minutes this ISO week (for recap banner). */
+  weekActualMinutes?: number;
+  weekNumber?: number;
 };
 
 export const COACH_KIND_LABEL: Record<CoachSlotKind, string> = {

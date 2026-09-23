@@ -379,24 +379,50 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
         theme: string;
         timezone: string;
         onboardingCompleted?: boolean;
-      }>('User', 'id,name,email,theme,timezone,defaultTaskMinutes,onboardingCompleted', {
-        filter: `id=eq.${id}`,
-        limit: 1,
-      });
+        plan?: string;
+        planStatus?: string | null;
+        planUpdatedAt?: string | null;
+      }>(
+        'User',
+        'id,name,email,theme,timezone,defaultTaskMinutes,onboardingCompleted,plan,planStatus,planUpdatedAt',
+        {
+          filter: `id=eq.${id}`,
+          limit: 1,
+        },
+      );
       return rows[0] ?? null;
     } catch {
-      // Column may not exist yet — do not force false (that bounced finished users).
-      const rows = await this.select<{
-        id: string;
-        name: string;
-        email: string;
-        theme: string;
-        timezone: string;
-      }>('User', 'id,name,email,theme,timezone,defaultTaskMinutes', {
-        filter: `id=eq.${id}`,
-        limit: 1,
-      });
-      return rows[0] ?? null;
+      try {
+        const rows = await this.select<{
+          id: string;
+          name: string;
+          email: string;
+          theme: string;
+          timezone: string;
+          onboardingCompleted?: boolean;
+        }>(
+          'User',
+          'id,name,email,theme,timezone,defaultTaskMinutes,onboardingCompleted',
+          {
+            filter: `id=eq.${id}`,
+            limit: 1,
+          },
+        );
+        return rows[0] ?? null;
+      } catch {
+        // Column may not exist yet — do not force false (that bounced finished users).
+        const rows = await this.select<{
+          id: string;
+          name: string;
+          email: string;
+          theme: string;
+          timezone: string;
+        }>('User', 'id,name,email,theme,timezone,defaultTaskMinutes', {
+          filter: `id=eq.${id}`,
+          limit: 1,
+        });
+        return rows[0] ?? null;
+      }
     }
   }
 
@@ -1341,6 +1367,9 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       ),
       actualMinutes,
       activeEntryId: active ? String(active.id) : null,
+      timerStartedAt: active?.startedAt
+        ? toUtcIso(String(active.startedAt))
+        : null,
       meetLink: t.meetLink ? String(t.meetLink) : null,
       scheduleLocked: Boolean(t.scheduleLocked),
       sourceProvider: t.sourceProvider ? String(t.sourceProvider) : null,

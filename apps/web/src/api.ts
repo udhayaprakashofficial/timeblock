@@ -48,14 +48,21 @@ function notifyAuthLost() {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(apiUrl(path), {
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-    ...init,
-  });
+  let res: Response;
+  try {
+    res = await fetch(apiUrl(path), {
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+      ...init,
+    });
+  } catch {
+    throw new Error(
+      'Cannot reach the server. Check your connection and try again.',
+    );
+  }
   if (!res.ok) {
     const text = await res.text();
     if (
@@ -65,25 +72,45 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ) {
       notifyAuthLost();
     }
+    let parsed: {
+      error?: string;
+      message?: string | string[];
+    } | null = null;
     try {
-      const json = JSON.parse(text) as {
+      parsed = JSON.parse(text) as {
         error?: string;
         message?: string | string[];
       };
-      const detail = Array.isArray(json.message)
-        ? json.message.join(', ')
-        : json.message;
-      // Nest puts the useful text in `message` and a generic label in `error`
-      throw new Error(detail || json.error || text || res.statusText);
-    } catch (e) {
-      if (e instanceof Error && e.message !== text) throw e;
-      throw new Error(text || res.statusText);
+    } catch {
+      parsed = null;
     }
+    if (parsed && typeof parsed === 'object') {
+      const detail = Array.isArray(parsed.message)
+        ? parsed.message.join(', ')
+        : parsed.message;
+      // Nest puts the useful text in `message` and a generic label in `error`
+      throw new Error(detail || parsed.error || text || res.statusText);
+    }
+    // Next.js proxy often returns plain "Internal Server Error" when the API is down
+    if (
+      res.status >= 500 ||
+      /internal server error/i.test(text) ||
+      /^<!DOCTYPE/i.test(text)
+    ) {
+      throw new Error(
+        'Server is temporarily unavailable. Please try again in a moment.',
+      );
+    }
+    throw new Error((text || res.statusText).slice(0, 200));
   }
   // Nest may return 200 with an empty body for `null` — avoid res.json() crash
   const text = await res.text();
   if (!text) return null as T;
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error('Server returned an invalid response. Please try again.');
+  }
 }
 
 export const api = {

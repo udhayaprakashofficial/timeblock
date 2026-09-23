@@ -119,6 +119,17 @@ function isoFromMinutes(date: string, totalMin: number): string {
   return combineIso(date, `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
 }
 
+/** Seconds of the open session from timerStartedAt (survives refresh). */
+function liveSessionSeconds(
+  timerStartedAt: string | null | undefined,
+  nowMs = Date.now(),
+): number {
+  if (!timerStartedAt) return 0;
+  const started = Date.parse(timerStartedAt);
+  if (!Number.isFinite(started)) return 0;
+  return Math.max(0, Math.floor((nowMs - started) / 1000));
+}
+
 /** Free segments of [start, end) after removing busy intervals. */
 function subtractBusy(
   start: number,
@@ -1076,7 +1087,12 @@ export function TodayPage({
                           <div className="cal-block-main">
                             {isLive && (
                               <span className="cal-live-tag">
-                                ● In session · {t.actualMinutes || 0}m
+                                ● In session ·{' '}
+                                {(t.actualMinutes || 0) +
+                                  Math.floor(
+                                    liveSessionSeconds(t.timerStartedAt) / 60,
+                                  )}
+                                m
                               </span>
                             )}
                             <strong>
@@ -1379,20 +1395,21 @@ function SessionBanner({
 }) {
   const dispatch = useAppDispatch();
   const [busy, setBusy] = useState(false);
-  const [liveSec, setLiveSec] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
   useEffect(() => {
-    if (mode !== 'live') {
-      setLiveSec(0);
-      return;
-    }
-    setLiveSec(0);
-    const id = window.setInterval(() => setLiveSec((n) => n + 1), 1000);
+    if (mode !== 'live') return;
+    setNowMs(Date.now());
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [task.id, task.activeEntryId, mode]);
+  }, [task.id, task.activeEntryId, task.timerStartedAt, mode]);
+
+  const liveSessionSec =
+    mode === 'live' ? liveSessionSeconds(task.timerStartedAt, nowMs) : 0;
 
   const elapsedSec =
     mode === 'live'
-      ? Math.max(0, (task.actualMinutes || 0) * 60 + liveSec)
+      ? Math.max(0, (task.actualMinutes || 0) * 60 + liveSessionSec)
       : Math.max(0, (task.actualMinutes || 0) * 60);
   const totalSec = Math.max(5, task.estimatedMinutes) * 60;
   const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');

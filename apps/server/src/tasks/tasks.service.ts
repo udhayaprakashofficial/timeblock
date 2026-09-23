@@ -1186,6 +1186,7 @@ export class TasksService {
       scheduledEnd: t.scheduledEnd?.toISOString() ?? null,
       actualMinutes,
       activeEntryId: active?.id ?? null,
+      timerStartedAt: active?.startedAt?.toISOString() ?? null,
       notes: t.notes ?? null,
       meetLink: t.meetLink ?? null,
       scheduleLocked: Boolean(t.scheduleLocked),

@@ -6,6 +6,9 @@ export type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 export type ThemePreference = 'light' | 'dark';
 
+/** Billing plan — Pro is sold via Dodo Payments */
+export type PlanId = 'free' | 'pro';
+
 export interface UserDto {
   id: string;
   name: string;
@@ -18,6 +21,22 @@ export interface UserDto {
   /** False until first-time onboarding finishes (signup → onboard → dashboard) */
   onboardingCompleted: boolean;
   connectedProviders: CalendarProvider[];
+  /** free | pro — paid lock-in; features unlock after admin activation */
+  plan: PlanId;
+  /**
+   * pending_activation — paid, waiting for AI go-live / admin activate
+   * active — Pro live; countdown from proActivatedAt
+   * on_hold | cancelled | failed
+   */
+  planStatus?: string | null;
+  /** ISO timestamp when plan last changed */
+  planUpdatedAt?: string | null;
+  /** ISO — when user paid / locked Pro */
+  proPaidAt?: string | null;
+  /** ISO — when admin activated Pro (billing period starts) */
+  proActivatedAt?: string | null;
+  /** Last Dodo payment id for invoice download */
+  dodoPaymentId?: string | null;
 }
 
 export interface AuthConfigDto {
@@ -58,6 +77,8 @@ export interface TaskDto {
   scheduledEnd: string | null; // ISO
   actualMinutes: number;
   activeEntryId: string | null;
+  /** ISO start of the open time entry — used to resume the live clock after refresh */
+  timerStartedAt?: string | null;
   /** Free-form comments / notes for later review */
   notes?: string | null;
   /** Present when task was created from a calendar/Meet event */

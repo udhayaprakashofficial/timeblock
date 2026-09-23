@@ -93,6 +93,9 @@ export default function LandingPage() {
           <Link href="/#how" className="landing-link">
             How it works
           </Link>
+          <Link href="/pricing" className="landing-link">
+            Pricing
+          </Link>
           <Link href="/login" className="landing-link">
             Sign in
           </Link>
@@ -361,6 +364,7 @@ export default function LandingPage() {
               <nav aria-label="Product">
                 <Link href="/#how">How it works</Link>
                 <Link href="/#features">Features</Link>
+                <Link href="/pricing">Pricing</Link>
                 <Link href="/login">Get started</Link>
               </nav>
             </div>

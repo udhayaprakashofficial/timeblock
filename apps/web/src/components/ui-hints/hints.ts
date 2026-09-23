@@ -10,6 +10,7 @@ export type HintId =
   | 'nav.badges'
   | 'nav.timesheet'
   | 'nav.settings'
+  | 'nav.subscription'
   | 'nav.feedback'
   | 'dash.plan'
   | 'dash.queue'
@@ -68,6 +69,11 @@ export const HINTS: Record<HintId, HintCopy> = {
     id: 'nav.settings',
     title: 'Settings',
     body: 'Profile, calendars, and the work hours Cupkey schedules into.',
+  },
+  'nav.subscription': {
+    id: 'nav.subscription',
+    title: 'Subscription',
+    body: 'See your current plan, status, and download invoices.',
   },
   'nav.feedback': {
     id: 'nav.feedback',

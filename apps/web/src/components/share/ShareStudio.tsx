@@ -324,76 +324,38 @@ function StoryCard({
   week: ShareWeekPayload;
   person: SharePerson | null;
 }) {
-  const max = Math.max(1, ...week.days.map((d) => d.actualMinutes));
-  const best = week.days.reduce(
-    (a, b) => (b.actualMinutes > a.actualMinutes ? b : a),
-    week.days[0] ?? { label: '', actualMinutes: 0, date: '' },
-  );
-  const hours = Math.floor(week.actualMinutes / 60);
-  const mins = week.actualMinutes % 60;
+  const hours = (week.actualMinutes / 60).toFixed(1).replace(/\.0$/, '');
+  const weekNo = (() => {
+    const m = week.weekLabel.match(/Week\s+(\d+)/i);
+    return m ? m[1] : '';
+  })();
 
   return (
-    <div className="share-card share-story" data-share-card>
-      <div className="share-story-hero">
-        <div className="share-story-stamp">
-          <Mark />
-          <span>Cupkey · Story</span>
-        </div>
-        {person ? <PersonRow person={person} tone="dark" /> : null}
-        <p className="share-story-week">{week.weekLabel}</p>
-        <div className="share-story-time" aria-label={formatHm(week.actualMinutes)}>
-          <strong>{hours}</strong>
-          <span>h</span>
-          <strong className="is-mins">{String(mins).padStart(2, '0')}</strong>
-          <span>m</span>
-        </div>
-        <h3>
-          of work that
-          <br />
-          actually
-          <br />
-          happened.
-        </h3>
+    <div className="share-card share-story share-story-recap" data-share-card>
+      <div className="share-story-recap-orb" aria-hidden />
+      <div className="share-story-recap-top">
+        {person?.photo ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={person.photo}
+            alt=""
+            className="share-story-recap-avatar"
+          />
+        ) : (
+          <span className="share-story-recap-mark" aria-hidden />
+        )}
+        <span className="share-story-recap-week">
+          {weekNo ? `RECAP / W${weekNo}` : 'RECAP'}
+        </span>
       </div>
-
-      <div className="share-story-body">
-        <p className="share-story-caption">Your week as logged minutes</p>
-        <div className="share-story-skyline" aria-hidden>
-          {week.days.map((d) => {
-            const pct = Math.max(8, Math.round((d.actualMinutes / max) * 100));
-            const isBest = d.date === best.date && d.actualMinutes > 0;
-            return (
-              <div
-                key={d.date}
-                className={`share-story-tower${isBest ? ' is-best' : ''}`}
-              >
-                <div className="share-story-tower-bar" style={{ height: `${pct}%` }}>
-                  {isBest ? <em>BEST</em> : null}
-                </div>
-                <span>{d.label.slice(0, 1)}</span>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="share-story-strip">
-          <div>
-            <strong>{week.completed}</strong>
-            <span>Shipped</span>
-          </div>
-          <div>
-            <strong>{week.accuracyPercent}%</strong>
-            <span>Accuracy</span>
-          </div>
-          <div>
-            <strong>{best.label.slice(0, 3) || '—'}</strong>
-            <span>Peak day</span>
-          </div>
-        </div>
-
-        <div className="share-story-foot">
-          <span>cupkey.io</span>
-        </div>
+      <div className="share-story-recap-main">
+        <p className="share-story-recap-hours">{hours}h</p>
+        <p className="share-story-recap-tagline">
+          of deep flow shipped this week.
+        </p>
+      </div>
+      <div className="share-story-recap-cta" aria-hidden>
+        SHARE TO STORIES
       </div>
     </div>
   );

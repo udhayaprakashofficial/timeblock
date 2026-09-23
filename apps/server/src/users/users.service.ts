@@ -837,9 +837,17 @@ export class UsersService {
       timezone?: string | null;
       defaultTaskMinutes?: number | null;
       onboardingCompleted?: boolean | null;
+      plan?: string | null;
+      planStatus?: string | null;
+      planUpdatedAt?: Date | string | null;
+      proPaidAt?: Date | string | null;
+      proActivatedAt?: Date | string | null;
+      dodoPaymentId?: string | null;
     },
     providers: string[],
   ): UserDto {
+    const toIso = (v: Date | string | null | undefined) =>
+      !v ? null : typeof v === 'string' ? v : v.toISOString();
     return {
       id: user.id,
       name: user.name,
@@ -851,10 +859,14 @@ export class UsersService {
         Number(user.defaultTaskMinutes) >= 5
           ? Math.round(Number(user.defaultTaskMinutes))
           : 30,
-      // Explicit false = first-time signup still in setup.
-      // Missing/null/true = done (legacy rows never re-enter onboarding).
       onboardingCompleted: user.onboardingCompleted !== false,
       connectedProviders: providers as UserDto['connectedProviders'],
+      plan: user.plan === 'pro' ? 'pro' : 'free',
+      planStatus: user.planStatus ?? null,
+      planUpdatedAt: toIso(user.planUpdatedAt),
+      proPaidAt: toIso(user.proPaidAt),
+      proActivatedAt: toIso(user.proActivatedAt),
+      dodoPaymentId: user.dodoPaymentId ?? null,
     };
   }
 
@@ -866,6 +878,12 @@ export class UsersService {
     timezone?: string | null;
     defaultTaskMinutes?: number | null;
     onboardingCompleted?: boolean | null;
+    plan?: string | null;
+    planStatus?: string | null;
+    planUpdatedAt?: Date | string | null;
+    proPaidAt?: Date | string | null;
+    proActivatedAt?: Date | string | null;
+    dodoPaymentId?: string | null;
     oauthAccounts: Array<{ provider: string }>;
   }): UserDto {
     return this.dtoFromParts(

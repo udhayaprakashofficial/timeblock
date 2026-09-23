@@ -99,6 +99,12 @@ function normalizeUser(user: UserDto): UserDto {
         ? Math.round(user.defaultTaskMinutes)
         : 30,
     onboardingCompleted: completed,
+    plan: user.plan === 'pro' ? 'pro' : 'free',
+    planStatus: user.planStatus ?? null,
+    planUpdatedAt: user.planUpdatedAt ?? null,
+    proPaidAt: user.proPaidAt ?? null,
+    proActivatedAt: user.proActivatedAt ?? null,
+    dodoPaymentId: user.dodoPaymentId ?? null,
   };
 }
 
@@ -235,6 +241,7 @@ function RailAvatar({ name, userId }: { name: string; userId: string }) {
   const items = [
     { href: '/settings', label: 'Profile', external: false },
     { href: '/settings?panel=account', label: 'Account', external: false },
+    { href: '/pricing', label: 'Subscription', external: false },
     { href: '/settings?panel=help', label: 'Help', external: false },
     { href: FEEDBACK_URL, label: 'Feedback', external: true },
   ] as const;
@@ -529,11 +536,16 @@ function Shell({
     >
     <div
       className={`app-shell${
-        pathname.startsWith('/badges') || pathname.startsWith('/settings')
+        pathname.startsWith('/badges') ||
+        pathname.startsWith('/settings') ||
+        pathname.startsWith('/pricing') ||
+        pathname.startsWith('/admin')
           ? ' is-wide'
           : ''
       }${pathname.startsWith('/badges') ? ' is-badges' : ''}${
         pathname.startsWith('/settings') ? ' is-settings' : ''
+      }${pathname.startsWith('/pricing') ? ' is-pricing' : ''}${
+        pathname.startsWith('/admin') ? ' is-admin' : ''
       }`}
     >
       <aside className="sidebar" aria-label="Primary">
@@ -594,6 +606,16 @@ function Shell({
             <span className="nav-label">Badges</span>
           </NavItem>
           <NavItem
+            href="/pricing"
+            title={HINTS['nav.subscription'].title}
+            tip={HINTS['nav.subscription'].body}
+          >
+            <span className="nav-icon" aria-hidden>
+              ◆
+            </span>
+            <span className="nav-label">Subscription</span>
+          </NavItem>
+          <NavItem
             href="/settings"
             title={HINTS['nav.settings'].title}
             tip={HINTS['nav.settings'].body}
@@ -603,6 +625,15 @@ function Shell({
             </span>
             <span className="nav-label">Settings</span>
           </NavItem>
+          {user.email.trim().toLowerCase() ===
+          'udhayaprakashmohan@gmail.com' ? (
+            <NavItem href="/admin" title="Admin" tip="Pro payers and activation">
+              <span className="nav-icon" aria-hidden>
+                ✦
+              </span>
+              <span className="nav-label">Admin</span>
+            </NavItem>
+          ) : null}
         </nav>
 
         <div className="sidebar-footer">
@@ -678,7 +709,11 @@ function Shell({
         </div>
       </div>
       {!pathname.startsWith('/badges') &&
-        !pathname.startsWith('/settings') && <RightPanel user={displayUser} />}
+        !pathname.startsWith('/settings') &&
+        !pathname.startsWith('/pricing') &&
+        !pathname.startsWith('/admin') && (
+          <RightPanel user={displayUser} />
+        )}
     </div>
     </DashboardReadyGate>
     </UserProvider>
@@ -693,7 +728,9 @@ export function App({ children }: { children: ReactNode }) {
   const isLogin = pathname === '/login';
   const isOnboarding = pathname.startsWith('/onboarding');
   const isSharedTimesheet = pathname.startsWith('/share/');
-  const isPublic = isLanding || isLogin || isSharedTimesheet;
+  const isPricing = pathname.startsWith('/pricing');
+  const isPublic =
+    isLanding || isLogin || isSharedTimesheet || isPricing;
   const [sessionUser, setSessionUser] = useState<UserDto | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [exchanging, setExchanging] = useState(false);
@@ -742,6 +779,23 @@ export function App({ children }: { children: ReactNode }) {
       writeCachedUser(normalized);
       setSessionUser(normalized);
       qc.setQueryData(['me'], normalized);
+
+      const returnTo = new URLSearchParams(window.location.search).get(
+        'returnTo',
+      );
+      const safeReturn =
+        returnTo &&
+        returnTo.startsWith('/') &&
+        !returnTo.startsWith('//')
+          ? returnTo
+          : null;
+
+      if (safeReturn) {
+        setEnteringDashboard(false);
+        router.replace(safeReturn);
+        return;
+      }
+
       if (!needsOnboarding(normalized)) {
         setEnteringDashboard(true);
         router.replace('/schedule');
@@ -853,12 +907,13 @@ export function App({ children }: { children: ReactNode }) {
     if (!user) return;
 
     // First-time users: Signup/Login → Onboarding → Dashboard
-    if (needsOnboarding(user) && !isOnboarding && !isSharedTimesheet) {
+    if (needsOnboarding(user) && !isOnboarding && !isSharedTimesheet && !isPricing) {
       router.replace('/onboarding');
       return;
     }
     // Finished users: leave landing/login. Never auto-leave /onboarding —
     // only Build day / Skip navigates via onFinished → handleSignedIn.
+    // Pricing stays reachable while signed in (Subscription sidebar).
     if (!needsOnboarding(user) && (isLanding || isLogin)) {
       router.replace('/schedule');
     }
@@ -871,6 +926,7 @@ export function App({ children }: { children: ReactNode }) {
     isLogin,
     isOnboarding,
     isSharedTimesheet,
+    isPricing,
     router,
   ]);
 
@@ -895,7 +951,7 @@ export function App({ children }: { children: ReactNode }) {
   ]);
 
   let body: ReactNode;
-  if (exchanging || (!hydrated && !isLanding && !isSharedTimesheet)) {
+  if (exchanging || (!hydrated && !isLanding && !isSharedTimesheet && !isPricing)) {
     body = (
       <div className="auth-screen">
         <div className="auth-card">
@@ -904,7 +960,7 @@ export function App({ children }: { children: ReactNode }) {
       </div>
     );
   } else if (!user) {
-    if (isLanding || isSharedTimesheet) {
+    if (isLanding || isSharedTimesheet || isPricing) {
       body = children;
     } else if (isLogin) {
       body = <LoginScreen onSignedIn={handleSignedIn} />;
@@ -969,7 +1025,11 @@ export function App({ children }: { children: ReactNode }) {
   return (
     <>
       <ThemeForceLight
-        active={(isPublic && !user) || isOnboarding || needsOnboarding(user)}
+        active={
+          (isPublic && !user) ||
+          isOnboarding ||
+          needsOnboarding(user)
+        }
       />
       {user ? <ThemeSeed preference={user.theme} /> : null}
       {body}

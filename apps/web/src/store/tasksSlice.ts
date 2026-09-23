@@ -377,6 +377,7 @@ const tasksSlice = createSlice({
         ...t,
         status: 'completed',
         activeEntryId: null,
+        timerStartedAt: null,
         actualMinutes: actual,
         inBacklog: false,
       };
@@ -394,6 +395,7 @@ const tasksSlice = createSlice({
           return {
             ...t,
             activeEntryId: null,
+            timerStartedAt: null,
             status: t.status === 'in_progress' ? 'pending' : t.status,
           };
         });
@@ -404,6 +406,7 @@ const tasksSlice = createSlice({
       list[idx] = {
         ...list[idx],
         activeEntryId: `opt_${Date.now()}`,
+        timerStartedAt: new Date().toISOString(),
         status: 'in_progress',
       };
       state.byDate[hit.date] = sortDayTasks(list);
@@ -419,6 +422,7 @@ const tasksSlice = createSlice({
       list[idx] = {
         ...t,
         activeEntryId: null,
+        timerStartedAt: null,
         status: t.status === 'in_progress' ? 'pending' : t.status,
       };
       state.byDate[hit.date] = sortDayTasks(list);
@@ -469,6 +473,7 @@ const tasksSlice = createSlice({
         scheduledEnd: null,
         scheduleLocked: false,
         activeEntryId: null,
+        timerStartedAt: null,
       };
       state.backlog = [moved, ...state.backlog.filter((t) => t.id !== moved.id)];
     },

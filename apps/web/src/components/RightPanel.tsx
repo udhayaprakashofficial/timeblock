@@ -14,6 +14,14 @@ import {
 import { fetchStats } from '../store/statsSlice';
 import { HintMark } from './ui-hints';
 import { CoachSlot, resolveCoachSlot } from './coach';
+import { ShareStudio } from './share/ShareStudio';
+import type { ShareWeekPayload } from './share/shareFormat';
+import {
+  formatWeekSpan,
+  isoWeekNumber,
+  weekdayShort,
+} from './share/shareFormat';
+import type { WeeklyReportDto } from '@timeblock/shared-types';
 
 const EMPTY_PANEL_TASKS: TaskDto[] = [];
 
@@ -93,6 +101,7 @@ export function RightPanel({ user }: { user: UserDto }) {
   const [tick, setTick] = useState(0);
   const [mutedUntil, setMutedUntil] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
 
   const MUTE_KEY = 'tb.coachMuteUntil';
 
@@ -119,6 +128,11 @@ export function RightPanel({ user }: { user: UserDto }) {
     queryKey: ['stats', date],
     queryFn: () =>
       api.get<StatsOverviewDto>(`/api/stats/overview?date=${date}`),
+  });
+
+  const weekly = useQuery({
+    queryKey: ['weekly', date],
+    queryFn: () => api.get<WeeklyReportDto>(`/api/stats/weekly?date=${date}`),
   });
 
   const taskList = useAppSelector((s) => s.tasks.byDate[date] ?? EMPTY_PANEL_TASKS);
@@ -216,6 +230,44 @@ export function RightPanel({ user }: { user: UserDto }) {
   const openTasks = taskList.filter((t) => t.status !== 'completed').length;
   const doneTasks = taskList.filter((t) => t.status === 'completed').length;
 
+  const weekActualMinutes = weekly.data?.totals.actualMinutes ?? 0;
+  const weekNo = weekly.data
+    ? isoWeekNumber(weekly.data.weekStart)
+    : isoWeekNumber(date);
+
+  const shareWeek: ShareWeekPayload | null = useMemo(() => {
+    const data = weekly.data;
+    if (!data) return null;
+    const est = data.totals.estimatedMinutes;
+    const act = data.totals.actualMinutes;
+    const drift = act - est;
+    const acc =
+      est <= 0
+        ? 100
+        : Math.max(0, Math.min(100, Math.round((1 - Math.abs(drift) / est) * 100)));
+    return {
+      weekStart: data.weekStart,
+      weekEnd: data.weekEnd,
+      weekLabel: `Week ${isoWeekNumber(data.weekStart)} · ${formatWeekSpan(data.weekStart, data.weekEnd)}`,
+      estimatedMinutes: est,
+      actualMinutes: act,
+      driftMinutes: drift,
+      completed: data.totals.completed,
+      total: data.totals.total,
+      completionPercent:
+        data.totals.total > 0
+          ? Math.round((data.totals.completed / data.totals.total) * 100)
+          : 0,
+      accuracyPercent: acc,
+      days: data.byDay.map((d) => ({
+        date: d.date,
+        label: weekdayShort(d.date),
+        estimatedMinutes: d.estimatedMinutes,
+        actualMinutes: d.actualMinutes,
+      })),
+    };
+  }, [weekly.data]);
+
   const coachContent = useMemo(
     () =>
       resolveCoachSlot({
@@ -233,6 +285,8 @@ export function RightPanel({ user }: { user: UserDto }) {
         },
         mutedUntil,
         muteMins,
+        weekActualMinutes,
+        weekNumber: weekNo,
       }),
     [
       date,
@@ -246,6 +300,8 @@ export function RightPanel({ user }: { user: UserDto }) {
       current,
       mutedUntil,
       muteMins,
+      weekActualMinutes,
+      weekNo,
       tick,
     ],
   );
@@ -410,6 +466,14 @@ export function RightPanel({ user }: { user: UserDto }) {
         content={coachContent}
         onMute={applyMute}
         onUnmute={clearMute}
+        onShare={() => setShareOpen(true)}
+      />
+
+      <ShareStudio
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        week={shareWeek}
+        initialTab="story"
       />
     </aside>
   );
