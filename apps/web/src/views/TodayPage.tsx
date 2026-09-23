@@ -60,12 +60,49 @@ function formatHm(total: number) {
 
 function sortDay(list: TaskDto[]): TaskDto[] {
   return [...list].sort((a, b) => {
+    if (a.order !== b.order) return a.order - b.order;
     if (a.scheduledStart && b.scheduledStart) {
       return a.scheduledStart.localeCompare(b.scheduledStart);
     }
     if (a.scheduledStart) return -1;
     if (b.scheduledStart) return 1;
-    return a.order - b.order;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/** After a queue reorder, shift unlocked task windows so times follow the new order immediately. */
+function optimisticShiftSchedule(ordered: TaskDto[]): TaskDto[] {
+  const movable = ordered.filter(
+    (t) =>
+      !t.scheduleLocked &&
+      t.status !== 'completed' &&
+      t.scheduledStart &&
+      t.scheduledEnd,
+  );
+  if (movable.length < 2) return ordered;
+  let cursor = Math.min(
+    ...movable.map((t) => new Date(t.scheduledStart!).getTime()),
+  );
+  const nextTimes = new Map<string, { start: string; end: string }>();
+  for (const t of movable) {
+    const durMs = Math.max(
+      5 * 60_000,
+      new Date(t.scheduledEnd!).getTime() -
+        new Date(t.scheduledStart!).getTime(),
+    );
+    const start = cursor;
+    const end = start + durMs;
+    nextTimes.set(t.id, {
+      start: new Date(start).toISOString(),
+      end: new Date(end).toISOString(),
+    });
+    cursor = end;
+  }
+  return ordered.map((t) => {
+    const slot = nextTimes.get(t.id);
+    return slot
+      ? { ...t, scheduledStart: slot.start, scheduledEnd: slot.end }
+      : t;
   });
 }
 
@@ -699,15 +736,15 @@ export function TodayPage({
     overlapRepackKey.current = key;
     const unlockedIds = tasks.filter((t) => !t.scheduleLocked).map((t) => t.id);
     if (!unlockedIds.length) return;
+    // Persist current order so the server re-packs times — do not refetch
+    // and overwrite the Redux queue (fulfilled merges schedule fields).
     void dispatch(
       reorderTasksOptimistic({
         date,
-        taskIds: unlockedIds,
+        taskIds: tasks.map((t) => t.id),
         previous: tasks,
       }),
-    ).then(() => {
-      void dispatch(fetchTasks(date));
-    });
+    );
   }, [tasks, template?.breaks, timeZone, date, dispatch]);
 
   const timelineH = span * pxPerMin;
@@ -721,17 +758,27 @@ export function TodayPage({
     if (tasks[oldIndex]?.scheduleLocked || tasks[newIndex]?.scheduleLocked) {
       return;
     }
-    const previous = tasks;
-    const next = arrayMove(tasks, oldIndex, newIndex);
+    const previous = tasks.map((t, i) => ({ ...t, order: i }));
+    const next = optimisticShiftSchedule(
+      arrayMove(tasks, oldIndex, newIndex).map((t, i) => ({
+        ...t,
+        order: i,
+      })),
+    );
+    // UI follows Redux immediately — API only persists + refreshes times.
     dispatch(tasksActions.optimisticReorder({ date, tasks: next }));
-    const unlockedIds = next.filter((t) => !t.scheduleLocked).map((t) => t.id);
+    const taskIds = next.map((t) => t.id);
     void dispatch(
       reorderTasksOptimistic({
         date,
-        taskIds: unlockedIds,
+        taskIds,
         previous,
       }),
-    ).then(() => invalidateStats());
+    ).then((result) => {
+      if (reorderTasksOptimistic.fulfilled.match(result)) {
+        invalidateStats();
+      }
+    });
   };
 
   const dateLabel = useMemo(() => {

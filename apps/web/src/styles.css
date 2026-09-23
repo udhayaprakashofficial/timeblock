@@ -1812,6 +1812,8 @@ body:has(.landing) {
   cursor: grab;
   border-radius: 8px;
   padding: 0;
+  touch-action: none;
+  user-select: none;
 }
 
 .priority-grip:hover {

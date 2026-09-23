@@ -30,14 +30,16 @@ const initialState: TasksState = {
   createError: null,
 };
 
+/** Day queue order is explicit priority (`order`), not wall-clock time. */
 function sortDayTasks(list: TaskDto[]): TaskDto[] {
   return [...list].sort((a, b) => {
+    if (a.order !== b.order) return a.order - b.order;
     if (a.scheduledStart && b.scheduledStart) {
       return a.scheduledStart.localeCompare(b.scheduledStart);
     }
     if (a.scheduledStart) return -1;
     if (b.scheduledStart) return 1;
-    return a.order - b.order;
+    return a.name.localeCompare(b.name);
   });
 }
 
@@ -495,6 +497,15 @@ const tasksSlice = createSlice({
         state.error = null;
       })
       .addCase(fetchTasks.fulfilled, (state, action) => {
+        // While a drag-reorder is in flight, don't let a parallel fetch
+        // snap the queue back — UI stays on optimistic order.
+        if (
+          state.pendingKeys.includes(`reorder:${action.payload.date}`)
+        ) {
+          state.loadingDate = null;
+          state.loadedDates[action.payload.date] = true;
+          return;
+        }
         state.byDate[action.payload.date] = sortDayTasks(action.payload.tasks);
         state.loadedDates[action.payload.date] = true;
         state.loadingDate = null;
@@ -570,7 +581,31 @@ const tasksSlice = createSlice({
       })
       .addCase(reorderTasksOptimistic.fulfilled, (state, action) => {
         popPending(state, `reorder:${action.payload.date}`);
-        state.byDate[action.payload.date] = sortDayTasks(action.payload.tasks);
+        // Keep the optimistic queue order; only refresh server fields
+        // (scheduled times after re-pack, status, etc.). Full replace
+        // waits for an explicit fetch/refresh.
+        const date = action.payload.date;
+        const current = dayList(state, date);
+        const byId = new Map(
+          action.payload.tasks.map((t) => [t.id, t] as const),
+        );
+        const merged = current.map((t, i) => {
+          const server = byId.get(t.id);
+          if (!server) return { ...t, order: i };
+          return {
+            ...t,
+            ...server,
+            // Preserve the order the user just dragged to
+            order: i,
+          };
+        });
+        // Append any tasks the server returned that we somehow missed
+        for (const t of action.payload.tasks) {
+          if (!merged.some((m) => m.id === t.id)) {
+            merged.push({ ...t, order: merged.length });
+          }
+        }
+        state.byDate[date] = merged;
       })
       .addCase(reorderTasksOptimistic.rejected, (state, action) => {
         const payload = action.payload as
@@ -578,7 +613,10 @@ const tasksSlice = createSlice({
           | undefined;
         if (payload) {
           popPending(state, `reorder:${payload.date}`);
-          state.byDate[payload.date] = payload.previous;
+          state.byDate[payload.date] = payload.previous.map((t, i) => ({
+            ...t,
+            order: i,
+          }));
           state.error = payload.message;
         }
       })
