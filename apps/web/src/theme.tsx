@@ -24,10 +24,7 @@ const ThemeContext = createContext<{
 } | null>(null);
 
 function systemTheme(): Theme {
-  if (typeof window === 'undefined') return 'light';
-  return window.matchMedia('(prefers-color-scheme: dark)').matches
-    ? 'dark'
-    : 'light';
+  return 'dark';
 }
 
 function readStored(): Theme | null {
@@ -117,10 +114,11 @@ export function ThemeSeed({ preference }: { preference?: Theme | null }) {
       done.current = true;
       return;
     }
-    if (preference === 'light' || preference === 'dark') {
-      done.current = true;
-      setTheme(preference);
-    }
+    // Prefer server preference; fall back to dark for new dashboards.
+    const next: Theme =
+      preference === 'light' || preference === 'dark' ? preference : 'dark';
+    done.current = true;
+    setTheme(next);
   }, [preference, setTheme]);
   return null;
 }

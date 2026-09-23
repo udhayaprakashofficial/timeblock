@@ -856,9 +856,11 @@ export class LocalDataStore {
       const now = new Date();
       const floor = now.getHours() * 60 + now.getMinutes();
       const coverageEnd = free.reduce((m, i) => Math.max(m, i.end), 0);
+      // Extend only after the last free slot — never re-fill lunch/break gaps.
       if (coverageEnd <= floor + 45) {
         const end = Math.min(24 * 60, floor + 4 * 60);
-        if (end > floor) free = [...free, { start: floor, end }];
+        const start = Math.max(floor, coverageEnd);
+        if (end > start) free = [...free, { start, end }];
       }
       free = free
         .map((i) => ({ start: Math.max(i.start, floor), end: i.end }))

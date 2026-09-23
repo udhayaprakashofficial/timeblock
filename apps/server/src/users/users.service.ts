@@ -79,6 +79,7 @@ export class UsersService {
     // and tasks get carried into backlog while the plan looks empty.
     const user = await this.updateProfile(userId, {
       onboardingCompleted: true,
+      theme: 'dark',
       ...(tz ? { timezone: tz } : {}),
     });
 

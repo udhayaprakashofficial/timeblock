@@ -103,16 +103,27 @@ export function packTasks(
       }
     }
 
-    // Today after hours: still pin to “now” so the task appears on the plan
+    // Today after hours: pin near “now”, but only inside a free slot
+    // (never over lunch/breaks or locked meetings).
     if (
       !placed &&
       notBeforeMinutes != null &&
       Number.isFinite(notBeforeMinutes)
     ) {
-      const start = Math.max(0, Math.ceil(notBeforeMinutes));
-      const end = Math.min(24 * 60, start + need);
-      if (end > start) {
-        placed = { start, end };
+      const floor = Math.max(0, Math.ceil(notBeforeMinutes));
+      for (let i = 0; i < free.length; i++) {
+        const slot = free[i];
+        const start = Math.max(slot.start, floor);
+        if (slot.end - start < need) continue;
+        placed = { start, end: start + need };
+        free = [
+          ...free.slice(0, i),
+          ...(placed.end < slot.end
+            ? [{ start: placed.end, end: slot.end }]
+            : []),
+          ...free.slice(i + 1),
+        ];
+        break;
       }
     }
 
@@ -316,7 +327,10 @@ export class SchedulerService {
 
   /**
    * If “now” is past (or nearly past) the workday end, open an evening
-   * window starting at the floor so new tasks still land on the plan.
+   * window so new tasks still land on the plan.
+   *
+   * Extend only after the last free slot — never fill holes between
+   * intervals (those holes are lunch/breaks/meetings already subtracted).
    */
   private ensureEveningPackWindow(
     intervals: Interval[],
@@ -327,8 +341,11 @@ export class SchedulerService {
     // Need room for at least a typical 30–60m task after now
     if (coverageEnd > floor + 45) return intervals;
     const end = Math.min(24 * 60, Math.max(floor + 4 * 60, coverageEnd + 60));
-    if (end <= floor) return intervals;
-    return [...intervals, { start: floor, end }];
+    // Start at the later of “now” and the last free end so we do not
+    // re-cover break gaps that were already subtracted from `intervals`.
+    const start = Math.max(floor, coverageEnd);
+    if (end <= start) return intervals;
+    return [...intervals, { start, end }];
   }
 
   private async reschedulePrisma(userId: string, dateStr: string) {

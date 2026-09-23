@@ -21,6 +21,7 @@ import { RightPanel } from './components/RightPanel';
 import { TopbarPulse } from './components/TopbarPulse';
 import { TopbarSearch } from './components/TopbarSearch';
 import { CupkeyLogo } from './components/CupkeyLogo';
+import { BootProgressScreen } from './components/BootProgressScreen';
 import { HINTS } from './components/ui-hints/hints';
 import { UiTooltip } from './components/ui-hints/UiTooltip';
 import { onAvatarChange, readAvatar } from './components/user-avatar';
@@ -387,12 +388,7 @@ function DashboardReadyGate({
 
   return (
     <>
-      {!show && (
-        <div className="dash-boot-screen" role="status" aria-live="polite">
-          <CupkeyLogo size={40} title="Cupkey" />
-          <p className="dash-boot-label">Building your day…</p>
-        </div>
-      )}
+      {!show && <BootProgressScreen variant="dash" />}
       <div
         className={
           show ? 'dash-boot-frame' : 'dash-boot-frame dash-boot-hidden'

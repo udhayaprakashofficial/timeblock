@@ -82,6 +82,64 @@ function isoFromMinutes(date: string, totalMin: number): string {
   return combineIso(date, `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
 }
 
+/** Free segments of [start, end) after removing busy intervals. */
+function subtractBusy(
+  start: number,
+  end: number,
+  busy: { start: number; end: number }[],
+): { start: number; end: number }[] {
+  let parts = [{ start, end }];
+  for (const b of busy) {
+    if (!(b.end > b.start)) continue;
+    const next: { start: number; end: number }[] = [];
+    for (const p of parts) {
+      if (b.end <= p.start || b.start >= p.end) {
+        next.push(p);
+        continue;
+      }
+      if (p.start < b.start) next.push({ start: p.start, end: b.start });
+      if (b.end < p.end) next.push({ start: b.end, end: p.end });
+    }
+    parts = next;
+  }
+  return parts.filter((p) => p.end > p.start);
+}
+
+/** Greedy lane assignment so overlapping blocks sit side-by-side. */
+function assignLanes(
+  items: { key: string; start: number; end: number }[],
+): Map<string, { lane: number; laneCount: number }> {
+  const sorted = [...items].sort(
+    (a, b) => a.start - b.start || a.end - b.end,
+  );
+  const laneEnds: number[] = [];
+  const laneOf = new Map<string, number>();
+  for (const item of sorted) {
+    let lane = laneEnds.findIndex((end) => end <= item.start);
+    if (lane < 0) {
+      lane = laneEnds.length;
+      laneEnds.push(item.end);
+    } else {
+      laneEnds[lane] = item.end;
+    }
+    laneOf.set(item.key, lane);
+  }
+  // Per overlapping cluster, laneCount = max concurrent lanes used
+  const result = new Map<string, { lane: number; laneCount: number }>();
+  for (const item of sorted) {
+    const lane = laneOf.get(item.key) ?? 0;
+    let maxLane = lane;
+    for (const other of sorted) {
+      if (other.key === item.key) continue;
+      if (other.start < item.end && other.end > item.start) {
+        maxLane = Math.max(maxLane, laneOf.get(other.key) ?? 0);
+      }
+    }
+    result.set(item.key, { lane, laneCount: maxLane + 1 });
+  }
+  return result;
+}
+
 /** Next free wall-clock slot so The plan paints instantly (before API pack). */
 function nextOptimisticSlot(opts: {
   date: string;
@@ -101,32 +159,35 @@ function nextOptimisticSlot(opts: {
   const duration = Math.max(5, opts.durationMin);
   const now = nowMinutes(opts.timeZone);
   let cursor = Math.ceil((now + 1) / 15) * 15;
+
+  const busy: { start: number; end: number }[] = [];
   for (const t of opts.tasks) {
     if (t.status === 'completed') continue;
-    if (!t.scheduledEnd) continue;
-    const end = minutesOf(t.scheduledEnd, opts.timeZone);
-    if (end > cursor) cursor = end;
+    if (!t.scheduledStart || !t.scheduledEnd) continue;
+    const s = minutesOf(t.scheduledStart, opts.timeZone);
+    const e = minutesOf(t.scheduledEnd, opts.timeZone);
+    if (e > s) busy.push({ start: s, end: e });
   }
-  const breaks = opts.breaks ?? [];
-  for (let pass = 0; pass < breaks.length + 2; pass++) {
-    let moved = false;
-    for (const b of breaks) {
-      const bs = parseHm(b.start);
-      const be = parseHm(b.end);
-      if (be <= bs) continue;
-      // Inside a break → jump to break end
-      if (cursor >= bs && cursor < be) {
-        cursor = be;
-        moved = true;
-      }
-      // Would overlap a break → jump past it
-      if (cursor < bs && cursor + duration > bs) {
-        cursor = be;
-        moved = true;
-      }
+  for (const b of opts.breaks ?? []) {
+    const s = parseHm(b.start);
+    const e = parseHm(b.end);
+    if (e > s) busy.push({ start: s, end: e });
+  }
+  busy.sort((a, b) => a.start - b.start);
+
+  // Walk free gaps from cursor to midnight looking for a fit.
+  const free = subtractBusy(cursor, 24 * 60, busy);
+  for (const gap of free) {
+    if (gap.end - gap.start >= duration) {
+      const startMin = gap.start;
+      const endMin = startMin + duration;
+      return {
+        scheduledStart: isoFromMinutes(opts.date, startMin),
+        scheduledEnd: isoFromMinutes(opts.date, endMin),
+      };
     }
-    if (!moved) break;
   }
+
   const startMin = Math.min(cursor, 24 * 60 - duration);
   const endMin = Math.min(startMin + duration, 24 * 60 - 1);
   return {
@@ -316,6 +377,19 @@ export function TodayPage({
       if (mins < 5) {
         setFormError('Slot must be at least 5 minutes.');
         return;
+      }
+      const weekdayCheck = new Date(`${targetDate}T12:00:00Z`).getUTCDay();
+      const tmplCheck = scheduleQ.data?.find((t) => t.weekday === weekdayCheck);
+      for (const b of tmplCheck?.breaks ?? []) {
+        const bs = parseHm(b.start);
+        const be = parseHm(b.end);
+        if (be <= bs) continue;
+        if (startMin < be && endMin > bs) {
+          setFormError(
+            `That slot overlaps ${b.name?.trim() || 'a break'} (${b.start}–${b.end}).`,
+          );
+          return;
+        }
       }
       estimatedMinutes = mins;
       start = startTime;
@@ -551,6 +625,91 @@ export function TodayPage({
     });
   }, [eventsQ.data, tasks, timeZone]);
 
+  /** Task blocks clipped around breaks, with lanes when times still collide. */
+  const planTaskBlocks = useMemo(() => {
+    const breakBusy = (template?.breaks ?? [])
+      .map((b) => ({
+        start: parseHm(b.start),
+        end: parseHm(b.end),
+      }))
+      .filter((b) => b.end > b.start);
+
+    type Block = {
+      key: string;
+      task: (typeof tasks)[number];
+      start: number;
+      end: number;
+      rawS: number;
+      rawE: number;
+    };
+    const blocks: Block[] = [];
+
+    for (const t of tasks) {
+      if (!t.scheduledStart || !t.scheduledEnd) continue;
+      const rawS = minutesOf(t.scheduledStart, timeZone);
+      const rawE = minutesOf(t.scheduledEnd, timeZone);
+      if (!(rawE > rawS)) continue;
+      const segments = t.scheduleLocked
+        ? [{ start: rawS, end: rawE }]
+        : subtractBusy(rawS, rawE, breakBusy);
+      // Skip unlocked tasks that sit entirely inside a break — packing
+      // will move them on the next schedule change; don't paint over Lunch.
+      if (!segments.length) continue;
+      segments.forEach((seg, i) => {
+        blocks.push({
+          key: `${t.id}-${i}`,
+          task: t,
+          start: seg.start,
+          end: seg.end,
+          rawS,
+          rawE,
+        });
+      });
+    }
+
+    const lanes = assignLanes(
+      blocks.map((b) => ({ key: b.key, start: b.start, end: b.end })),
+    );
+    return blocks.map((b) => ({
+      ...b,
+      lane: lanes.get(b.key)?.lane ?? 0,
+      laneCount: lanes.get(b.key)?.laneCount ?? 1,
+    }));
+  }, [tasks, template?.breaks, timeZone]);
+
+  // One-shot: if any unlocked task still overlaps a break (legacy bad pack),
+  // nudge a reorder so the server re-packs without covering lunch.
+  const overlapRepackKey = useRef<string | null>(null);
+  useEffect(() => {
+    const breaks = template?.breaks ?? [];
+    if (!breaks.length || !tasks.length) return;
+    const breakBusy = breaks
+      .map((b) => ({ start: parseHm(b.start), end: parseHm(b.end) }))
+      .filter((b) => b.end > b.start);
+    const conflict = tasks.some((t) => {
+      if (t.scheduleLocked || t.status === 'completed') return false;
+      if (!t.scheduledStart || !t.scheduledEnd) return false;
+      const s = minutesOf(t.scheduledStart, timeZone);
+      const e = minutesOf(t.scheduledEnd, timeZone);
+      return breakBusy.some((b) => s < b.end && e > b.start);
+    });
+    if (!conflict) return;
+    const key = `${date}:${tasks.map((t) => t.id).join(',')}`;
+    if (overlapRepackKey.current === key) return;
+    overlapRepackKey.current = key;
+    const unlockedIds = tasks.filter((t) => !t.scheduleLocked).map((t) => t.id);
+    if (!unlockedIds.length) return;
+    void dispatch(
+      reorderTasksOptimistic({
+        date,
+        taskIds: unlockedIds,
+        previous: tasks,
+      }),
+    ).then(() => {
+      void dispatch(fetchTasks(date));
+    });
+  }, [tasks, template?.breaks, timeZone, date, dispatch]);
+
   const timelineH = span * pxPerMin;
 
   const onDragEnd = (event: DragEndEvent) => {
@@ -744,7 +903,27 @@ export function TodayPage({
                       />
                     ))}
 
-                    {(template?.breaks ?? []).map((b) => {
+                    {(template?.breaks ?? [])
+                      .slice()
+                      .sort((a, b) => {
+                        const ds = parseHm(a.start) - parseHm(b.start);
+                        if (ds !== 0) return ds;
+                        const aLunch = /lunch/i.test(a.name) ? 0 : 1;
+                        const bLunch = /lunch/i.test(b.name) ? 0 : 1;
+                        return aLunch - bLunch;
+                      })
+                      .filter((b, i, arr) => {
+                        // Drop duplicate/overlapping break chips (e.g. Break + Lunch)
+                        const s = parseHm(b.start);
+                        const e = parseHm(b.end);
+                        if (!(e > s)) return false;
+                        return !arr.slice(0, i).some((prev) => {
+                          const ps = parseHm(prev.start);
+                          const pe = parseHm(prev.end);
+                          return s < pe && e > ps;
+                        });
+                      })
+                      .map((b) => {
                       const s = Math.max(parseHm(b.start), viewStartMin!);
                       const e = Math.min(parseHm(b.end), viewEndMin!);
                       if (e <= s) return null;
@@ -809,81 +988,84 @@ export function TodayPage({
                       );
                     })}
 
-                    {tasks
-                      .filter((t) => t.scheduledStart && t.scheduledEnd)
-                      .map((t) => {
-                        const rawS = minutesOf(t.scheduledStart!, timeZone);
-                        const rawE = minutesOf(t.scheduledEnd!, timeZone);
-                        const s = Math.max(rawS, viewStartMin!);
-                        const e = Math.min(rawE, viewEndMin!);
-                        if (e <= s) return null;
-                        const meet = Boolean(t.scheduleLocked || t.meetLink);
-                        const isLive = Boolean(t.activeEntryId);
-                        const done = t.status === 'completed';
-                        const spanMin = Math.max(5, rawE - rawS);
-                        const progress = isLive
-                          ? Math.min(
-                              100,
-                              Math.round(
-                                ((t.actualMinutes || 0) /
-                                  Math.max(t.estimatedMinutes, 1)) *
-                                  100,
-                              ),
-                            )
-                          : 0;
-                        return (
-                          <div
-                            key={t.id}
-                            className={`cal-block ${
-                              meet ? 'busy meet' : 'task'
-                            }${done ? ' is-done' : ''}${
-                              isLive ? ' is-live' : ''
-                            }`}
-                            style={{
-                              top: (s - viewStartMin!) * pxPerMin,
-                              height: Math.max((e - s) * pxPerMin, 52),
-                            }}
-                          >
-                            <div className="cal-block-main">
-                              {isLive && (
-                                <span className="cal-live-tag">
-                                  ● In session · {t.actualMinutes || 0}m
+                    {planTaskBlocks.map((block) => {
+                      const t = block.task;
+                      const s = Math.max(block.start, viewStartMin!);
+                      const e = Math.min(block.end, viewEndMin!);
+                      if (e <= s) return null;
+                      const meet = Boolean(t.scheduleLocked || t.meetLink);
+                      const isLive = Boolean(t.activeEntryId);
+                      const done = t.status === 'completed';
+                      const spanMin = Math.max(5, block.rawE - block.rawS);
+                      const progress = isLive
+                        ? Math.min(
+                            100,
+                            Math.round(
+                              ((t.actualMinutes || 0) /
+                                Math.max(t.estimatedMinutes, 1)) *
+                                100,
+                            ),
+                          )
+                        : 0;
+                      const laneCount = Math.max(1, block.laneCount);
+                      const lane = block.lane;
+                      const widthPct = 100 / laneCount;
+                      return (
+                        <div
+                          key={block.key}
+                          className={`cal-block ${
+                            meet ? 'busy meet' : 'task'
+                          }${done ? ' is-done' : ''}${
+                            isLive ? ' is-live' : ''
+                          }`}
+                          style={{
+                            top: (s - viewStartMin!) * pxPerMin,
+                            height: Math.max((e - s) * pxPerMin, 52),
+                            left: `calc(${lane * widthPct}% + 4px)`,
+                            width: `calc(${widthPct}% - 8px)`,
+                            right: 'auto',
+                          }}
+                        >
+                          <div className="cal-block-main">
+                            {isLive && (
+                              <span className="cal-live-tag">
+                                ● In session · {t.actualMinutes || 0}m
+                              </span>
+                            )}
+                            <strong>
+                              {t.name}
+                              {done ? ' ✓' : ''}
+                              {meet && t.sourceProvider ? (
+                                <span className="cal-provider">
+                                  {String(t.sourceProvider)}
                                 </span>
-                              )}
-                              <strong>
-                                {t.name}
-                                {done ? ' ✓' : ''}
-                                {meet && t.sourceProvider ? (
-                                  <span className="cal-provider">
-                                    {String(t.sourceProvider)}
-                                  </span>
-                                ) : null}
-                              </strong>
-                              {!meet && (
-                                <span className="cal-meta">
-                                  {formatTimeRange(
-                                    t.scheduledStart,
-                                    t.scheduledEnd,
-                                    timeZone,
-                                  )}
-                                  {' · '}
-                                  {spanMin}m
-                                  {!t.scheduleLocked ? ' · Deep work' : ''}
-                                </span>
-                              )}
-                              {isLive && (
-                                <div className="cal-progress">
-                                  <i style={{ width: `${progress}%` }} />
-                                </div>
-                              )}
-                            </div>
-                            <span className="cal-time-end">
-                              {formatHm(rawS)}
-                              {meet ? '' : `–${formatHm(rawE)}`}
-                            </span>
+                              ) : null}
+                            </strong>
+                            {!meet && (
+                              <span className="cal-meta">
+                                {formatTimeRange(
+                                  t.scheduledStart,
+                                  t.scheduledEnd,
+                                  timeZone,
+                                )}
+                                {' · '}
+                                {spanMin}m
+                                {!t.scheduleLocked ? ' · Deep work' : ''}
+                              </span>
+                            )}
+                            {isLive && (
+                              <div className="cal-progress">
+                                <i style={{ width: `${progress}%` }} />
+                              </div>
+                            )}
                           </div>
-                        );
-                      })}
+                          <span className="cal-time-end">
+                            {formatHm(block.rawS)}
+                            {meet ? '' : `–${formatHm(block.rawE)}`}
+                          </span>
+                        </div>
+                      );
+                    })}
 
                     {showNow && (
                       <div

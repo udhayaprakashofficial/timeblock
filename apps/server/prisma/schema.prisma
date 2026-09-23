@@ -26,7 +26,7 @@ model User {
   email        String   @unique
   /// scrypt$hash — set for email/password accounts
   passwordHash String?
-  theme        String   @default("light") // light | dark — UI preference in DB
+  theme        String   @default("dark") // light | dark — UI preference in DB
   /// IANA timezone from geography (e.g. Asia/Kolkata), not a fixed offset
   timezone     String   @default("UTC")
   /// Default estimated duration for new auto-scheduled tasks

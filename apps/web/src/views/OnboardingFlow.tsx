@@ -8,8 +8,10 @@ import type {
 } from '@timeblock/shared-types';
 import { api, detectBrowserTimeZone } from '../api';
 import { CupkeyLogo } from '../components/CupkeyLogo';
+import { BootProgressScreen } from '../components/BootProgressScreen';
 import { useAppDispatch } from '../store/hooks';
 import { clearStats } from '../store/statsSlice';
+import { useTheme } from '../theme';
 import './onboarding.css';
 
 type BreakDraft = { name: string; start: string; end: string };
@@ -272,6 +274,7 @@ export function OnboardingFlow({
 }) {
   const qc = useQueryClient();
   const dispatch = useAppDispatch();
+  const { setTheme } = useTheme();
   const [step, setStep] = useState<1 | 2>(1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -354,11 +357,13 @@ export function OnboardingFlow({
       } catch {
         /* ignore */
       }
+      // Dashboard defaults to dark after onboarding (onboarding UI stays light).
+      setTheme('dark');
       dispatch(clearStats());
-      qc.setQueryData(['me'], next);
+      qc.setQueryData(['me'], { ...next, theme: 'dark' as const });
       void qc.invalidateQueries({ queryKey: ['schedule'] });
       void qc.invalidateQueries({ queryKey: ['tasks'] });
-      onFinished(next);
+      onFinished({ ...next, theme: 'dark' });
     },
   });
 
@@ -423,13 +428,7 @@ export function OnboardingFlow({
 
   return (
     <div className={`onboard-screen${step === 2 ? ' is-finale' : ''}`}>
-      {busy && (
-        <div className="onboard-boot-screen" role="status" aria-live="polite">
-          <CupkeyLogo size={44} title="Cupkey" />
-          <p className="onboard-boot-label">Building your day…</p>
-          <p className="onboard-boot-sub">Setting up your plan — almost there</p>
-        </div>
-      )}
+      {busy && <BootProgressScreen variant="onboard" />}
       <header className="onboard-top">
         <CupkeyLogo size={26} title="Cupkey" />
         <div className="onboard-progress" aria-hidden>
