@@ -8,6 +8,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { SupabaseRestService } from '../supabase/supabase-rest.service';
 import { LocalUserStore } from '../auth/local-user.store';
+import { BrevoMailService } from '../mail/brevo-mail.service';
 
 export const DODO_PRO_PRODUCT_ID =
   process.env.DODO_PRO_PRODUCT_ID?.trim() || 'pdt_0NoD66xtWburRIUH8s6AY';
@@ -32,6 +33,7 @@ export class BillingService {
     private readonly prisma: PrismaService,
     private readonly supabase: SupabaseRestService,
     private readonly localUsers: LocalUserStore,
+    private readonly mail: BrevoMailService,
   ) {}
 
   proProductId() {
@@ -44,6 +46,10 @@ export class BillingService {
 
   webhookConfigured() {
     return Boolean(process.env.DODO_PAYMENTS_WEBHOOK_KEY?.trim());
+  }
+
+  mailConfigured() {
+    return this.mail.isConfigured();
   }
 
   private checkoutBase() {
@@ -399,6 +405,7 @@ export class BillingService {
     this.logger.log(
       `Pro paid (pending activation) for ${input.userId} payment=${paymentId || 'n/a'} sub=${subscriptionId || 'n/a'} verified=${verified}`,
     );
+    await this.notifyProPaid(input.userId, input.email, paidAt);
     return { ok: true, plan: 'pro', verified };
   }
 
@@ -501,6 +508,11 @@ export class BillingService {
     });
     this.logger.log(
       `Pro synced from Dodo for ${input.userId} payment=${best.payment_id}`,
+    );
+    await this.notifyProPaid(
+      input.userId,
+      input.email,
+      Number.isNaN(paidAt.getTime()) ? new Date() : paidAt,
     );
     return {
       ok: true,
@@ -609,6 +621,11 @@ export class BillingService {
       return;
     }
 
+    const prior = await this.getBillingProfile(resolved);
+    const alreadyPaid =
+      prior.plan === 'pro' &&
+      Boolean(prior.dodoPaymentId || prior.dodoSubscriptionId);
+
     await this.applyPlan(resolved, {
       plan: 'pro',
       planStatus: 'pending_activation',
@@ -618,6 +635,31 @@ export class BillingService {
       proPaidAt: new Date(),
     });
     this.logger.log(`Pro paid (pending) for user ${resolved} (${type})`);
+    if (!alreadyPaid && email) {
+      await this.notifyProPaid(resolved, email, new Date());
+    }
+  }
+
+  /** Fire-and-await Pro payment receipt email (never throws). */
+  private async notifyProPaid(
+    userId: string,
+    email: string,
+    paidAt: Date,
+  ): Promise<void> {
+    try {
+      const profile = await this.getBillingProfile(userId);
+      await this.mail.sendProPaidEmail({
+        toEmail: email,
+        toName: profile.name || undefined,
+        paidAt,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Pro paid email error for ${email}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   private async downgradeFromPayload(

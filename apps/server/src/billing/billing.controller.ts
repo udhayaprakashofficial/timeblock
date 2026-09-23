@@ -30,6 +30,7 @@ export class BillingController {
       checkoutReady: true,
       apiKeyConfigured: this.billing.apiKeyConfigured(),
       webhookConfigured: this.billing.webhookConfigured(),
+      mailConfigured: this.billing.mailConfigured(),
     };
   }
 

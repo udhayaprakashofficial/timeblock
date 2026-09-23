@@ -5,9 +5,16 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { AuthModule } from '../auth/auth.module';
 import { UsersModule } from '../users/users.module';
+import { MailModule } from '../mail/mail.module';
 
 @Module({
-  imports: [PrismaModule, SupabaseModule, AuthModule, UsersModule],
+  imports: [
+    PrismaModule,
+    SupabaseModule,
+    AuthModule,
+    UsersModule,
+    MailModule,
+  ],
   controllers: [BillingController],
   providers: [BillingService],
   exports: [BillingService],

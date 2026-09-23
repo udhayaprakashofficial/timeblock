@@ -184,6 +184,119 @@ Open your dashboard: ${dashboardUrl}
     return result.ok;
   }
 
+  /**
+   * Sent right after a successful Pro checkout (paid / pending AI go-live).
+   * Never throws — payment flow must not fail if mail is down.
+   */
+  async sendProPaidEmail(input: {
+    toEmail: string;
+    toName?: string;
+    paidAt?: Date;
+  }): Promise<boolean> {
+    if (!this.isConfigured()) {
+      this.logger.warn('Brevo not configured — skip Pro paid email');
+      return false;
+    }
+    const firstName = firstNameFrom(input.toName, input.toEmail);
+    const safeName = escapeHtml(firstName);
+    const dash = `${this.appPublicUrl()}/subscription`;
+    const when = (input.paidAt ?? new Date()).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+
+    const textContent = `Hey ${firstName},
+
+Thanks for upgrading to Cupkey Pro.
+
+We received your payment on ${when}. You're locked into Pro pricing.
+
+AI features aren't live yet — Pro activates the day those features ship, and your subscription countdown starts then (not today). We'll email you the moment that happens.
+
+View your subscription: ${dash}
+
+Talk soon,
+Lakshmanan Raman
+Founder, cupkey.io
+`;
+
+    const htmlContent = `<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background:#f4f4f5;font-family:Georgia,'Times New Roman',serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f4f5;padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" style="max-width:560px;background:#ffffff;border:1px solid #e4e4e7;border-radius:12px;padding:40px 36px;">
+          <tr>
+            <td style="color:#18181b;font-size:16px;line-height:1.65;padding-bottom:18px;">
+              Hey ${safeName},
+            </td>
+          </tr>
+          <tr>
+            <td style="color:#18181b;font-size:16px;line-height:1.65;padding-bottom:18px;">
+              <strong>Thanks for upgrading to Cupkey Pro.</strong>
+            </td>
+          </tr>
+          <tr>
+            <td style="color:#3f3f46;font-size:16px;line-height:1.65;padding-bottom:18px;">
+              We received your payment on <strong>${escapeHtml(when)}</strong>. You're locked into Pro pricing.
+            </td>
+          </tr>
+          <tr>
+            <td style="color:#3f3f46;font-size:16px;line-height:1.65;padding-bottom:28px;">
+              AI features aren't live yet — Pro activates the day those features ship, and your subscription countdown starts then (not today). We'll email you the moment that happens.
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding-bottom:28px;">
+              <a href="${dash}"
+                 style="display:inline-block;background:#ff5722;color:#ffffff;text-decoration:none;font-family:Arial,Helvetica,sans-serif;font-weight:700;font-size:15px;padding:14px 28px;border-radius:999px;">
+                View subscription
+              </a>
+            </td>
+          </tr>
+          <tr>
+            <td style="color:#18181b;font-size:16px;line-height:1.65;">
+              Talk soon,<br/>
+              Lakshmanan Raman<br/>
+              <span style="color:#71717a;">Founder, cupkey.io</span>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+    let result = await this.sendTransactional({
+      toEmail: input.toEmail,
+      toName: firstName,
+      subject: 'Thanks for upgrading to Cupkey Pro',
+      htmlContent,
+      textContent,
+      replyToSender: true,
+    });
+    if (!result.ok) {
+      await sleep(400);
+      result = await this.sendTransactional({
+        toEmail: input.toEmail,
+        toName: firstName,
+        subject: 'Thanks for upgrading to Cupkey Pro',
+        htmlContent,
+        textContent,
+        replyToSender: true,
+      });
+    }
+    if (result.ok) this.logger.log(`Pro paid email → ${input.toEmail}`);
+    else
+      this.logger.warn(
+        `Pro paid email failed ${input.toEmail}: ${result.error}`,
+      );
+    return result.ok;
+  }
+
   /** Pro activated by admin when AI features go live. */
   async sendProActivatedEmail(input: {
     toEmail: string;
