@@ -56,6 +56,15 @@ const nextConfig: NextConfig = {
     // Next rewrites server-side to Nest — users never see timeblock-server.
     return [
       {
+        // Dodo dashboard endpoint configured as https://app.cupkey.io/webhook
+        source: '/webhook',
+        destination: `${apiOrigin}/api/billing/webhook`,
+      },
+      {
+        source: '/api/billing/webhook',
+        destination: `${apiOrigin}/api/billing/webhook`,
+      },
+      {
         source: '/api/:path*',
         destination: `${apiOrigin}/api/:path*`,
       },

@@ -272,6 +272,49 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
             >
               Upgrade to Pro — $10/mo
             </a>
+            {summary.data?.apiKeyConfigured ? (
+              <button
+                type="button"
+                className="sub-btn is-outline"
+                disabled={confirming}
+                onClick={() => {
+                  setConfirming(true);
+                  setErr(null);
+                  void api
+                    .post<{
+                      synced?: boolean;
+                      plan?: string;
+                      user?: UserDto;
+                    }>('/api/billing/sync')
+                    .then(async (result) => {
+                      if (result.user) qc.setQueryData(['me'], result.user);
+                      await qc.invalidateQueries({
+                        queryKey: ['billing-summary'],
+                      });
+                      await qc.invalidateQueries({ queryKey: ['me'] });
+                      if (result.synced || result.plan === 'pro') {
+                        setBanner(
+                          'Payment found — Pro is locked in for your account.',
+                        );
+                      } else {
+                        setErr(
+                          'No successful Dodo payment found for this email yet.',
+                        );
+                      }
+                    })
+                    .catch((e) => {
+                      setErr(
+                        e instanceof Error
+                          ? e.message
+                          : 'Could not sync payment from Dodo',
+                      );
+                    })
+                    .finally(() => setConfirming(false));
+                }}
+              >
+                {confirming ? 'Checking Dodo…' : 'I paid — refresh status'}
+              </button>
+            ) : null}
           </div>
         ) : isActive ? (
           <p className="sub-note">

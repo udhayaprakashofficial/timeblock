@@ -402,6 +402,115 @@ export class BillingService {
     return { ok: true, plan: 'pro', verified };
   }
 
+  /**
+   * Look up the signed-in user's latest succeeded Dodo payment / active
+   * subscription by email and mark Pro. Used when redirect/webhook was missed.
+   */
+  async syncPaidPlanFromDodo(input: {
+    userId: string;
+    email: string;
+  }): Promise<{
+    ok: boolean;
+    plan: 'free' | 'pro';
+    synced: boolean;
+    paymentId: string | null;
+    subscriptionId: string | null;
+  }> {
+    const existing = await this.getBillingProfile(input.userId);
+    if (
+      existing.plan === 'pro' &&
+      (existing.dodoPaymentId || existing.dodoSubscriptionId)
+    ) {
+      return {
+        ok: true,
+        plan: 'pro',
+        synced: false,
+        paymentId: existing.dodoPaymentId,
+        subscriptionId: existing.dodoSubscriptionId,
+      };
+    }
+
+    const apiKey = process.env.DODO_PAYMENTS_API_KEY?.trim();
+    if (!apiKey) {
+      throw new ServiceUnavailableException(
+        'Set DODO_PAYMENTS_API_KEY on the server to sync payments from Dodo',
+      );
+    }
+
+    const email = input.email.trim().toLowerCase();
+    const res = await fetch(
+      `${this.apiBase()}/payments?page_size=50&page_number=0`,
+      { headers: { Authorization: `Bearer ${apiKey}` } },
+    );
+    if (!res.ok) {
+      throw new BadRequestException(
+        'Could not list payments from Dodo. Check DODO_PAYMENTS_API_KEY / environment.',
+      );
+    }
+    const data = (await res.json()) as {
+      items?: Array<{
+        payment_id?: string;
+        status?: string;
+        created_at?: string;
+        subscription_id?: string;
+        customer?: { email?: string; customer_id?: string };
+        customer_id?: string;
+        metadata?: Record<string, unknown>;
+      }>;
+    };
+
+    const matches = (data.items ?? [])
+      .filter((p) => {
+        const st = (p.status || '').toLowerCase();
+        if (st && st !== 'succeeded' && st !== 'success') return false;
+        const payEmail = p.customer?.email?.toLowerCase();
+        const metaUser =
+          typeof p.metadata?.userId === 'string'
+            ? p.metadata.userId
+            : typeof p.metadata?.user_id === 'string'
+              ? p.metadata.user_id
+              : null;
+        return payEmail === email || metaUser === input.userId;
+      })
+      .sort((a, b) => {
+        const ta = a.created_at ? Date.parse(a.created_at) : 0;
+        const tb = b.created_at ? Date.parse(b.created_at) : 0;
+        return tb - ta;
+      });
+
+    const best = matches[0];
+    if (!best?.payment_id) {
+      return {
+        ok: true,
+        plan: existing.plan === 'pro' ? 'pro' : 'free',
+        synced: false,
+        paymentId: null,
+        subscriptionId: null,
+      };
+    }
+
+    const paidAt = best.created_at ? new Date(best.created_at) : new Date();
+    await this.applyPlan(input.userId, {
+      plan: 'pro',
+      planStatus: 'pending_activation',
+      dodoCustomerId:
+        best.customer_id || best.customer?.customer_id || null,
+      dodoSubscriptionId: best.subscription_id || null,
+      dodoPaymentId: best.payment_id,
+      proPaidAt: Number.isNaN(paidAt.getTime()) ? new Date() : paidAt,
+    });
+    this.logger.log(
+      `Pro synced from Dodo for ${input.userId} payment=${best.payment_id}`,
+    );
+    return {
+      ok: true,
+      plan: 'pro',
+      synced: true,
+      paymentId: best.payment_id,
+      subscriptionId: best.subscription_id || null,
+    };
+  }
+
   private assertPaymentBelongsToUser(
     pay: {
       customer?: { email?: string };

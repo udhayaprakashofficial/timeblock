@@ -38,9 +38,28 @@ export class BillingController {
   @UseGuards(SessionAuthGuard)
   async summary(@Req() req: Request) {
     const userId = req.session!.userId!;
-    const me = await this.users.getMe(userId);
-    const profile = await this.billing.getBillingProfile(userId);
-    const plan = me.plan === 'pro' || profile.plan === 'pro' ? 'pro' : 'free';
+    let me = await this.users.getMe(userId);
+    let profile = await this.billing.getBillingProfile(userId);
+    let plan: 'free' | 'pro' =
+      me.plan === 'pro' || profile.plan === 'pro' ? 'pro' : 'free';
+
+    // Paid in Dodo but redirect/webhook missed → heal on summary load
+    if (plan === 'free' && this.billing.apiKeyConfigured()) {
+      try {
+        const synced = await this.billing.syncPaidPlanFromDodo({
+          userId: me.id,
+          email: me.email,
+        });
+        if (synced.synced) {
+          me = await this.users.getMe(userId);
+          profile = await this.billing.getBillingProfile(userId);
+          plan = 'pro';
+        }
+      } catch {
+        /* leave as free — user can still Upgrade */
+      }
+    }
+
     const planStatus =
       me.planStatus ??
       profile.planStatus ??
@@ -187,8 +206,27 @@ export class BillingController {
   }
 
   /**
+   * Pull latest succeeded Dodo payment for this account (by email / metadata)
+   * and mark Pro. Fixes missed redirects when DODO_PAYMENTS_API_KEY is set.
+   */
+  @Post('sync')
+  @UseGuards(SessionAuthGuard)
+  async sync(@Req() req: Request) {
+    const userId = req.session!.userId!;
+    const me = await this.users.getMe(userId);
+    const result = await this.billing.syncPaidPlanFromDodo({
+      userId: me.id,
+      email: me.email,
+    });
+    const updated = await this.users.getMe(userId);
+    return { ...result, user: updated };
+  }
+
+  /**
    * Dodo webhook URL (production):
-   *   https://<api-host>/api/billing/webhook
+   *   https://app.cupkey.io/webhook
+   *   https://app.cupkey.io/api/billing/webhook
+   *   https://timeblock-server.vercel.app/api/billing/webhook
    */
   @Post('webhook')
   async webhook(
