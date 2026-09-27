@@ -88,11 +88,36 @@ export class BillingController {
         ? await this.billing.listInvoices(userId)
         : { invoicesAvailable: true, invoices: [] };
 
+    const paidProductId = await this.billing.resolvePaidProductId(me.id, {
+      dodoProductId: profile.dodoProductId,
+      dodoPaymentId: profile.dodoPaymentId ?? me.dodoPaymentId,
+      dodoSubscriptionId: profile.dodoSubscriptionId,
+    });
+    const planLabel =
+      plan === 'free'
+        ? 'Free'
+        : this.billing.planLabelForProduct(
+            paidProductId,
+            profile.dodoSubscriptionId,
+          );
+    const planTier =
+      plan === 'free'
+        ? 'free'
+        : this.billing.planTierForProduct(
+            paidProductId,
+            profile.dodoSubscriptionId,
+          );
+    const statusLabel =
+      plan === 'pro' && planTier === 'annual_welcome'
+        ? 'Annual welcome paid — waiting for AI go-live'
+        : this.billing.statusLabel(plan, planStatus);
+
     return {
       plan,
-      planLabel: plan === 'pro' ? 'Pro' : 'Free',
+      planLabel,
+      planTier,
       status: planStatus || (plan === 'pro' ? 'pending_activation' : 'none'),
-      statusLabel: this.billing.statusLabel(plan, planStatus),
+      statusLabel,
       since: paidAt ?? me.planUpdatedAt ?? profile.planUpdatedAt,
       paidAt,
       activatedAt,

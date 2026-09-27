@@ -26,6 +26,7 @@ type PlanPatch = {
   dodoCustomerId?: string | null;
   dodoSubscriptionId?: string | null;
   dodoPaymentId?: string | null;
+  dodoProductId?: string | null;
   proPaidAt?: Date | string | null;
   proActivatedAt?: Date | string | null;
 };
@@ -64,6 +65,98 @@ export class BillingService {
     if (!Array.isArray(productCart) || !productCart.length) return null;
     const first = productCart[0] as { product_id?: string };
     return typeof first?.product_id === 'string' ? first.product_id : null;
+  }
+
+  private extractPaidProductId(pay: {
+    product_id?: string;
+    product_cart?: Array<{ product_id?: string }>;
+  }): string | null {
+    if (typeof pay.product_id === 'string' && pay.product_id.trim()) {
+      return pay.product_id.trim();
+    }
+    return this.productIdFromCart(pay.product_cart);
+  }
+
+  /** UI label: Pro monthly vs Annual welcome ($12/yr). */
+  planLabelForProduct(
+    productId: string | null | undefined,
+    subscriptionId: string | null | undefined,
+  ): string {
+    if (productId === this.annualWelcomeProductId()) {
+      return 'Annual welcome';
+    }
+    if (subscriptionId?.trim()) {
+      return 'Pro';
+    }
+    if (productId === this.proProductId()) {
+      return 'Pro';
+    }
+    if (productId && this.isCupkeyPaidProduct(productId)) {
+      return productId === this.annualWelcomeProductId()
+        ? 'Annual welcome'
+        : 'Pro';
+    }
+    return 'Pro';
+  }
+
+  planTierForProduct(
+    productId: string | null | undefined,
+    subscriptionId: string | null | undefined,
+  ): 'free' | 'pro_monthly' | 'annual_welcome' {
+    if (productId === this.annualWelcomeProductId()) {
+      return 'annual_welcome';
+    }
+    if (subscriptionId?.trim() || productId === this.proProductId()) {
+      return 'pro_monthly';
+    }
+    if (productId && this.isCupkeyPaidProduct(productId)) {
+      return productId === this.annualWelcomeProductId()
+        ? 'annual_welcome'
+        : 'pro_monthly';
+    }
+    return 'pro_monthly';
+  }
+
+  /** Resolve + persist Dodo product id for legacy Pro rows (e.g. before dodoProductId column). */
+  async resolvePaidProductId(
+    userId: string,
+    profile: {
+      dodoProductId?: string | null;
+      dodoPaymentId?: string | null;
+      dodoSubscriptionId?: string | null;
+    },
+  ): Promise<string | null> {
+    if (profile.dodoProductId?.trim()) {
+      return profile.dodoProductId.trim();
+    }
+    if (profile.dodoSubscriptionId?.trim()) {
+      const id = this.proProductId();
+      await this.applyPlan(userId, { plan: 'pro', dodoProductId: id });
+      return id;
+    }
+    const payId = profile.dodoPaymentId?.trim();
+    const apiKey = process.env.DODO_PAYMENTS_API_KEY?.trim();
+    if (!payId || !apiKey || !/^pay_/i.test(payId)) {
+      return null;
+    }
+    try {
+      const res = await fetch(
+        `${this.apiBase()}/payments/${encodeURIComponent(payId)}`,
+        { headers: { Authorization: `Bearer ${apiKey}` } },
+      );
+      if (!res.ok) return null;
+      const pay = (await res.json()) as {
+        product_id?: string;
+        product_cart?: Array<{ product_id?: string }>;
+      };
+      const productId = this.extractPaidProductId(pay);
+      if (productId) {
+        await this.applyPlan(userId, { plan: 'pro', dodoProductId: productId });
+      }
+      return productId;
+    } catch {
+      return null;
+    }
   }
 
   apiKeyConfigured() {
@@ -328,6 +421,7 @@ export class BillingService {
     let verified = false;
     let customerId: string | null = null;
     let paidAt = new Date();
+    let paidProductId: string | null = null;
 
     const apiKey = process.env.DODO_PAYMENTS_API_KEY?.trim();
     if (apiKey) {
@@ -348,6 +442,7 @@ export class BillingService {
           customer_id?: string;
           subscription_id?: string;
           metadata?: Record<string, unknown>;
+          product_id?: string;
           product_cart?: Array<{ product_id?: string }>;
         };
         const payStatus = (pay.status || '').toLowerCase();
@@ -355,6 +450,7 @@ export class BillingService {
           throw new BadRequestException(`Payment status is ${pay.status}`);
         }
         this.assertPaymentBelongsToUser(pay, input);
+        paidProductId = this.extractPaidProductId(pay);
         verified = true;
         customerId = pay.customer_id || pay.customer?.customer_id || null;
         if (
@@ -402,6 +498,7 @@ export class BillingService {
             'Payment is not for Cupkey Pro or Annual welcome',
           );
         }
+        paidProductId = sub.product_id?.trim() || this.proProductId();
         verified = true;
         customerId = sub.customer_id || sub.customer?.customer_id || null;
         if (sub.created_at) {
@@ -442,6 +539,7 @@ export class BillingService {
       dodoCustomerId: customerId,
       dodoSubscriptionId: hasSub ? subscriptionId : null,
       dodoPaymentId: hasPay ? paymentId : null,
+      dodoProductId: paidProductId,
       proPaidAt: paidAt,
     });
     this.logger.log(
@@ -554,6 +652,7 @@ export class BillingService {
       dodoCustomerId: null,
       dodoSubscriptionId: null,
       dodoPaymentId: null,
+      dodoProductId: null,
       proPaidAt: null,
     });
   }
@@ -663,6 +762,7 @@ export class BillingService {
             pay.customer_id || pay.customer?.customer_id || null,
           dodoSubscriptionId: pay.subscription_id || null,
           dodoPaymentId: paymentId,
+          dodoProductId: this.extractPaidProductId(pay),
           proPaidAt: Number.isNaN(paidAt.getTime()) ? new Date() : paidAt,
         });
         this.logger.log(
@@ -839,6 +939,7 @@ export class BillingService {
       dodoCustomerId: customerId,
       dodoSubscriptionId: subscriptionId,
       ...(paymentId ? { dodoPaymentId: paymentId } : {}),
+      dodoProductId: productId,
       proPaidAt: new Date(),
     });
     this.logger.log(`Pro paid (pending) for user ${resolved} (${type})`);
@@ -949,6 +1050,10 @@ export class BillingService {
         if (patch.dodoPaymentId !== undefined) {
           local.dodoPaymentId = patch.dodoPaymentId;
         }
+        if (patch.dodoProductId !== undefined) {
+          (local as { dodoProductId?: string | null }).dodoProductId =
+            patch.dodoProductId;
+        }
         if (paidAt) local.proPaidAt = paidAt.toISOString();
         if (activatedAt) local.proActivatedAt = activatedAt.toISOString();
         this.localUsers.save(local);
@@ -969,6 +1074,9 @@ export class BillingService {
     }
     if (patch.dodoPaymentId !== undefined) {
       data.dodoPaymentId = patch.dodoPaymentId;
+    }
+    if (patch.dodoProductId !== undefined) {
+      data.dodoProductId = patch.dodoProductId;
     }
     if (paidAt !== undefined) {
       data.proPaidAt = paidAt ? paidAt.toISOString() : null;
@@ -993,6 +1101,9 @@ export class BillingService {
             : {}),
           ...(patch.dodoPaymentId !== undefined
             ? { dodoPaymentId: patch.dodoPaymentId }
+            : {}),
+          ...(patch.dodoProductId !== undefined
+            ? { dodoProductId: patch.dodoProductId }
             : {}),
           planUpdatedAt: now,
           ...(paidAt !== undefined ? { proPaidAt: paidAt } : {}),
@@ -1030,6 +1141,7 @@ export class BillingService {
     dodoCustomerId: string | null;
     dodoSubscriptionId: string | null;
     dodoPaymentId: string | null;
+    dodoProductId: string | null;
     proPaidAt: string | null;
     proActivatedAt: string | null;
     email: string | null;
@@ -1044,6 +1156,8 @@ export class BillingService {
         dodoCustomerId: local?.dodoCustomerId ?? null,
         dodoSubscriptionId: local?.dodoSubscriptionId ?? null,
         dodoPaymentId: local?.dodoPaymentId ?? null,
+        dodoProductId:
+          (local as { dodoProductId?: string | null })?.dodoProductId ?? null,
         proPaidAt: local?.proPaidAt ?? null,
         proActivatedAt: local?.proActivatedAt ?? null,
         email: local?.email ?? null,
@@ -1061,6 +1175,7 @@ export class BillingService {
           dodoCustomerId: true,
           dodoSubscriptionId: true,
           dodoPaymentId: true,
+          dodoProductId: true,
           proPaidAt: true,
           proActivatedAt: true,
           email: true,
@@ -1075,6 +1190,7 @@ export class BillingService {
           dodoCustomerId: u.dodoCustomerId ?? null,
           dodoSubscriptionId: u.dodoSubscriptionId ?? null,
           dodoPaymentId: u.dodoPaymentId ?? null,
+          dodoProductId: u.dodoProductId ?? null,
           proPaidAt: u.proPaidAt?.toISOString() ?? null,
           proActivatedAt: u.proActivatedAt?.toISOString() ?? null,
           email: u.email,
@@ -1094,13 +1210,14 @@ export class BillingService {
           dodoCustomerId?: string | null;
           dodoSubscriptionId?: string | null;
           dodoPaymentId?: string | null;
+          dodoProductId?: string | null;
           proPaidAt?: string | null;
           proActivatedAt?: string | null;
           email?: string;
           name?: string;
         }>(
           'User',
-          'plan,planStatus,planUpdatedAt,dodoCustomerId,dodoSubscriptionId,dodoPaymentId,proPaidAt,proActivatedAt,email,name',
+          'plan,planStatus,planUpdatedAt,dodoCustomerId,dodoSubscriptionId,dodoPaymentId,dodoProductId,proPaidAt,proActivatedAt,email,name',
           { filter: `id=eq.${userId}`, limit: 1 },
         );
         const u = rows[0];
@@ -1112,6 +1229,7 @@ export class BillingService {
             dodoCustomerId: u.dodoCustomerId ?? null,
             dodoSubscriptionId: u.dodoSubscriptionId ?? null,
             dodoPaymentId: u.dodoPaymentId ?? null,
+            dodoProductId: u.dodoProductId ?? null,
             proPaidAt: u.proPaidAt ?? null,
             proActivatedAt: u.proActivatedAt ?? null,
             email: u.email ?? null,
@@ -1130,6 +1248,7 @@ export class BillingService {
       dodoCustomerId: null,
       dodoSubscriptionId: null,
       dodoPaymentId: null,
+      dodoProductId: null,
       proPaidAt: null,
       proActivatedAt: null,
       email: null,

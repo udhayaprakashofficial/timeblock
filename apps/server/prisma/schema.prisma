@@ -41,6 +41,8 @@ model User {
   dodoSubscriptionId  String?
   /// Last successful Dodo payment id (invoice download)
   dodoPaymentId       String?
+  /// Dodo product id at checkout (Pro monthly vs Annual welcome one-time).
+  dodoProductId       String?
   planUpdatedAt       DateTime?
   /// When the user paid / locked Pro pricing
   proPaidAt           DateTime?

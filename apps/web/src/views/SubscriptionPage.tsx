@@ -19,6 +19,7 @@ type InvoiceRow = {
 type BillingSummary = {
   plan: 'free' | 'pro';
   planLabel: string;
+  planTier?: 'free' | 'pro_monthly' | 'annual_welcome';
   status: string;
   statusLabel: string;
   since: string | null;
@@ -166,6 +167,8 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
         ? 'Paid — waiting for AI go-live'
         : 'No paid subscription');
   const planLabel = summary.data?.planLabel ?? (isPro ? 'Pro' : 'Free');
+  const planTier = summary.data?.planTier;
+  const isAnnualWelcome = planTier === 'annual_welcome';
   const invoices = summary.data?.invoices ?? [];
 
   const upgradeHref = useMemo(
@@ -232,11 +235,15 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
       {isPending ? (
         <section className="sub-card sub-congrats" aria-label="Congratulations">
           <p className="sub-label">Congratulations</p>
-          <p className="sub-plan-name">You’re locked into Pro</p>
+          <p className="sub-plan-name">
+            You’re locked into {planLabel}
+          </p>
           <p className="sub-note">
-            Thanks for supporting Cupkey. AI features aren’t live yet — Pro
-            activates the day those features ship. Your subscription countdown
-            starts on that activation day, not today.
+            Thanks for supporting Cupkey. AI features aren’t live yet — paid
+            access activates the day those features ship.
+            {isAnnualWelcome
+              ? ' Your $12/year welcome rate is locked; billing year starts on activation day, not today.'
+              : ' Your subscription countdown starts on that activation day, not today.'}
           </p>
         </section>
       ) : null}
@@ -343,8 +350,8 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
           </p>
         ) : (
           <p className="sub-note">
-            You’ll get an email the moment we activate Pro for everyone who
-            paid.
+            You’ll get an email the moment we activate {planLabel} when AI
+            features go live.
           </p>
         )}
       </section>
