@@ -409,9 +409,19 @@ export class BillingService {
           if (!Number.isNaN(parsed.getTime())) paidAt = parsed;
         }
       }
-    } else if (!status) {
+    } else {
       throw new BadRequestException(
-        'Payment verification is not configured. Set DODO_PAYMENTS_API_KEY or complete checkout so Dodo redirects with status.',
+        'Payment verification is not configured. Set DODO_PAYMENTS_API_KEY on the server.',
+      );
+    }
+
+    if (!verified) {
+      throw new BadRequestException('Payment could not be verified with Dodo.');
+    }
+
+    if (hasPay && (await this.isPaymentLinkedToOtherUser(paymentId, input.userId))) {
+      throw new BadRequestException(
+        'This payment is already linked to another Cupkey account.',
       );
     }
 
@@ -439,6 +449,113 @@ export class BillingService {
     );
     await this.notifyProPaid(input.userId, input.email, paidAt);
     return { ok: true, plan: 'pro', verified };
+  }
+
+  /**
+   * Pro must be backed by a Dodo payment/subscription that belongs to this user.
+   * Clears mistaken Pro state (e.g. email-only auto-sync) when verification fails.
+   */
+  async validateProEntitlement(input: {
+    userId: string;
+    email: string;
+  }): Promise<boolean> {
+    const profile = await this.getBillingProfile(input.userId);
+    if (profile.plan !== 'pro') return true;
+
+    const apiKey = process.env.DODO_PAYMENTS_API_KEY?.trim();
+    const payId = profile.dodoPaymentId?.trim() || '';
+    const subId = profile.dodoSubscriptionId?.trim() || '';
+
+    if (!payId && !subId) {
+      await this.revokeInvalidPro(input.userId);
+      return false;
+    }
+
+    if (!apiKey) {
+      return Boolean(payId || subId);
+    }
+
+    const okStatuses = new Set(['succeeded', 'success', 'active']);
+    try {
+      if (payId && /^pay_/i.test(payId)) {
+        const res = await fetch(
+          `${this.apiBase()}/payments/${encodeURIComponent(payId)}`,
+          { headers: { Authorization: `Bearer ${apiKey}` } },
+        );
+        if (!res.ok) {
+          await this.revokeInvalidPro(input.userId);
+          return false;
+        }
+        const pay = (await res.json()) as {
+          status?: string;
+          customer?: { email?: string; customer_id?: string };
+          metadata?: Record<string, unknown>;
+          product_id?: string;
+          product_cart?: Array<{ product_id?: string }>;
+        };
+        const st = (pay.status || '').toLowerCase();
+        if (st && !okStatuses.has(st)) {
+          await this.revokeInvalidPro(input.userId);
+          return false;
+        }
+        this.assertPaymentBelongsToUser(pay, input);
+        return true;
+      }
+      if (subId && /^sub_/i.test(subId)) {
+        const res = await fetch(
+          `${this.apiBase()}/subscriptions/${encodeURIComponent(subId)}`,
+          { headers: { Authorization: `Bearer ${apiKey}` } },
+        );
+        if (!res.ok) {
+          await this.revokeInvalidPro(input.userId);
+          return false;
+        }
+        const sub = (await res.json()) as {
+          status?: string;
+          customer?: { email?: string; customer_id?: string };
+          metadata?: Record<string, unknown>;
+          product_id?: string;
+        };
+        const st = (sub.status || '').toLowerCase();
+        if (
+          st &&
+          !okStatuses.has(st) &&
+          st !== 'pending'
+        ) {
+          await this.revokeInvalidPro(input.userId);
+          return false;
+        }
+        this.assertPaymentBelongsToUser(sub, input);
+        if (sub.product_id && !this.isCupkeyPaidProduct(sub.product_id)) {
+          await this.revokeInvalidPro(input.userId);
+          return false;
+        }
+        return true;
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Pro entitlement invalid for ${input.userId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      await this.revokeInvalidPro(input.userId);
+      return false;
+    }
+
+    await this.revokeInvalidPro(input.userId);
+    return false;
+  }
+
+  private async revokeInvalidPro(userId: string): Promise<void> {
+    this.logger.warn(`Revoking invalid Pro for user ${userId}`);
+    await this.applyPlan(userId, {
+      plan: 'free',
+      planStatus: null,
+      dodoCustomerId: null,
+      dodoSubscriptionId: null,
+      dodoPaymentId: null,
+      proPaidAt: null,
+    });
   }
 
   /**
@@ -500,23 +617,10 @@ export class BillingService {
       }>;
     };
 
-    const matches = (data.items ?? [])
+    const candidates = (data.items ?? [])
       .filter((p) => {
         const st = (p.status || '').toLowerCase();
-        if (st && st !== 'succeeded' && st !== 'success') return false;
-        const cartProduct =
-          p.product_id || this.productIdFromCart(p.product_cart);
-        if (cartProduct && !this.isCupkeyPaidProduct(cartProduct)) {
-          return false;
-        }
-        const payEmail = p.customer?.email?.toLowerCase();
-        const metaUser =
-          typeof p.metadata?.userId === 'string'
-            ? p.metadata.userId
-            : typeof p.metadata?.user_id === 'string'
-              ? p.metadata.user_id
-              : null;
-        return payEmail === email || metaUser === input.userId;
+        return !st || st === 'succeeded' || st === 'success';
       })
       .sort((a, b) => {
         const ta = a.created_at ? Date.parse(a.created_at) : 0;
@@ -524,42 +628,100 @@ export class BillingService {
         return tb - ta;
       });
 
-    const best = matches[0];
-    if (!best?.payment_id) {
-      return {
-        ok: true,
-        plan: existing.plan === 'pro' ? 'pro' : 'free',
-        synced: false,
-        paymentId: null,
-        subscriptionId: null,
-      };
+    for (const row of candidates) {
+      const paymentId = row.payment_id?.trim();
+      if (!paymentId || !/^pay_/i.test(paymentId)) continue;
+      if (await this.isPaymentLinkedToOtherUser(paymentId, input.userId)) {
+        continue;
+      }
+      try {
+        const res = await fetch(
+          `${this.apiBase()}/payments/${encodeURIComponent(paymentId)}`,
+          { headers: { Authorization: `Bearer ${apiKey}` } },
+        );
+        if (!res.ok) continue;
+        const pay = (await res.json()) as {
+          status?: string;
+          created_at?: string;
+          subscription_id?: string;
+          customer?: { email?: string; customer_id?: string };
+          customer_id?: string;
+          metadata?: Record<string, unknown>;
+          product_id?: string;
+          product_cart?: Array<{ product_id?: string }>;
+        };
+        const st = (pay.status || '').toLowerCase();
+        if (st && st !== 'succeeded' && st !== 'success') continue;
+        this.assertPaymentBelongsToUser(pay, input);
+        const paidAt = pay.created_at
+          ? new Date(pay.created_at)
+          : new Date();
+        await this.applyPlan(input.userId, {
+          plan: 'pro',
+          planStatus: 'pending_activation',
+          dodoCustomerId:
+            pay.customer_id || pay.customer?.customer_id || null,
+          dodoSubscriptionId: pay.subscription_id || null,
+          dodoPaymentId: paymentId,
+          proPaidAt: Number.isNaN(paidAt.getTime()) ? new Date() : paidAt,
+        });
+        this.logger.log(
+          `Pro synced from Dodo for ${input.userId} payment=${paymentId}`,
+        );
+        await this.notifyProPaid(
+          input.userId,
+          input.email,
+          Number.isNaN(paidAt.getTime()) ? new Date() : paidAt,
+        );
+        return {
+          ok: true,
+          plan: 'pro',
+          synced: true,
+          paymentId,
+          subscriptionId: pay.subscription_id || null,
+        };
+      } catch {
+        continue;
+      }
     }
 
-    const paidAt = best.created_at ? new Date(best.created_at) : new Date();
-    await this.applyPlan(input.userId, {
-      plan: 'pro',
-      planStatus: 'pending_activation',
-      dodoCustomerId:
-        best.customer_id || best.customer?.customer_id || null,
-      dodoSubscriptionId: best.subscription_id || null,
-      dodoPaymentId: best.payment_id,
-      proPaidAt: Number.isNaN(paidAt.getTime()) ? new Date() : paidAt,
-    });
-    this.logger.log(
-      `Pro synced from Dodo for ${input.userId} payment=${best.payment_id}`,
-    );
-    await this.notifyProPaid(
-      input.userId,
-      input.email,
-      Number.isNaN(paidAt.getTime()) ? new Date() : paidAt,
-    );
     return {
       ok: true,
-      plan: 'pro',
-      synced: true,
-      paymentId: best.payment_id,
-      subscriptionId: best.subscription_id || null,
+      plan: existing.plan === 'pro' ? 'pro' : 'free',
+      synced: false,
+      paymentId: null,
+      subscriptionId: null,
     };
+  }
+
+  /** One Dodo payment id must not unlock Pro on two Cupkey accounts. */
+  private async isPaymentLinkedToOtherUser(
+    paymentId: string,
+    userId: string,
+  ): Promise<boolean> {
+    const id = paymentId.trim();
+    if (!id) return false;
+    try {
+      const other = await this.prisma.user.findFirst({
+        where: { dodoPaymentId: id, NOT: { id: userId } },
+        select: { id: true },
+      });
+      if (other) return true;
+    } catch {
+      /* REST */
+    }
+    if (this.supabase.isConfigured()) {
+      try {
+        const rows = await this.supabase.select<{ id: string }>('User', 'id', {
+          filter: `dodoPaymentId=eq.${encodeURIComponent(id)}`,
+          limit: 5,
+        });
+        if (rows.some((r) => r.id !== userId)) return true;
+      } catch {
+        /* ignore */
+      }
+    }
+    return false;
   }
 
   private assertPaymentBelongsToUser(
@@ -591,6 +753,11 @@ export class BillingService {
     if (cartProduct && !this.isCupkeyPaidProduct(cartProduct)) {
       throw new BadRequestException(
         'Payment is not for Cupkey Pro or Annual welcome',
+      );
+    }
+    if (!cartProduct && !userMatch) {
+      throw new BadRequestException(
+        'This payment cannot be linked without Cupkey checkout metadata',
       );
     }
   }
@@ -815,10 +982,18 @@ export class BillingService {
         where: { id: userId },
         data: {
           plan: patch.plan,
-          planStatus: patch.planStatus ?? undefined,
-          dodoCustomerId: patch.dodoCustomerId ?? undefined,
-          dodoSubscriptionId: patch.dodoSubscriptionId ?? undefined,
-          dodoPaymentId: patch.dodoPaymentId ?? undefined,
+          ...(patch.planStatus !== undefined
+            ? { planStatus: patch.planStatus }
+            : {}),
+          ...(patch.dodoCustomerId !== undefined
+            ? { dodoCustomerId: patch.dodoCustomerId }
+            : {}),
+          ...(patch.dodoSubscriptionId !== undefined
+            ? { dodoSubscriptionId: patch.dodoSubscriptionId }
+            : {}),
+          ...(patch.dodoPaymentId !== undefined
+            ? { dodoPaymentId: patch.dodoPaymentId }
+            : {}),
           planUpdatedAt: now,
           ...(paidAt !== undefined ? { proPaidAt: paidAt } : {}),
           ...(activatedAt !== undefined ? { proActivatedAt: activatedAt } : {}),
@@ -1085,11 +1260,10 @@ export class BillingService {
         let items = data.items ?? [];
         if (profile.email) {
           const email = profile.email.toLowerCase();
-          items = items.filter((p) => {
-            if (profile.dodoCustomerId) return true;
-            return p.customer?.email?.toLowerCase() === email;
-          });
-        } else if (!profile.dodoCustomerId) {
+          items = items.filter(
+            (p) => p.customer?.email?.toLowerCase() === email,
+          );
+        } else {
           items = [];
         }
         for (const p of items) pushPayment(p);

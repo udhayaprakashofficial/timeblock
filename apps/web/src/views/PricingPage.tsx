@@ -197,7 +197,14 @@ export function PricingPage({
   const qc = useQueryClient();
   const joinHref = signedIn ? '/schedule' : '/login';
   const joinLabel = signedIn ? 'Open dashboard' : 'Join Cupkey';
-  const isPro = user?.plan === 'pro';
+  const billingSummaryQuery = useQuery({
+    queryKey: ['billing-summary'],
+    queryFn: () => api.get<{ plan: 'free' | 'pro' }>('/api/billing/summary'),
+    enabled: signedIn && Boolean(user?.id),
+    staleTime: 10_000,
+  });
+  const isPro =
+    billingSummaryQuery.data?.plan === 'pro' || user?.plan === 'pro';
 
   const billingCatalogQuery = useQuery({
     queryKey: ['billing-config'],

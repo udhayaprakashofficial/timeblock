@@ -46,20 +46,16 @@ export class BillingController {
     let plan: 'free' | 'pro' =
       me.plan === 'pro' || profile.plan === 'pro' ? 'pro' : 'free';
 
-    // Paid in Dodo but redirect/webhook missed → heal on summary load
-    if (plan === 'free' && this.billing.apiKeyConfigured()) {
-      try {
-        const synced = await this.billing.syncPaidPlanFromDodo({
-          userId: me.id,
-          email: me.email,
-        });
-        if (synced.synced) {
-          me = await this.users.getMe(userId);
-          profile = await this.billing.getBillingProfile(userId);
-          plan = 'pro';
-        }
-      } catch {
-        /* leave as free — user can still Upgrade */
+    // Drop mistaken Pro (e.g. loose email sync); never auto-upgrade on page load
+    if (plan === 'pro') {
+      const entitled = await this.billing.validateProEntitlement({
+        userId: me.id,
+        email: me.email,
+      });
+      if (!entitled) {
+        me = await this.users.getMe(userId);
+        profile = await this.billing.getBillingProfile(userId);
+        plan = 'free';
       }
     }
 
