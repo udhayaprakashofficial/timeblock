@@ -745,19 +745,16 @@ export class UsersService {
     userId: string,
     email: string,
     name?: string,
-    opts?: { firstSignup?: boolean; signInRetry?: boolean },
-  ): Promise<void> {
+    opts?: { firstSignup?: boolean; signInRetry?: boolean; force?: boolean },
+  ): Promise<boolean> {
     try {
-      if (!userId.startsWith('local_') && (await this.welcomeAlreadySent(userId))) {
-        return;
-      }
+      const skipSentCheck = opts?.firstSignup || opts?.force;
       if (
-        !opts?.firstSignup &&
-        opts?.signInRetry &&
+        !skipSentCheck &&
         !userId.startsWith('local_') &&
-        !(await this.welcomeRetryEligible(userId))
+        (await this.welcomeAlreadySent(userId))
       ) {
-        return;
+        return true;
       }
       const ok = await this.mail.sendWelcomeEmail({
         toEmail: email,
@@ -765,62 +762,22 @@ export class UsersService {
       });
       if (!ok) {
         console.warn('[mail] welcome email did not send for', email);
-        return;
+        return false;
       }
       if (!userId.startsWith('local_')) {
         await this.markWelcomeSent(userId);
       }
+      return true;
     } catch (err) {
       console.warn(
         '[mail] welcome email error',
         err instanceof Error ? err.message : err,
       );
+      return false;
     }
-  }
-
-  /** Sign-in retry only for recent accounts (avoids duplicate welcomes for older users). */
-  private async welcomeRetryEligible(userId: string): Promise<boolean> {
-    const maxAgeMs = 30 * 24 * 60 * 60 * 1000;
-    try {
-      const row = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { createdAt: true },
-      });
-      if (row?.createdAt) {
-        return Date.now() - row.createdAt.getTime() < maxAgeMs;
-      }
-    } catch {
-      /* REST fallback */
-    }
-    if (this.supabase.isConfigured()) {
-      try {
-        const rows = await this.supabase.select<{ createdAt?: string }>(
-          'User',
-          'createdAt',
-          { filter: `id=eq.${userId}`, limit: 1 },
-        );
-        const raw = rows[0]?.createdAt;
-        if (raw) {
-          const t = new Date(raw).getTime();
-          if (Number.isFinite(t)) return Date.now() - t < maxAgeMs;
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-    return true;
   }
 
   private async welcomeAlreadySent(userId: string): Promise<boolean> {
-    try {
-      const row = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { welcomeEmailSentAt: true },
-      });
-      if (row?.welcomeEmailSentAt) return true;
-    } catch {
-      /* REST fallback */
-    }
     if (this.supabase.isConfigured()) {
       try {
         const rows = await this.supabase.select<{ welcomeEmailSentAt?: string }>(
@@ -833,28 +790,43 @@ export class UsersService {
         /* column may be missing until migration runs */
       }
     }
+    try {
+      const row = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { welcomeEmailSentAt: true },
+      });
+      if (row?.welcomeEmailSentAt) return true;
+    } catch {
+      /* REST fallback */
+    }
     return false;
   }
 
   private async markWelcomeSent(userId: string): Promise<void> {
     const now = new Date();
-    try {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { welcomeEmailSentAt: now },
-      });
-    } catch {
-      /* REST fallback */
-    }
-    if (this.supabase.isConfigured()) {
-      try {
-        await this.supabase.patch('User', `id=eq.${userId}`, {
-          welcomeEmailSentAt: now.toISOString(),
-          updatedAt: now.toISOString(),
-        });
-      } catch {
-        /* column may be missing until migration runs */
+    const iso = now.toISOString();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (this.supabase.isConfigured()) {
+        try {
+          await this.supabase.patch('User', `id=eq.${userId}`, {
+            welcomeEmailSentAt: iso,
+            updatedAt: iso,
+          });
+          if (await this.welcomeAlreadySent(userId)) return;
+        } catch {
+          /* column may be missing until migration runs */
+        }
       }
+      try {
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: { welcomeEmailSentAt: now },
+        });
+        return;
+      } catch {
+        /* retry */
+      }
+      await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
     }
   }
 

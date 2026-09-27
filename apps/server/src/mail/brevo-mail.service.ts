@@ -151,20 +151,11 @@ Open your dashboard: ${dashboardUrl}
 </body>
 </html>`;
 
-    // Retry once — Vercel cold starts + Brevo blips are common.
-    let result = await this.sendTransactional({
-      toEmail: input.toEmail,
-      toName: firstName,
-      subject: 'Welcome to the Cupkey club',
-      htmlContent,
-      textContent,
-      replyToSender: true,
-    });
-    if (!result.ok) {
-      this.logger.warn(
-        `Welcome email first attempt failed for ${input.toEmail}: ${result.error}`,
-      );
-      await sleep(400);
+    // Retries — Vercel cold starts, Brevo blips, and temp-mail testing are common.
+    let result: BrevoSendResult = { ok: false, error: 'not attempted' };
+    const delays = [0, 500, 1200, 2500];
+    for (let i = 0; i < delays.length; i++) {
+      if (delays[i] > 0) await sleep(delays[i]);
       result = await this.sendTransactional({
         toEmail: input.toEmail,
         toName: firstName,
@@ -173,6 +164,10 @@ Open your dashboard: ${dashboardUrl}
         textContent,
         replyToSender: true,
       });
+      if (result.ok) break;
+      this.logger.warn(
+        `Welcome email attempt ${i + 1} failed for ${input.toEmail}: ${result.error}`,
+      );
     }
     if (result.ok) {
       this.logger.log(`Welcome email sent to ${input.toEmail}`);
