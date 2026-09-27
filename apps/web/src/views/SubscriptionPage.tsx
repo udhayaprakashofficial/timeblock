@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UserDto } from '@timeblock/shared-types';
@@ -280,12 +281,15 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
 
         {!isPro ? (
           <div className="sub-actions">
+            <Link href="/pricing" className="sub-btn is-primary">
+              View plans & upgrade
+            </Link>
             <a
               href={upgradeHref}
-              className="sub-btn is-primary"
+              className="sub-btn is-outline"
               rel="noopener noreferrer"
             >
-              Upgrade to Pro — $10/mo
+              Pro checkout — $10/mo
             </a>
             {summary.data?.apiKeyConfigured ? (
               <button

@@ -110,7 +110,9 @@ export class BillingService {
   }): string {
     const url = new URL(`${this.checkoutBase()}/${this.proProductId()}`);
     url.searchParams.set('quantity', '1');
-    const defaultRedirect = `${this.appPublicUrl()}/pricing`;
+    const defaultRedirect = input.userId?.trim()
+      ? `${this.appPublicUrl()}/subscription`
+      : `${this.appPublicUrl()}/pricing`;
     url.searchParams.set(
       'redirect_url',
       input.redirectUrl || defaultRedirect,
@@ -153,7 +155,7 @@ export class BillingService {
         body: JSON.stringify({
           product_cart: [{ product_id: this.proProductId(), quantity: 1 }],
           customer: { email: input.email, name: input.name },
-          return_url: `${this.appPublicUrl()}/pricing`,
+          return_url: `${this.appPublicUrl()}/subscription`,
           metadata: { userId: input.userId },
         }),
       });

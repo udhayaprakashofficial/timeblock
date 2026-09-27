@@ -241,7 +241,8 @@ function RailAvatar({ name, userId }: { name: string; userId: string }) {
   const items = [
     { href: '/settings', label: 'Profile', external: false },
     { href: '/settings?panel=account', label: 'Account', external: false },
-    { href: '/pricing', label: 'Subscription', external: false },
+    { href: '/subscription', label: 'Subscription', external: false },
+    { href: '/pricing', label: 'Pricing', external: false },
     { href: '/settings?panel=help', label: 'Help', external: false },
     { href: FEEDBACK_URL, label: 'Feedback', external: true },
   ] as const;
@@ -539,12 +540,13 @@ function Shell({
         pathname.startsWith('/badges') ||
         pathname.startsWith('/settings') ||
         pathname.startsWith('/pricing') ||
+        pathname.startsWith('/subscription') ||
         pathname.startsWith('/admin')
           ? ' is-wide'
           : ''
       }${pathname.startsWith('/badges') ? ' is-badges' : ''}${
         pathname.startsWith('/settings') ? ' is-settings' : ''
-      }${pathname.startsWith('/pricing') ? ' is-pricing' : ''}${
+      }${pathname.startsWith('/pricing') || pathname.startsWith('/subscription') ? ' is-pricing' : ''}${
         pathname.startsWith('/admin') ? ' is-admin' : ''
       }`}
     >
@@ -606,7 +608,7 @@ function Shell({
             <span className="nav-label">Badges</span>
           </NavItem>
           <NavItem
-            href="/pricing"
+            href="/subscription"
             title={HINTS['nav.subscription'].title}
             tip={HINTS['nav.subscription'].body}
           >
@@ -711,6 +713,7 @@ function Shell({
       {!pathname.startsWith('/badges') &&
         !pathname.startsWith('/settings') &&
         !pathname.startsWith('/pricing') &&
+        !pathname.startsWith('/subscription') &&
         !pathname.startsWith('/admin') && (
           <RightPanel user={displayUser} />
         )}
@@ -729,6 +732,7 @@ export function App({ children }: { children: ReactNode }) {
   const isOnboarding = pathname.startsWith('/onboarding');
   const isSharedTimesheet = pathname.startsWith('/share/');
   const isPricing = pathname.startsWith('/pricing');
+  const isSubscription = pathname.startsWith('/subscription');
   const isPublic =
     isLanding || isLogin || isSharedTimesheet || isPricing;
   const [sessionUser, setSessionUser] = useState<UserDto | null>(null);
@@ -907,7 +911,13 @@ export function App({ children }: { children: ReactNode }) {
     if (!user) return;
 
     // First-time users: Signup/Login → Onboarding → Dashboard
-    if (needsOnboarding(user) && !isOnboarding && !isSharedTimesheet && !isPricing) {
+    if (
+      needsOnboarding(user) &&
+      !isOnboarding &&
+      !isSharedTimesheet &&
+      !isPricing &&
+      !isSubscription
+    ) {
       router.replace('/onboarding');
       return;
     }
@@ -927,6 +937,7 @@ export function App({ children }: { children: ReactNode }) {
     isOnboarding,
     isSharedTimesheet,
     isPricing,
+    isSubscription,
     router,
   ]);
 
