@@ -1021,6 +1021,9 @@ export function App({ children }: { children: ReactNode }) {
     );
   } else if (isOnboarding) {
     body = <OnboardingFlow user={user} onFinished={handleSignedIn} />;
+  } else if (isPricing) {
+    // Marketing pricing — full-page layout, not dashboard chrome
+    body = children;
   } else {
     body = (
       <Shell
@@ -1037,6 +1040,7 @@ export function App({ children }: { children: ReactNode }) {
     <>
       <ThemeForceLight
         active={
+          isPricing ||
           (isPublic && !user) ||
           isOnboarding ||
           needsOnboarding(user)
