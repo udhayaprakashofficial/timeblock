@@ -241,8 +241,6 @@ function RailAvatar({ name, userId }: { name: string; userId: string }) {
   const items = [
     { href: '/settings', label: 'Profile', external: false },
     { href: '/settings?panel=account', label: 'Account', external: false },
-    { href: '/subscription', label: 'Subscription', external: false },
-    { href: '/pricing', label: 'Pricing', external: false },
     { href: '/settings?panel=help', label: 'Help', external: false },
     { href: FEEDBACK_URL, label: 'Feedback', external: true },
   ] as const;
