@@ -1,17 +1,18 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Optional, forwardRef } from '@nestjs/common';
 import { CalendarProvider } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../crypto/crypto.service';
 import { SupabaseRestService } from '../supabase/supabase-rest.service';
-import { BrevoMailService } from '../mail/brevo-mail.service';
+import { UsersService } from '../users/users.service';
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
+    @Inject(forwardRef(() => UsersService))
+    private readonly users: UsersService,
     @Optional() private readonly supabase?: SupabaseRestService,
-    @Optional() private readonly mail?: BrevoMailService,
   ) {}
 
   async upsertOAuthUser(input: {
@@ -98,15 +99,7 @@ export class AuthService {
     });
 
     if (isNew) {
-      // Await on Vercel — fire-and-forget is frozen when the response returns.
-      try {
-        await this.mail?.sendWelcomeEmail({
-          toEmail: input.email,
-          toName: input.name,
-        });
-      } catch {
-        /* signup must not fail if mail is down */
-      }
+      await this.users.deliverWelcomeEmail(user.id, input.email, input.name);
     }
 
     return user;

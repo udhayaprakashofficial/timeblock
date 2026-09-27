@@ -46,6 +46,8 @@ model User {
   proPaidAt           DateTime?
   /// When admin activated Pro (subscription countdown starts here)
   proActivatedAt      DateTime?
+  /// Set after the founder welcome email is successfully sent (Brevo).
+  welcomeEmailSentAt  DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

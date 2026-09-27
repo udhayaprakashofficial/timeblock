@@ -1,6 +1,7 @@
 import { createClerkClient, verifyToken } from '@clerk/backend';
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Inject, Injectable, UnauthorizedException, forwardRef } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { UsersService } from '../users/users.service';
 
 @Injectable()
 export class ClerkAuthService {
@@ -8,7 +9,11 @@ export class ClerkAuthService {
     secretKey: process.env.CLERK_SECRET_KEY ?? '',
   });
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(forwardRef(() => UsersService))
+    private readonly users: UsersService,
+  ) {}
 
   isConfigured() {
     return Boolean(
@@ -70,7 +75,7 @@ export class ClerkAuthService {
       });
     }
 
-    return this.prisma.user.create({
+    const created = await this.prisma.user.create({
       data: {
         clerkId: clerkUserId,
         email: email.toLowerCase(),
@@ -78,5 +83,11 @@ export class ClerkAuthService {
         onboardingCompleted: false,
       },
     });
+    await this.users.deliverWelcomeEmail(
+      created.id,
+      created.email,
+      created.name,
+    );
+    return created;
   }
 }

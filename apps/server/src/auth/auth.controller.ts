@@ -163,6 +163,12 @@ export class AuthController {
           return res.status(500).json({ error: 'Failed to save session' });
         }
         const me = await this.usersService.getMe(user.id);
+        await this.usersService.deliverWelcomeEmail(
+          me.id,
+          me.email,
+          me.name,
+          { signInRetry: true },
+        );
         return res.json(me);
       });
     } catch (e) {
@@ -287,6 +293,12 @@ export class AuthController {
       }
       try {
         const me = await this.usersService.getMe(userId);
+        await this.usersService.deliverWelcomeEmail(
+          me.id,
+          me.email,
+          me.name,
+          { signInRetry: true },
+        );
         this.loginCodes.invalidate(code);
         void this.calendarSync.syncNow(userId).catch(() => undefined);
         return res.json(me);

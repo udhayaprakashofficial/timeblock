@@ -390,11 +390,14 @@ export class UsersService {
       try {
         const { dto, isNew } = await viaRest();
         if (isNew) {
-          await this.notifyWelcome(email, name);
+          await this.deliverWelcomeEmail(dto.id, email, name);
           return { ...dto, onboardingCompleted: false };
         }
-        // Existing Google account — never re-show first-time setup
-        return this.markReturningUserOnboarded(dto);
+        const returning = await this.markReturningUserOnboarded(dto);
+        await this.deliverWelcomeEmail(returning.id, email, name, {
+          signInRetry: true,
+        });
+        return returning;
       } catch (restErr) {
         console.warn(
           '[auth] Supabase REST failed — trying Prisma',
@@ -416,10 +419,16 @@ export class UsersService {
         scope: 'calendar.readonly gmail.send email profile',
       });
       if (isNew) {
-        // Welcome is sent inside upsertOAuthUser (awaited for Vercel).
+        // Welcome sent in AuthService.upsertOAuthUser (awaited for Vercel).
         return { ...(await this.getMe(user.id)), onboardingCompleted: false };
       }
-      return this.markReturningUserOnboarded(await this.getMe(user.id));
+      const returning = await this.markReturningUserOnboarded(
+        await this.getMe(user.id),
+      );
+      await this.deliverWelcomeEmail(returning.id, email, name, {
+        signInRetry: true,
+      });
+      return returning;
     } catch (err) {
       console.error(
         '[auth] Google login failed against Supabase',
@@ -718,28 +727,131 @@ export class UsersService {
     }
   }
 
-  private queueWelcome(email: string, name?: string) {
-    return this.notifyWelcome(email, name);
+  /**
+   * Founder welcome email — sent once per account. Sign-in retries if signup
+   * mail failed (Vercel must await Brevo; no fire-and-forget).
+   */
+  private async afterPasswordSignIn(dto: UserDto): Promise<UserDto> {
+    const me = await this.markReturningUserOnboarded(dto);
+    await this.deliverWelcomeEmail(me.id, me.email, me.name, {
+      signInRetry: true,
+    });
+    return me;
   }
 
-  /**
-   * On Vercel serverless, fire-and-forget promises are frozen when the
-   * response returns — so we must await the Brevo call before responding.
-   */
-  private async notifyWelcome(email: string, name?: string): Promise<void> {
+  async deliverWelcomeEmail(
+    userId: string,
+    email: string,
+    name?: string,
+    opts?: { signInRetry?: boolean },
+  ): Promise<void> {
     try {
+      if (!userId.startsWith('local_') && (await this.welcomeAlreadySent(userId))) {
+        return;
+      }
+      if (
+        opts?.signInRetry &&
+        !userId.startsWith('local_') &&
+        !(await this.welcomeRetryEligible(userId))
+      ) {
+        return;
+      }
       const ok = await this.mail.sendWelcomeEmail({
         toEmail: email,
         toName: name,
       });
       if (!ok) {
         console.warn('[mail] welcome email did not send for', email);
+        return;
+      }
+      if (!userId.startsWith('local_')) {
+        await this.markWelcomeSent(userId);
       }
     } catch (err) {
       console.warn(
         '[mail] welcome email error',
         err instanceof Error ? err.message : err,
       );
+    }
+  }
+
+  /** Sign-in retry only for recent accounts (avoids duplicate welcomes for older users). */
+  private async welcomeRetryEligible(userId: string): Promise<boolean> {
+    const maxAgeMs = 30 * 24 * 60 * 60 * 1000;
+    try {
+      const row = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { createdAt: true },
+      });
+      if (row?.createdAt) {
+        return Date.now() - row.createdAt.getTime() < maxAgeMs;
+      }
+    } catch {
+      /* REST fallback */
+    }
+    if (this.supabase.isConfigured()) {
+      try {
+        const rows = await this.supabase.select<{ createdAt?: string }>(
+          'User',
+          'createdAt',
+          { filter: `id=eq.${userId}`, limit: 1 },
+        );
+        const raw = rows[0]?.createdAt;
+        if (raw) {
+          const t = new Date(raw).getTime();
+          if (Number.isFinite(t)) return Date.now() - t < maxAgeMs;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return true;
+  }
+
+  private async welcomeAlreadySent(userId: string): Promise<boolean> {
+    try {
+      const row = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { welcomeEmailSentAt: true },
+      });
+      if (row?.welcomeEmailSentAt) return true;
+    } catch {
+      /* REST fallback */
+    }
+    if (this.supabase.isConfigured()) {
+      try {
+        const rows = await this.supabase.select<{ welcomeEmailSentAt?: string }>(
+          'User',
+          'welcomeEmailSentAt',
+          { filter: `id=eq.${userId}`, limit: 1 },
+        );
+        if (rows[0]?.welcomeEmailSentAt) return true;
+      } catch {
+        /* column may be missing until migration runs */
+      }
+    }
+    return false;
+  }
+
+  private async markWelcomeSent(userId: string): Promise<void> {
+    const now = new Date();
+    try {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { welcomeEmailSentAt: now },
+      });
+    } catch {
+      /* REST fallback */
+    }
+    if (this.supabase.isConfigured()) {
+      try {
+        await this.supabase.patch('User', `id=eq.${userId}`, {
+          welcomeEmailSentAt: now.toISOString(),
+          updatedAt: now.toISOString(),
+        });
+      } catch {
+        /* column may be missing until migration runs */
+      }
     }
   }
 
@@ -776,7 +888,7 @@ export class UsersService {
         } catch {
           /* optional */
         }
-        await this.notifyWelcome(email, name);
+        await this.deliverWelcomeEmail(user.id, email, name);
         return {
           ...this.dtoFromParts(user, []),
           onboardingCompleted: false,
@@ -799,7 +911,7 @@ export class UsersService {
         data: { email, name, passwordHash, onboardingCompleted: false },
         include: { oauthAccounts: true },
       });
-      await this.notifyWelcome(email, name);
+      await this.deliverWelcomeEmail(user.id, email, name);
       return this.toDto(user);
     } catch (err) {
       if (err instanceof BadRequestException) throw err;
@@ -827,7 +939,7 @@ export class UsersService {
     } catch {
       /* optional */
     }
-    await this.notifyWelcome(email, name);
+    await this.deliverWelcomeEmail(local.id, email, name);
     return {
       ...this.dtoFromParts(local, local.connectedProviders),
       onboardingCompleted: false,
@@ -850,7 +962,7 @@ export class UsersService {
         const user = await this.supabase.getUserByEmail(email);
         if (user?.passwordHash && this.crypto.verifyPassword(password, user.passwordHash)) {
           const providers = await this.supabase.listOAuthProviders(user.id);
-          return this.markReturningUserOnboarded(
+          return this.afterPasswordSignIn(
             this.dtoFromParts(user, providers),
           );
         }
@@ -877,7 +989,7 @@ export class UsersService {
         include: { oauthAccounts: true },
       });
       if (user?.passwordHash && this.crypto.verifyPassword(password, user.passwordHash)) {
-        return this.markReturningUserOnboarded(this.toDto(user));
+        return this.afterPasswordSignIn(this.toDto(user));
       }
       if (user && !user.passwordHash) {
         throw new BadRequestException(
@@ -893,7 +1005,7 @@ export class UsersService {
 
     const local = this.localUsers.findByEmail(email);
     if (local?.passwordHash && this.crypto.verifyPassword(password, local.passwordHash)) {
-      return this.markReturningUserOnboarded(
+      return this.afterPasswordSignIn(
         this.dtoFromParts(local, local.connectedProviders),
       );
     }
