@@ -2,12 +2,14 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UserDto } from '@timeblock/shared-types';
 import { CupkeyLogo } from '../components/CupkeyLogo';
 import { api } from '../api';
 import {
+  buildAnnualWelcomeCheckoutUrl,
   buildProCheckoutUrl,
+  catalogFromApi,
 } from '../lib/billing';
 import './pricing.css';
 
@@ -197,14 +199,41 @@ export function PricingPage({
   const joinLabel = signedIn ? 'Open dashboard' : 'Join Cupkey';
   const isPro = user?.plan === 'pro';
 
-  const proCheckoutHref = useMemo(() => {
-    // Guests can pay too — Dodo collects email; webhook matches by email.
-    return buildProCheckoutUrl(
+  const billingCatalogQuery = useQuery({
+    queryKey: ['billing-config'],
+    queryFn: () =>
+      api.get<{
+        proProductId: string;
+        annualWelcomeProductId: string;
+        checkoutBase?: string;
+      }>('/api/billing/config'),
+    staleTime: 60_000,
+  });
+  const billingCatalog = useMemo(
+    () => catalogFromApi(billingCatalogQuery.data),
+    [billingCatalogQuery.data],
+  );
+
+  const checkoutCustomer = useMemo(
+    () =>
       signedIn && user
         ? { id: user.id, email: user.email, name: user.name }
         : null,
-    );
-  }, [signedIn, user]);
+    [signedIn, user],
+  );
+
+  const proCheckoutHref = useMemo(
+    () => buildProCheckoutUrl(billingCatalog, checkoutCustomer),
+    [billingCatalog, checkoutCustomer],
+  );
+
+  const annualWelcomeCheckoutHref = useMemo(
+    () => buildAnnualWelcomeCheckoutUrl(billingCatalog, checkoutCustomer),
+    [billingCatalog, checkoutCustomer],
+  );
+
+  const welcomeSeatsLeft = WELCOME_TOTAL - WELCOME_TAKEN;
+  const welcomeSoldOut = welcomeSeatsLeft <= 0;
 
   const [checkoutBanner, setCheckoutBanner] = useState<
     'success' | 'failed' | null
@@ -226,11 +255,20 @@ export function PricingPage({
 
     if (buy === 'pro' && signedIn && user && !isPro) {
       window.location.assign(
-        buildProCheckoutUrl({
-          id: user.id,
-          email: user.email,
-          name: user.name,
-        }),
+        buildProCheckoutUrl(billingCatalog, checkoutCustomer),
+      );
+      return;
+    }
+
+    if (
+      buy === 'annual' &&
+      signedIn &&
+      user &&
+      !isPro &&
+      !welcomeSoldOut
+    ) {
+      window.location.assign(
+        buildAnnualWelcomeCheckoutUrl(billingCatalog, checkoutCustomer),
       );
       return;
     }
@@ -284,7 +322,15 @@ export function PricingPage({
     if (okStatus) {
       setCheckoutBanner('success');
     }
-  }, [signedIn, user, isPro, qc]);
+  }, [
+    signedIn,
+    user,
+    isPro,
+    qc,
+    checkoutCustomer,
+    welcomeSoldOut,
+    billingCatalog,
+  ]);
 
   return (
     <div
@@ -437,9 +483,23 @@ export function PricingPage({
                   <li key={f}>{f}</li>
                 ))}
               </ul>
-              <Link href={joinHref} className="pricing-btn is-fill">
-                Take one of the {WELCOME_TOTAL} seats
-              </Link>
+              {isPro ? (
+                <span className="pricing-btn is-fill is-current">
+                  Current plan
+                </span>
+              ) : welcomeSoldOut ? (
+                <span className="pricing-btn is-fill is-current">
+                  Seats full — $16/yr soon
+                </span>
+              ) : (
+                <a
+                  href={annualWelcomeCheckoutHref}
+                  className="pricing-btn is-fill"
+                  rel="noopener noreferrer"
+                >
+                  Take one of the {welcomeSeatsLeft} seats
+                </a>
+              )}
             </article>
           </div>
         </div>

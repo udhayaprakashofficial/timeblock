@@ -13,6 +13,11 @@ import { BrevoMailService } from '../mail/brevo-mail.service';
 export const DODO_PRO_PRODUCT_ID =
   process.env.DODO_PRO_PRODUCT_ID?.trim() || 'pdt_0NoD66xtWburRIUH8s6AY';
 
+/** Annual welcome — one-time $12/yr (Dodo product). Grants Pro (pending activation). */
+export const DODO_ANNUAL_WELCOME_PRODUCT_ID =
+  process.env.DODO_ANNUAL_WELCOME_PRODUCT_ID?.trim() ||
+  'pdt_0NoLjZzkv1ZVWMngsqIuU';
+
 const DEFAULT_CHECKOUT_BASE = 'https://test.checkout.dodopayments.com/buy';
 
 type PlanPatch = {
@@ -40,6 +45,27 @@ export class BillingService {
     return DODO_PRO_PRODUCT_ID;
   }
 
+  annualWelcomeProductId() {
+    return DODO_ANNUAL_WELCOME_PRODUCT_ID;
+  }
+
+  /** Pro monthly or Annual welcome one-time — both unlock paid Pro in Cupkey. */
+  isCupkeyPaidProduct(productId: string | null | undefined): boolean {
+    if (!productId?.trim()) return false;
+    return (
+      productId === this.proProductId() ||
+      productId === this.annualWelcomeProductId()
+    );
+  }
+
+  private productIdFromCart(
+    productCart: unknown,
+  ): string | null {
+    if (!Array.isArray(productCart) || !productCart.length) return null;
+    const first = productCart[0] as { product_id?: string };
+    return typeof first?.product_id === 'string' ? first.product_id : null;
+  }
+
   apiKeyConfigured() {
     return Boolean(process.env.DODO_PAYMENTS_API_KEY?.trim());
   }
@@ -52,10 +78,14 @@ export class BillingService {
     return this.mail.isConfigured();
   }
 
-  private checkoutBase() {
+  checkoutBaseUrl() {
     return (
       process.env.DODO_CHECKOUT_BASE?.trim() || DEFAULT_CHECKOUT_BASE
     ).replace(/\/$/, '');
+  }
+
+  private checkoutBase() {
+    return this.checkoutBaseUrl();
   }
 
   private apiBase() {
@@ -367,8 +397,10 @@ export class BillingService {
           );
         }
         this.assertPaymentBelongsToUser(sub, input);
-        if (sub.product_id && sub.product_id !== this.proProductId()) {
-          throw new BadRequestException('Payment is not for Cupkey Pro');
+        if (sub.product_id && !this.isCupkeyPaidProduct(sub.product_id)) {
+          throw new BadRequestException(
+            'Payment is not for Cupkey Pro or Annual welcome',
+          );
         }
         verified = true;
         customerId = sub.customer_id || sub.customer?.customer_id || null;
@@ -463,6 +495,8 @@ export class BillingService {
         customer?: { email?: string; customer_id?: string };
         customer_id?: string;
         metadata?: Record<string, unknown>;
+        product_cart?: Array<{ product_id?: string }>;
+        product_id?: string;
       }>;
     };
 
@@ -470,6 +504,11 @@ export class BillingService {
       .filter((p) => {
         const st = (p.status || '').toLowerCase();
         if (st && st !== 'succeeded' && st !== 'success') return false;
+        const cartProduct =
+          p.product_id || this.productIdFromCart(p.product_cart);
+        if (cartProduct && !this.isCupkeyPaidProduct(cartProduct)) {
+          return false;
+        }
         const payEmail = p.customer?.email?.toLowerCase();
         const metaUser =
           typeof p.metadata?.userId === 'string'
@@ -527,6 +566,7 @@ export class BillingService {
     pay: {
       customer?: { email?: string };
       metadata?: Record<string, unknown>;
+      product_id?: string;
       product_cart?: Array<{ product_id?: string }>;
     },
     input: { userId: string; email: string },
@@ -546,12 +586,12 @@ export class BillingService {
       );
     }
     const cartProduct =
-      Array.isArray(pay.product_cart) &&
-      typeof pay.product_cart[0]?.product_id === 'string'
-        ? pay.product_cart[0].product_id
-        : null;
-    if (cartProduct && cartProduct !== this.proProductId()) {
-      throw new BadRequestException('Payment is not for Cupkey Pro');
+      (typeof pay.product_id === 'string' && pay.product_id) ||
+      this.productIdFromCart(pay.product_cart);
+    if (cartProduct && !this.isCupkeyPaidProduct(cartProduct)) {
+      throw new BadRequestException(
+        'Payment is not for Cupkey Pro or Annual welcome',
+      );
     }
   }
 
@@ -591,8 +631,8 @@ export class BillingService {
       null;
 
     // Only gate on product when present — subscription payloads may omit it
-    if (productId && productId !== this.proProductId()) {
-      this.logger.log(`Skip non-Pro product ${productId}`);
+    if (productId && !this.isCupkeyPaidProduct(productId)) {
+      this.logger.log(`Skip non-Cupkey paid product ${productId}`);
       return;
     }
 

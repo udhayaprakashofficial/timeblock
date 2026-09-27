@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UserDto } from '@timeblock/shared-types';
 import { api } from '../api';
-import { buildProCheckoutUrl } from '../lib/billing';
+import { buildProCheckoutUrl, catalogFromApi } from '../lib/billing';
 import './subscription.css';
 
 type InvoiceRow = {
@@ -57,6 +57,21 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
     queryFn: () => api.get<BillingSummary>('/api/billing/summary'),
     staleTime: 5_000,
   });
+
+  const billingCatalogQuery = useQuery({
+    queryKey: ['billing-config'],
+    queryFn: () =>
+      api.get<{
+        proProductId: string;
+        annualWelcomeProductId: string;
+        checkoutBase?: string;
+      }>('/api/billing/config'),
+    staleTime: 60_000,
+  });
+  const billingCatalog = useMemo(
+    () => catalogFromApi(billingCatalogQuery.data),
+    [billingCatalogQuery.data],
+  );
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -154,12 +169,12 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
 
   const upgradeHref = useMemo(
     () =>
-      buildProCheckoutUrl({
+      buildProCheckoutUrl(billingCatalog, {
         id: user.id,
         email: user.email,
         name: user.name,
       }),
-    [user.id, user.email, user.name],
+    [billingCatalog, user.id, user.email, user.name],
   );
 
   const onDownload = async (paymentId: string) => {

@@ -27,6 +27,8 @@ export class BillingController {
   config() {
     return {
       proProductId: this.billing.proProductId(),
+      annualWelcomeProductId: this.billing.annualWelcomeProductId(),
+      checkoutBase: this.billing.checkoutBaseUrl(),
       checkoutReady: true,
       apiKeyConfigured: this.billing.apiKeyConfigured(),
       webhookConfigured: this.billing.webhookConfigured(),
