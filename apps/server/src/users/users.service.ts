@@ -390,7 +390,9 @@ export class UsersService {
       try {
         const { dto, isNew } = await viaRest();
         if (isNew) {
-          await this.deliverWelcomeEmail(dto.id, email, name);
+          await this.deliverWelcomeEmail(dto.id, email, name, {
+            firstSignup: true,
+          });
           return { ...dto, onboardingCompleted: false };
         }
         const returning = await this.markReturningUserOnboarded(dto);
@@ -743,13 +745,14 @@ export class UsersService {
     userId: string,
     email: string,
     name?: string,
-    opts?: { signInRetry?: boolean },
+    opts?: { firstSignup?: boolean; signInRetry?: boolean },
   ): Promise<void> {
     try {
       if (!userId.startsWith('local_') && (await this.welcomeAlreadySent(userId))) {
         return;
       }
       if (
+        !opts?.firstSignup &&
         opts?.signInRetry &&
         !userId.startsWith('local_') &&
         !(await this.welcomeRetryEligible(userId))
@@ -888,7 +891,6 @@ export class UsersService {
         } catch {
           /* optional */
         }
-        await this.deliverWelcomeEmail(user.id, email, name);
         return {
           ...this.dtoFromParts(user, []),
           onboardingCompleted: false,
@@ -911,7 +913,6 @@ export class UsersService {
         data: { email, name, passwordHash, onboardingCompleted: false },
         include: { oauthAccounts: true },
       });
-      await this.deliverWelcomeEmail(user.id, email, name);
       return this.toDto(user);
     } catch (err) {
       if (err instanceof BadRequestException) throw err;
@@ -939,7 +940,6 @@ export class UsersService {
     } catch {
       /* optional */
     }
-    await this.deliverWelcomeEmail(local.id, email, name);
     return {
       ...this.dtoFromParts(local, local.connectedProviders),
       onboardingCompleted: false,

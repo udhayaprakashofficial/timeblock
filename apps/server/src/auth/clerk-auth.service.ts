@@ -87,6 +87,7 @@ export class ClerkAuthService {
       created.id,
       created.email,
       created.name,
+      { firstSignup: true },
     );
     return created;
   }

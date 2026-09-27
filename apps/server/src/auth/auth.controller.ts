@@ -231,6 +231,9 @@ export class AuthController {
         password: body.password ?? '',
         name: body.name,
       });
+      await this.usersService.deliverWelcomeEmail(me.id, me.email, me.name, {
+        firstSignup: true,
+      });
       setSessionUser(req, res, me.id, (err) => {
         if (err) {
           return res.status(500).json({ error: 'Failed to save session' });

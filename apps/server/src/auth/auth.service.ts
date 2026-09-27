@@ -99,7 +99,9 @@ export class AuthService {
     });
 
     if (isNew) {
-      await this.users.deliverWelcomeEmail(user.id, input.email, input.name);
+      await this.users.deliverWelcomeEmail(user.id, input.email, input.name, {
+        firstSignup: true,
+      });
     }
 
     return user;
