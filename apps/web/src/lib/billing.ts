@@ -70,6 +70,11 @@ export function buildDodoCheckoutUrl(
   customer?: ProCheckoutCustomer | null,
   redirectUrl?: string,
 ): string {
+  const userId = customer?.id?.trim();
+  if (!userId) {
+    return '';
+  }
+
   const url = new URL(`${catalog.checkoutBase}/${productId}`);
   url.searchParams.set('quantity', '1');
   url.searchParams.set(
@@ -86,10 +91,7 @@ export function buildDodoCheckoutUrl(
   if (name) {
     url.searchParams.set('fullName', name);
   }
-  const userId = customer?.id?.trim();
-  if (userId) {
-    url.searchParams.set('metadata_userId', userId);
-  }
+  url.searchParams.set('metadata_userId', userId);
 
   return url.toString();
 }
@@ -118,4 +120,10 @@ export function buildAnnualWelcomeCheckoutUrl(
     customer,
     redirectUrl,
   );
+}
+
+/** Send guests to login first; returnTo resumes checkout on /pricing?buy=… */
+export function loginPathBeforeCheckout(plan: 'pro' | 'annual'): string {
+  const returnTo = encodeURIComponent(`/pricing?buy=${plan}`);
+  return `/login?returnTo=${returnTo}`;
 }

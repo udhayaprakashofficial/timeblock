@@ -10,6 +10,7 @@ import {
   buildAnnualWelcomeCheckoutUrl,
   buildProCheckoutUrl,
   catalogFromApi,
+  loginPathBeforeCheckout,
 } from '../lib/billing';
 import './pricing.css';
 
@@ -185,10 +186,13 @@ function Dot({ tone }: { tone: 'ink' | 'accent' | 'empty' }) {
 }
 
 export function PricingPage({
+  authReady = true,
   signedIn = false,
   user = null,
   embedded = false,
 }: {
+  /** Wait for session check before sending guests to login (avoids flash). */
+  authReady?: boolean;
   signedIn?: boolean;
   user?: UserDto | null;
   /** Inside dashboard shell — no marketing chrome */
@@ -247,7 +251,7 @@ export function PricingPage({
   >(null);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined' || !authReady) return;
     const params = new URLSearchParams(window.location.search);
     const status = (params.get('status') || '').toLowerCase();
     const paymentId =
@@ -258,6 +262,15 @@ export function PricingPage({
 
     if (status === 'failed' || status === 'cancelled') {
       setCheckoutBanner('failed');
+    }
+
+    if (buy === 'pro' && !signedIn) {
+      window.location.assign(loginPathBeforeCheckout('pro'));
+      return;
+    }
+    if (buy === 'annual' && !signedIn) {
+      window.location.assign(loginPathBeforeCheckout('annual'));
+      return;
     }
 
     if (buy === 'pro' && signedIn && user && !isPro) {
@@ -330,6 +343,7 @@ export function PricingPage({
       setCheckoutBanner('success');
     }
   }, [
+    authReady,
     signedIn,
     user,
     isPro,
@@ -338,6 +352,13 @@ export function PricingPage({
     welcomeSoldOut,
     billingCatalog,
   ]);
+
+  const proPlanHref = signedIn
+    ? proCheckoutHref
+    : loginPathBeforeCheckout('pro');
+  const annualPlanHref = signedIn
+    ? annualWelcomeCheckoutHref
+    : loginPathBeforeCheckout('annual');
 
   return (
     <div
@@ -445,7 +466,7 @@ export function PricingPage({
                 <span className="pricing-btn is-fill is-current">
                   Current plan
                 </span>
-              ) : (
+              ) : signedIn ? (
                 <a
                   href={proCheckoutHref}
                   className="pricing-btn is-fill"
@@ -453,6 +474,10 @@ export function PricingPage({
                 >
                   Lock in $10 a month
                 </a>
+              ) : (
+                <Link href={proPlanHref} className="pricing-btn is-fill">
+                  Sign in to lock in $10/mo
+                </Link>
               )}
             </article>
 
@@ -498,7 +523,7 @@ export function PricingPage({
                 <span className="pricing-btn is-fill is-current">
                   Seats full — $16/yr soon
                 </span>
-              ) : (
+              ) : signedIn ? (
                 <a
                   href={annualWelcomeCheckoutHref}
                   className="pricing-btn is-fill"
@@ -506,6 +531,10 @@ export function PricingPage({
                 >
                   Take one of the {welcomeSeatsLeft} seats
                 </a>
+              ) : (
+                <Link href={annualPlanHref} className="pricing-btn is-fill">
+                  Sign in to take a seat
+                </Link>
               )}
             </article>
           </div>

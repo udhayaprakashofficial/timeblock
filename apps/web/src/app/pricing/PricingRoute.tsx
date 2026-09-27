@@ -22,6 +22,7 @@ export function PricingRoute() {
 
   return (
     <PricingPage
+      authReady={!me.isLoading}
       signedIn={Boolean(me.data)}
       user={me.data ?? null}
       embedded={false}
