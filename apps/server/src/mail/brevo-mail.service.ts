@@ -199,7 +199,7 @@ Open your dashboard: ${dashboardUrl}
     }
     const firstName = firstNameFrom(input.toName, input.toEmail);
     const safeName = escapeHtml(firstName);
-    const dash = `${this.appPublicUrl()}/subscription`;
+    const dash = `${this.appPublicUrl()}/pricing`;
     const when = (input.paidAt ?? new Date()).toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'long',

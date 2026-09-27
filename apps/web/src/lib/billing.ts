@@ -49,17 +49,14 @@ export type ProCheckoutCustomer = {
   name?: string;
 };
 
-function defaultRedirectUrl(customer?: ProCheckoutCustomer | null): string {
+function defaultRedirectUrl(_customer?: ProCheckoutCustomer | null): string {
   if (typeof window !== 'undefined' && window.location?.origin) {
-    if (customer?.id?.trim()) {
-      return `${window.location.origin}/subscription`;
-    }
     return `${window.location.origin}/pricing`;
   }
   const base = (
     process.env.NEXT_PUBLIC_APP_URL?.trim() || 'https://app.cupkey.io'
   ).replace(/\/$/, '');
-  return customer?.id?.trim() ? `${base}/subscription` : `${base}/pricing`;
+  return `${base}/pricing`;
 }
 
 /**
