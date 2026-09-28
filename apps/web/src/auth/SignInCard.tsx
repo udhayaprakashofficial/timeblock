@@ -212,6 +212,7 @@ function AuthCard({
         <h1>{title}</h1>
         <p className="auth-kit-lede">{subtitle}</p>
 
+        {/* Social OAuth — re-enable when Google / Microsoft / Apple are wired up
         <div className="auth-kit-social">
           <button
             type="button"
@@ -248,6 +249,7 @@ function AuthCard({
         <div className="auth-kit-or" role="separator">
           <span>or email</span>
         </div>
+        */}
 
         <form className="auth-kit-form" onSubmit={onSubmit}>
           {mode === 'signup' ? (

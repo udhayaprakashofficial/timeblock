@@ -367,8 +367,8 @@ export function PricingPage({
     >
       {!embedded ? (
         <header className="pricing-nav">
-          <Link href={signedIn ? '/schedule' : '/'} className="pricing-brand">
-            <CupkeyLogo size={28} title="cupkey.io" />
+          <Link href={signedIn ? '/schedule' : 'https://cupkey.io'} className="pricing-brand">
+            <CupkeyLogo variant="wordmark" size={28} title="Cupkey" />
           </Link>
           <nav className="pricing-nav-links" aria-label="Pricing">
             <a href="#top" className="is-active">
@@ -643,7 +643,7 @@ export function PricingPage({
 
       {!embedded ? (
         <footer className="pricing-foot">
-          <CupkeyLogo size={20} title="cupkey.io" />
+          <CupkeyLogo variant="wordmark" size={22} title="Cupkey" />
           <span>Plan the day. Protect the breaks. Measure the truth.</span>
           <div className="pricing-foot-links">
             <Link href="/">Home</Link>
