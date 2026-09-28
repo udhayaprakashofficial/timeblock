@@ -367,20 +367,31 @@ export function PricingPage({
     >
       {!embedded ? (
         <header className="pricing-nav">
-          <Link href={signedIn ? '/schedule' : 'https://cupkey.io'} className="pricing-brand">
-            <CupkeyLogo variant="wordmark" size={28} title="Cupkey" />
+          <Link
+            href={signedIn ? '/schedule' : 'https://cupkey.io'}
+            className="pricing-brand"
+          >
+            {/* Match cupkey.io marketing header: 28px-tall wordmark, auto width */}
+            <img
+              src="/cupkey-logo.png"
+              alt="cupkey.io"
+              className="pricing-brand-logo"
+              height={28}
+              width={160}
+            />
           </Link>
-          <nav className="pricing-nav-links" aria-label="Pricing">
-            <a href="#top" className="is-active">
-              Pricing
-            </a>
+          <nav className="pricing-nav-links" aria-label="Site">
+            <Link href="/pricing">Pricing</Link>
             {!signedIn ? (
               <>
                 <Link href="/login">Login</Link>
-                <Link href="/login">Sign up</Link>
+                <Link href="/login?mode=signup">Sign up</Link>
               </>
             ) : null}
-            <Link href={joinHref} className="pricing-nav-cta">
+            <Link
+              href={signedIn ? '/schedule' : '/login?mode=signup'}
+              className="pricing-nav-cta"
+            >
               {joinLabel}
             </Link>
           </nav>

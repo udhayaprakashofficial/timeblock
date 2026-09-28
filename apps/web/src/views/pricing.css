@@ -9,7 +9,7 @@
   --pricing-page: #eae9e9;
   --pricing-accent: #ff5a24;
   --pricing-accent-deep: #b8240c;
-  --pricing-grad: linear-gradient(120deg, #ff3d17, #ff8a3c);
+  --pricing-grad: linear-gradient(100deg, #ff563c 0%, #ff8a3c 100%);
   --pricing-dark: #0f0e0d;
   min-height: 100vh;
   background: var(--pricing-page);
@@ -79,9 +79,9 @@
   justify-content: space-between;
   gap: 24px;
   height: 84px;
-  padding: 0 clamp(20px, 5vw, 64px);
-  background: var(--pricing-cream);
-  border-bottom: 2px solid var(--pricing-ink);
+  padding: 0 clamp(20px, 5vw, 80px);
+  background: #f3f2f2;
+  border-bottom: 2px solid #201e1d;
 }
 
 .pricing-brand {
@@ -89,7 +89,12 @@
   align-items: center;
 }
 
-.pricing-brand .cupkey-logo-wordmark img,
+.pricing-brand-logo {
+  display: block;
+  height: 28px;
+  width: auto;
+}
+
 .pricing-foot .cupkey-logo-wordmark img {
   display: block;
   width: 100%;
@@ -100,7 +105,7 @@
 .pricing-nav-links {
   display: flex;
   align-items: center;
-  gap: clamp(14px, 2.4vw, 30px);
+  gap: 30px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -108,13 +113,7 @@
 .pricing-nav-links a {
   font-size: 15px;
   font-weight: 600;
-  color: var(--pricing-ink);
-}
-
-.pricing-nav-links a.is-active {
-  font-weight: 800;
-  border-bottom: 2px solid var(--pricing-accent);
-  padding-bottom: 2px;
+  color: #201e1d;
 }
 
 .pricing-nav-cta {
@@ -123,7 +122,8 @@
   height: 46px;
   padding: 0 24px;
   background: var(--pricing-grad);
-  color: var(--pricing-ink) !important;
+  color: #201e1d !important;
+  font-size: 15px;
   font-weight: 800 !important;
 }
 
