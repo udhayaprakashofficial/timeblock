@@ -84,11 +84,11 @@ export interface TaskDto {
 export interface CreateTaskDto {
     date: string;
     name: string;
-    /** Defaults to the user's defaultTaskMinutes (usually 30) when omitted */
+    /** Defaults to the user's defaultTaskMinutes (usually 30) when omitted. Any integer ≥ 5. */
     estimatedMinutes?: number;
-    /** HH:MM wall clock in the user's timezone — locks the task to this slot */
+    /** Optional HH:MM preferred start — auto-scheduler places here if free (no Pin required) */
     startTime?: string;
-    /** HH:MM wall clock in the user's timezone — locks the task to this slot */
+    /** Optional HH:MM preferred end — must pair with startTime */
     endTime?: string;
 }
 /** Recurring task that materializes onto matching weekdays */
@@ -110,10 +110,10 @@ export interface UpdateTaskDto {
     name?: string;
     notes?: string | null;
     estimatedMinutes?: number;
-    /** HH:MM — when both start and end are set, locks the task to that slot */
+    /** HH:MM — preferred slot; rejected if it overlaps another task. Does not require Pin. */
     startTime?: string | null;
     endTime?: string | null;
-    /** Clear lock and let the packer place the task */
+    /** Clear times and let the packer place the task again */
     unlockSchedule?: boolean;
     /** Move into or out of backlog */
     inBacklog?: boolean;

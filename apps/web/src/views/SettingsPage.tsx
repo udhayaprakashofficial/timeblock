@@ -17,6 +17,8 @@ import {
   readAvatar,
   writeAvatar,
 } from '../components/user-avatar';
+import { SubscriptionPage } from './SubscriptionPage';
+import './subscription.css';
 
 const WEEKDAYS: Array<{ value: Weekday; label: string }> = [
   { value: 1, label: 'Monday' },
@@ -151,8 +153,12 @@ export function SettingsPage({ user }: { user: UserDto }) {
   const router = useRouter();
   const search = useSearchParams();
   const panelRaw = search.get('panel');
-  const panel: 'profile' | 'account' | 'help' =
-    panelRaw === 'account' || panelRaw === 'help' ? panelRaw : 'profile';
+  const panel: 'profile' | 'account' | 'subscription' | 'help' =
+    panelRaw === 'account' ||
+    panelRaw === 'subscription' ||
+    panelRaw === 'help'
+      ? panelRaw
+      : 'profile';
   const photoInput = useRef<HTMLInputElement>(null);
   const [name, setName] = useState(user.name);
   const [email, setEmail] = useState(user.email);
@@ -229,7 +235,9 @@ export function SettingsPage({ user }: { user: UserDto }) {
     });
   };
 
-  const openPanel = (next: 'profile' | 'account' | 'help') => {
+  const openPanel = (
+    next: 'profile' | 'account' | 'subscription' | 'help',
+  ) => {
     router.replace(next === 'profile' ? '/settings' : `/settings?panel=${next}`);
   };
 
@@ -275,7 +283,7 @@ export function SettingsPage({ user }: { user: UserDto }) {
           <p className="settings-kicker">Cupkey</p>
           <h1 className="page-title">Settings</h1>
           <p className="page-sub">
-            Profile, account, and help. Changes save as you type.
+            Profile, account, subscription, and help. Changes save as you type.
           </p>
         </div>
       </header>
@@ -295,6 +303,13 @@ export function SettingsPage({ user }: { user: UserDto }) {
             onClick={() => openPanel('account')}
           >
             Account
+          </button>
+          <button
+            type="button"
+            className={panel === 'subscription' ? 'is-active' : ''}
+            onClick={() => openPanel('subscription')}
+          >
+            Subscription
           </button>
           <button
             type="button"
@@ -594,6 +609,10 @@ export function SettingsPage({ user }: { user: UserDto }) {
                 </p>
               </section>
             </>
+          )}
+
+          {panel === 'subscription' && (
+            <SubscriptionPage user={user} />
           )}
 
           {panel === 'help' && (

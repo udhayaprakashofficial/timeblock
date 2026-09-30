@@ -414,7 +414,7 @@ export class BillingService {
     );
     if (!hasPay && !hasSub) {
       throw new BadRequestException(
-        'A Dodo payment_id or subscription_id is required to confirm Pro. Complete checkout and return from Dodo.',
+        'A payment or subscription id is required to confirm Pro. Complete checkout and return to Cupkey.',
       );
     }
 
@@ -432,7 +432,7 @@ export class BillingService {
         );
         if (!res.ok) {
           throw new BadRequestException(
-            'Could not verify this payment with Dodo. If you just paid, wait a moment and refresh — or contact support with your receipt.',
+            'Could not verify this payment. If you just paid, wait a moment and refresh — or contact support with your receipt.',
           );
         }
         const pay = (await res.json()) as {
@@ -470,7 +470,7 @@ export class BillingService {
         );
         if (!res.ok) {
           throw new BadRequestException(
-            'Could not verify this subscription with Dodo. If you just paid, wait a moment and refresh — or contact support with your receipt.',
+            'Could not verify this subscription. If you just paid, wait a moment and refresh — or contact support with your receipt.',
           );
         }
         const sub = (await res.json()) as {
@@ -508,12 +508,12 @@ export class BillingService {
       }
     } else {
       throw new BadRequestException(
-        'Payment verification is not configured. Set DODO_PAYMENTS_API_KEY on the server.',
+        'Payment verification is not configured on the server.',
       );
     }
 
     if (!verified) {
-      throw new BadRequestException('Payment could not be verified with Dodo.');
+      throw new BadRequestException('Payment could not be verified.');
     }
 
     if (hasPay && (await this.isPaymentLinkedToOtherUser(paymentId, input.userId))) {
@@ -688,7 +688,7 @@ export class BillingService {
     const apiKey = process.env.DODO_PAYMENTS_API_KEY?.trim();
     if (!apiKey) {
       throw new ServiceUnavailableException(
-        'Set DODO_PAYMENTS_API_KEY on the server to sync payments from Dodo',
+        'Payment sync is not configured on the server.',
       );
     }
 
@@ -699,7 +699,7 @@ export class BillingService {
     );
     if (!res.ok) {
       throw new BadRequestException(
-        'Could not list payments from Dodo. Check DODO_PAYMENTS_API_KEY / environment.',
+        'Could not list payments. Check billing configuration on the server.',
       );
     }
     const data = (await res.json()) as {
@@ -1408,13 +1408,13 @@ export class BillingService {
     const apiKey = process.env.DODO_PAYMENTS_API_KEY?.trim();
     if (!apiKey) {
       throw new ServiceUnavailableException(
-        'Set DODO_PAYMENTS_API_KEY to download invoices from Dodo Payments',
+        'Invoice downloads are not configured on the server.',
       );
     }
 
     const id = paymentId.trim();
     if (!id || !/^pay_[\w-]+$/i.test(id)) {
-      throw new BadRequestException('Invalid Dodo payment id');
+      throw new BadRequestException('Invalid payment id');
     }
 
     const { invoices } = await this.listInvoices(userId);
@@ -1436,7 +1436,7 @@ export class BillingService {
         `Dodo invoice ${id} → ${res.status} ${detail.slice(0, 200)}`,
       );
       throw new BadRequestException(
-        'Could not fetch invoice from Dodo Payments. Try again or check the payment in the Dodo dashboard.',
+        'Could not fetch this invoice. Try again or contact support with your receipt.',
       );
     }
     return Buffer.from(await res.arrayBuffer());

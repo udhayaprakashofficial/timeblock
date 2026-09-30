@@ -16,11 +16,14 @@ import { DbBridgeService } from '../supabase/db-bridge.service';
 import {
   combineDateAndMinutes,
   dateOnly,
+  eventToMinutesOnDay,
   formatDateOnly,
   normalizeTimeZone,
   parseHm,
   todayInTimeZone,
+  yesterdayInTimeZone,
 } from '../common/time.util';
+import { rangesOverlap } from '../common/time.util';
 
 type ResolvedCreate = CreateTaskDto & {
   name: string;
@@ -139,7 +142,7 @@ export class TasksService {
         estimatedMinutes,
         scheduledStart: combineDateAndMinutes(dto.date, startMin, tz),
         scheduledEnd: combineDateAndMinutes(dto.date, endMin, tz),
-        scheduleLocked: true,
+        scheduleLocked: false,
       };
     }
 
@@ -161,37 +164,81 @@ export class TasksService {
     };
   }
 
-  /** Move unfinished non-meeting tasks from past days into the backlog. */
+  /** Move unfinished non-meeting tasks from *yesterday* into the backlog. */
   async carryOverUnfinished(userId: string): Promise<number> {
     const tz = await this.resolveTimeZone(userId);
-    const today = todayInTimeZone(tz);
+    const yesterday = yesterdayInTimeZone(tz);
 
     const fromDb = await this.viaDb(userId, async (id) => {
-      return this.supabase.carryOverUnfinished(id, today);
+      await this.supabase.pruneStaleBacklog(id, yesterday);
+      await this.supabase.clearOnboardingSampleBacklog(id);
+      return this.supabase.carryOverUnfinished(id, yesterday);
     });
     if (fromDb != null) return fromDb;
 
     if (userId.startsWith('local_')) {
-      return this.local.carryOverUnfinished(userId, today);
+      this.local.pruneStaleBacklog(userId, yesterday);
+      this.local.clearOnboardingSampleBacklog(userId);
+      return this.local.carryOverUnfinished(userId, yesterday);
     }
     try {
-      const result = await this.prisma.task.updateMany({
+      await this.prisma.task.updateMany({
+        where: {
+          userId,
+          inBacklog: true,
+          date: { lt: dateOnly(yesterday) },
+        },
+        data: { inBacklog: false },
+      });
+      // Demo samples must never sit in backlog
+      const samples = await this.prisma.task.findMany({
+        where: {
+          userId,
+          inBacklog: true,
+          status: { in: ['pending', 'in_progress'] },
+        },
+      });
+      for (const t of samples) {
+        if (
+          TasksService.ONBOARD_SAMPLE_NAMES.has(t.name.trim().toLowerCase())
+        ) {
+          await this.prisma.task.update({
+            where: { id: t.id },
+            data: { inBacklog: false, scheduledStart: null, scheduledEnd: null },
+          });
+        }
+      }
+      const unfinished = await this.prisma.task.findMany({
         where: {
           userId,
           inBacklog: false,
           scheduleLocked: false,
           status: { in: ['pending', 'in_progress'] },
-          date: { lt: dateOnly(today) },
-        },
-        data: {
-          inBacklog: true,
-          scheduledStart: null,
-          scheduledEnd: null,
+          date: dateOnly(yesterday),
         },
       });
-      return result.count;
+      let count = 0;
+      for (const t of unfinished) {
+        if (
+          TasksService.ONBOARD_SAMPLE_NAMES.has(t.name.trim().toLowerCase())
+        ) {
+          continue;
+        }
+        await this.prisma.task.update({
+          where: { id: t.id },
+          data: {
+            inBacklog: true,
+            scheduledStart: null,
+            scheduledEnd: null,
+          },
+        });
+        count += 1;
+      }
+      return count;
     } catch {
-      return this.local.carryOverUnfinished(userId, today);
+      this.local.pruneStaleBacklog(userId, yesterday);
+      this.local.clearOnboardingSampleBacklog(userId);
+      return this.local.carryOverUnfinished(userId, yesterday);
     }
   }
 
@@ -296,11 +343,7 @@ export class TasksService {
     const today = todayInTimeZone(tz);
     if (dateStr !== today) return;
 
-    const yesterday = (() => {
-      const d = new Date(`${today}T12:00:00Z`);
-      d.setUTCDate(d.getUTCDate() - 1);
-      return d.toISOString().slice(0, 10);
-    })();
+    const yesterday = yesterdayInTimeZone(tz);
 
     const fromDb = await this.viaDb(userId, async (id) => {
       const planned = (
@@ -344,30 +387,258 @@ export class TasksService {
     }
   }
 
+  /** Names seeded by onboarding — keep dashboard plan aligned with the preview. */
+  private static readonly ONBOARD_SAMPLE_NAMES = new Set([
+    'plan the day',
+    'reply to emails',
+    'finish project report',
+    'deep work session',
+  ]);
+
+  private static onboardAlignDone = new Set<string>();
+
+  /**
+   * After onboarding, the preview packs from work start. A later “from now”
+   * reschedule used to drop morning slots and shove leftovers to backlog.
+   * Pull samples back onto today and re-pack once from work start.
+   */
+  private async alignOnboardingPlanWithPreview(
+    userId: string,
+    dateStr: string,
+  ): Promise<void> {
+    const tz = await this.resolveTimeZone(userId);
+    const today = todayInTimeZone(tz);
+    if (dateStr !== today) return;
+
+    const key = `${userId}:${today}`;
+    if (TasksService.onboardAlignDone.has(key)) return;
+
+    const isSample = (name: string) =>
+      TasksService.ONBOARD_SAMPLE_NAMES.has(name.trim().toLowerCase());
+
+    let changed = false;
+
+    const fromDb = await this.viaDb(userId, async (id) => {
+      let did = false;
+      const backlog = await this.supabase.listBacklogTasks(id);
+      for (const t of backlog) {
+        if (
+          t.date === today &&
+          isSample(t.name) &&
+          t.status !== 'completed' &&
+          !t.scheduleLocked
+        ) {
+          await this.supabase.scheduleFromBacklog(id, t.id, today);
+          did = true;
+        }
+      }
+
+      const planned = await this.supabase.listTasks(id, today);
+      const have = new Set(
+        planned.map((t) => t.name.trim().toLowerCase()),
+      );
+      const templates = await this.supabase.listRecurringTemplates(id);
+      for (const t of templates) {
+        const n = t.name.trim().toLowerCase();
+        if (!isSample(t.name) || !t.active || have.has(n)) continue;
+        await this.supabase.createTask(id, {
+          date: today,
+          name: t.name,
+          estimatedMinutes: t.estimatedMinutes,
+          inBacklog: false,
+        });
+        have.add(n);
+        did = true;
+      }
+
+      const after = await this.supabase.listTasks(id, today);
+      const samples = after.filter(
+        (t) => isSample(t.name) && !t.inBacklog && t.status !== 'completed',
+      );
+      if (samples.length < 2) return did;
+
+      const nowMin = (() => {
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: tz,
+          hourCycle: 'h23',
+          hour: '2-digit',
+          minute: '2-digit',
+        }).formatToParts(new Date());
+        const map: Record<string, string> = {};
+        for (const p of parts) {
+          if (p.type !== 'literal') map[p.type] = p.value;
+        }
+        return Number(map.hour) * 60 + Number(map.minute);
+      })();
+
+      const allAfterNow = samples.every((t) => {
+        if (!t.scheduledStart) return true;
+        const d = new Date(t.scheduledStart);
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: tz,
+          hourCycle: 'h23',
+          hour: '2-digit',
+          minute: '2-digit',
+        }).formatToParts(d);
+        const map: Record<string, string> = {};
+        for (const p of parts) {
+          if (p.type !== 'literal') map[p.type] = p.value;
+        }
+        return Number(map.hour) * 60 + Number(map.minute) >= nowMin - 5;
+      });
+
+      // Preview packs from ~09:00 — if every sample sits after “now”, realign once.
+      if (did || allAfterNow) {
+        await this.scheduler.rescheduleDayPreferRest(id, today, {
+          ignorePackingFloor: true,
+          repackUnlocked: true,
+        });
+        did = true;
+      }
+      return did;
+    });
+
+    if (fromDb != null) {
+      if (fromDb) TasksService.onboardAlignDone.add(key);
+      return;
+    }
+
+    const backlog = this.local.listBacklog(userId);
+    for (const t of backlog) {
+      if (
+        t.date === today &&
+        isSample(t.name) &&
+        t.status !== 'completed' &&
+        !t.scheduleLocked
+      ) {
+        this.local.scheduleFromBacklog(userId, t.id, today);
+        changed = true;
+      }
+    }
+    const planned = this.local.listTasks(userId, today);
+    const have = new Set(planned.map((t) => t.name.trim().toLowerCase()));
+    for (const t of this.local.listRecurring(userId)) {
+      const n = t.name.trim().toLowerCase();
+      if (!isSample(t.name) || !t.active || have.has(n)) continue;
+      this.local.createTask(
+        userId,
+        {
+          date: today,
+          name: t.name,
+          estimatedMinutes: t.estimatedMinutes,
+        },
+        { skipReschedule: true },
+      );
+      have.add(n);
+      changed = true;
+    }
+    const samples = this.local
+      .listTasks(userId, today)
+      .filter((t) => isSample(t.name) && t.status !== 'completed');
+    if (samples.length >= 2) {
+      const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+      const allAfterNow = samples.every((t) => {
+        if (!t.scheduledStart) return true;
+        const d = new Date(t.scheduledStart);
+        return d.getHours() * 60 + d.getMinutes() >= nowMin - 5;
+      });
+      if (changed || allAfterNow) {
+        this.local.rescheduleDayPublic(userId, today, {
+          ignorePackingFloor: true,
+          repackUnlocked: true,
+        });
+        changed = true;
+      }
+    }
+
+    if (changed) TasksService.onboardAlignDone.add(key);
+  }
+
   async list(userId: string, dateStr: string): Promise<TaskDto[]> {
     await this.carryOverUnfinished(userId);
     await this.placeBacklogOnEmptyToday(userId, dateStr);
     await this.materializeRecurring(userId, dateStr);
+    await this.alignOnboardingPlanWithPreview(userId, dateStr);
 
-    const fromDb = await this.viaDb(userId, (id) =>
-      this.supabase.listTasks(id, dateStr) as Promise<TaskDto[]>,
-    );
+    const fromDb = await this.viaDb(userId, async (id) => {
+      let tasks = (await this.supabase.listTasks(
+        id,
+        dateStr,
+      )) as TaskDto[];
+      if (this.hasUnlockedOverlap(tasks)) {
+        await this.scheduler.rescheduleDayPreferRest(id, dateStr, {
+          repackUnlocked: true,
+        });
+        tasks = (await this.supabase.listTasks(id, dateStr)) as TaskDto[];
+      }
+      return tasks;
+    });
     if (fromDb) return fromDb.filter((t) => !t.inBacklog);
 
     if (userId.startsWith('local_')) {
-      return this.local.listTasks(userId, dateStr);
+      const tasks = this.local.listTasks(userId, dateStr);
+      if (this.hasUnlockedOverlap(tasks)) {
+        this.local.reorderTasks(
+          userId,
+          dateStr,
+          tasks.map((t) => t.id),
+        );
+        return this.local.listTasks(userId, dateStr);
+      }
+      return tasks;
     }
     try {
       const day = dateOnly(dateStr);
-      const tasks = await this.prisma.task.findMany({
+      let tasks = await this.prisma.task.findMany({
         where: { userId, date: day, inBacklog: false },
         include: { timeEntries: true },
         orderBy: { order: 'asc' },
       });
-      return tasks.map((t) => this.mapTask(t));
+      const mapped = tasks.map((t) => this.mapTask(t));
+      if (this.hasUnlockedOverlap(mapped)) {
+        await this.scheduler.rescheduleDay(userId, dateStr, {
+          repackUnlocked: true,
+        });
+        tasks = await this.prisma.task.findMany({
+          where: { userId, date: day, inBacklog: false },
+          include: { timeEntries: true },
+          orderBy: { order: 'asc' },
+        });
+        return tasks.map((t) => this.mapTask(t));
+      }
+      return mapped;
     } catch {
       return this.local.listTasks(userId, dateStr);
     }
+  }
+
+  /** True when any two unlocked, scheduled tasks share wall-clock time. */
+  private hasUnlockedOverlap(tasks: TaskDto[]): boolean {
+    const placed = tasks
+      .filter(
+        (t) =>
+          !t.inBacklog &&
+          !t.scheduleLocked &&
+          t.status !== 'completed' &&
+          t.scheduledStart &&
+          t.scheduledEnd,
+      )
+      .map((t) => ({
+        start: new Date(t.scheduledStart!).getTime(),
+        end: new Date(t.scheduledEnd!).getTime(),
+      }))
+      .filter((t) => t.end > t.start);
+    for (let i = 0; i < placed.length; i++) {
+      for (let j = i + 1; j < placed.length; j++) {
+        if (
+          placed[i].start < placed[j].end &&
+          placed[i].end > placed[j].start
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   async listRecurring(userId: string): Promise<RecurringTaskDto[]> {
@@ -548,7 +819,16 @@ export class TasksService {
           ) {
             continue;
           }
-          // Also skip if sourceExternalId isn't returned — check by notes pattern via name+provider
+          // Onboarding seeds the same names without a recurring source id —
+          // don't create a duplicate for today.
+          if (
+            before.some(
+              (x) =>
+                x.name.trim().toLowerCase() === t.name.trim().toLowerCase(),
+            )
+          ) {
+            continue;
+          }
           await this.supabase.createTask(id, {
             date: dateStr,
             name: t.name,
@@ -562,7 +842,10 @@ export class TasksService {
         }
       }
       if (created) {
-        await this.scheduler.rescheduleDayPreferRest(id, dateStr);
+        await this.scheduler.rescheduleDayPreferRest(id, dateStr, {
+          ignorePackingFloor: true,
+          repackUnlocked: true,
+        });
       }
       return created;
     });
@@ -589,6 +872,15 @@ export class TasksService {
           },
         });
         if (existing) continue;
+        const sameName = await this.prisma.task.findFirst({
+          where: {
+            userId,
+            date: dateOnly(dateStr),
+            name: { equals: t.name, mode: 'insensitive' },
+            inBacklog: false,
+          },
+        });
+        if (sameName) continue;
         const max = await this.prisma.task.aggregate({
           where: { userId, date: dateOnly(dateStr), inBacklog: false },
           _max: { order: true },
@@ -607,7 +899,12 @@ export class TasksService {
         });
         created += 1;
       }
-      if (created) await this.scheduler.rescheduleDay(userId, dateStr);
+      if (created) {
+        await this.scheduler.rescheduleDay(userId, dateStr, {
+          ignorePackingFloor: true,
+          repackUnlocked: true,
+        });
+      }
       return created;
     } catch {
       return this.local.materializeRecurring(userId, dateStr);
@@ -616,14 +913,41 @@ export class TasksService {
 
   async listBacklog(userId: string): Promise<TaskDto[]> {
     await this.carryOverUnfinished(userId);
+    const tz = await this.resolveTimeZone(userId);
+    const today = todayInTimeZone(tz);
+    const yesterday = yesterdayInTimeZone(tz);
+
+    const filterVisible = (rows: TaskDto[]): TaskDto[] => {
+      // Yesterday carry-over + anything parked on today (manual / overflow).
+      // Never surface older junk or onboarding demo samples.
+      const visible = rows.filter((t) => {
+        if (t.date !== yesterday && t.date !== today) return false;
+        if (
+          TasksService.ONBOARD_SAMPLE_NAMES.has(t.name.trim().toLowerCase())
+        ) {
+          return false;
+        }
+        return true;
+      });
+      // Dedupe identical names on the same day (double-seed / recurring races).
+      const seen = new Set<string>();
+      const out: TaskDto[] = [];
+      for (const t of visible) {
+        const key = `${t.date}:${t.name.trim().toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(t);
+      }
+      return out;
+    };
 
     const fromDb = await this.viaDb(userId, (id) =>
       this.supabase.listBacklogTasks(id),
     );
-    if (fromDb) return fromDb;
+    if (fromDb) return filterVisible(fromDb);
 
     if (userId.startsWith('local_')) {
-      return this.local.listBacklog(userId);
+      return filterVisible(this.local.listBacklog(userId));
     }
     try {
       const tasks = await this.prisma.task.findMany({
@@ -631,19 +955,20 @@ export class TasksService {
           userId,
           inBacklog: true,
           status: { in: ['pending', 'in_progress'] },
+          date: { in: [dateOnly(yesterday), dateOnly(today)] },
         },
         include: { timeEntries: true },
         orderBy: [{ date: 'asc' }, { order: 'asc' }],
       });
-      return tasks.map((t) => this.mapTask(t));
+      return filterVisible(tasks.map((t) => this.mapTask(t)));
     } catch {
-      return this.local.listBacklog(userId);
+      return filterVisible(this.local.listBacklog(userId));
     }
   }
 
   /**
-   * Fast onboarding seed: create today's tasks once, reschedule once,
-   * then best-effort recurring templates (no per-template materialize).
+   * Fast onboarding seed: create today's tasks once, pack from work-day
+   * start (not “now”) so sample tasks land on the plan for first-time users.
    */
   async seedOnboarding(
     userId: string,
@@ -670,20 +995,65 @@ export class TasksService {
     if (!cleaned.length) return this.list(userId, today);
 
     const days = [...new Set(weekdays)].filter((d) => d >= 0 && d <= 6) as Weekday[];
+    const seedNames = new Set(cleaned.map((p) => p.name.toLowerCase()));
 
     const fromDb = await this.viaDb(userId, async (id) => {
+      const existing = await this.supabase.listTasks(id, today);
+      const existingNames = new Set(
+        existing.map((t) => t.name.trim().toLowerCase()),
+      );
       // Sequential creates so order stays stable; skip per-task reschedule.
+      // Idempotent: don't double-seed if finish-onboarding retried.
       for (const p of cleaned) {
+        if (existingNames.has(p.name.toLowerCase())) continue;
         await this.supabase.createTask(id, {
           date: today,
           name: p.name,
           estimatedMinutes: p.estimatedMinutes,
           inBacklog: false,
         });
+        existingNames.add(p.name.toLowerCase());
       }
-      await this.scheduler.rescheduleDayPreferRest(id, today);
+      // Pack across the full workday so onboarding demos are visible on The plan.
+      await this.scheduler.rescheduleDayPreferRest(id, today, {
+        repackUnlocked: true,
+        ignorePackingFloor: true,
+      });
 
-      // Recurring templates — fire in parallel, ignore failures (table may be missing)
+      // Never leave onboarding samples in backlog — keep them on today's queue/plan.
+      const backlog = await this.supabase.listBacklogTasks(id);
+      const stranded = backlog.filter(
+        (t) =>
+          t.date === today &&
+          seedNames.has(t.name.trim().toLowerCase()) &&
+          t.status !== 'completed',
+      );
+      for (const t of stranded) {
+        await this.supabase.scheduleFromBacklog(id, t.id, today);
+      }
+      if (stranded.length) {
+        await this.scheduler.rescheduleDayPreferRest(id, today, {
+          repackUnlocked: true,
+          ignorePackingFloor: true,
+        });
+      }
+      // If packing still shoved them out, force onto today (queue) without backlog.
+      const stillBacklog = (await this.supabase.listBacklogTasks(id)).filter(
+        (t) =>
+          t.date === today &&
+          seedNames.has(t.name.trim().toLowerCase()) &&
+          t.status !== 'completed',
+      );
+      for (const t of stillBacklog) {
+        await this.supabase.updateTask(
+          id,
+          t.id,
+          { inBacklog: false, date: today },
+          'UTC',
+        );
+      }
+
+      // Recurring templates — only when user opted in; fire in parallel
       await Promise.all(
         cleaned
           .filter((p) => p.recurring && days.length)
@@ -703,13 +1073,23 @@ export class TasksService {
     });
     if (fromDb) return fromDb.filter((t) => !t.inBacklog);
 
-    // Local / offline path
+    // Local / offline path — batch create, then one full-day pack
+    const existingLocal = this.local.listTasks(userId, today);
+    const existingLocalNames = new Set(
+      existingLocal.map((t) => t.name.trim().toLowerCase()),
+    );
     for (const p of cleaned) {
-      this.local.createTask(userId, {
-        date: today,
-        name: p.name,
-        estimatedMinutes: p.estimatedMinutes,
-      });
+      if (existingLocalNames.has(p.name.toLowerCase())) continue;
+      this.local.createTask(
+        userId,
+        {
+          date: today,
+          name: p.name,
+          estimatedMinutes: p.estimatedMinutes,
+        },
+        { skipReschedule: true },
+      );
+      existingLocalNames.add(p.name.toLowerCase());
       if (p.recurring && days.length) {
         this.local.createRecurring(userId, {
           name: p.name,
@@ -717,6 +1097,37 @@ export class TasksService {
           weekdays: days,
           active: true,
         });
+      }
+    }
+    this.local.rescheduleDayPublic(userId, today, {
+      repackUnlocked: true,
+      ignorePackingFloor: true,
+    });
+    const strandedLocal = this.local
+      .listBacklog(userId)
+      .filter(
+        (t) =>
+          t.date === today &&
+          seedNames.has(t.name.trim().toLowerCase()) &&
+          t.status !== 'completed',
+      );
+    for (const t of strandedLocal) {
+      this.local.scheduleFromBacklog(userId, t.id, today);
+    }
+    if (strandedLocal.length) {
+      this.local.rescheduleDayPublic(userId, today, {
+        repackUnlocked: true,
+        ignorePackingFloor: true,
+      });
+    }
+    // Force any remaining onboard samples onto today — never leave in backlog.
+    for (const t of this.local.listBacklog(userId)) {
+      if (
+        t.date === today &&
+        seedNames.has(t.name.trim().toLowerCase()) &&
+        t.status !== 'completed'
+      ) {
+        this.local.updateTask(userId, t.id, { inBacklog: false });
       }
     }
     return this.local.listTasks(userId, today);
@@ -801,14 +1212,29 @@ export class TasksService {
     const dateStr = dto.date?.trim() || todayInTimeZone(tz);
 
     const fromDb = await this.viaDb(userId, async (id) => {
-      const task = await this.supabase.scheduleFromBacklog(id, taskId, dateStr);
+      await this.supabase.scheduleFromBacklog(id, taskId, dateStr);
+      // Prefer next free slot after now; if that still can't fit, pack the
+      // full workday so Schedule never silently bounces back to backlog.
       await this.scheduler.rescheduleDayPreferRest(id, dateStr);
-      const list = await this.supabase.listTasks(id, dateStr);
+      let list = await this.supabase.listTasks(id, dateStr);
+      let placed: TaskDto | null | undefined = list.find((t) => t.id === taskId);
+      if (!placed) {
+        await this.supabase.scheduleFromBacklog(id, taskId, dateStr);
+        await this.scheduler.rescheduleDayPreferRest(id, dateStr, {
+          ignorePackingFloor: true,
+        });
+        list = await this.supabase.listTasks(id, dateStr);
+        placed = list.find((t) => t.id === taskId);
+      }
+      if (!placed) {
+        // Last resort: pin after the latest block / now so the task stays on plan.
+        placed = await this.forcePlaceOnDay(id, taskId, dateStr, tz);
+      }
       const backlog = await this.supabase.listBacklogTasks(id);
       return (
-        list.find((t) => t.id === taskId) ??
+        placed ??
         backlog.find((t) => t.id === taskId) ??
-        task
+        (await this.supabase.listTasks(id, dateStr)).find((t) => t.id === taskId)
       );
     });
     if (fromDb) return fromDb as TaskDto;
@@ -843,10 +1269,23 @@ export class TasksService {
         },
       });
       await this.scheduler.rescheduleDay(userId, dateStr);
-      const refreshed = await this.prisma.task.findUnique({
+      let refreshed = await this.prisma.task.findUnique({
         where: { id: taskId },
         include: { timeEntries: true },
       });
+      if (refreshed?.inBacklog) {
+        await this.prisma.task.update({
+          where: { id: taskId },
+          data: { inBacklog: false, scheduledStart: null, scheduledEnd: null },
+        });
+        await this.scheduler.rescheduleDay(userId, dateStr, {
+          ignorePackingFloor: true,
+        });
+        refreshed = await this.prisma.task.findUnique({
+          where: { id: taskId },
+          include: { timeEntries: true },
+        });
+      }
       return this.mapTask(refreshed!);
     } catch (err) {
       if (err instanceof NotFoundException || err instanceof BadRequestException) {
@@ -854,6 +1293,70 @@ export class TasksService {
       }
       return this.local.scheduleFromBacklog(userId, taskId, dateStr);
     }
+  }
+
+  /** Pin a task onto the day after the latest block (or now) so Schedule always sticks. */
+  private async forcePlaceOnDay(
+    userId: string,
+    taskId: string,
+    dateStr: string,
+    timeZone: string,
+  ): Promise<TaskDto | null> {
+    const list = await this.supabase.listTasks(userId, dateStr);
+    const target = list.find((t) => t.id === taskId);
+    const fromBacklog = target
+      ? null
+      : (await this.supabase.listBacklogTasks(userId)).find((t) => t.id === taskId);
+    const task = target ?? fromBacklog;
+    if (!task) return null;
+
+    if (fromBacklog) {
+      await this.supabase.scheduleFromBacklog(userId, taskId, dateStr);
+    }
+
+    const floor =
+      dateStr === todayInTimeZone(timeZone)
+        ? (() => {
+            const parts = new Intl.DateTimeFormat('en-US', {
+              timeZone,
+              hourCycle: 'h23',
+              hour: '2-digit',
+              minute: '2-digit',
+            }).formatToParts(new Date());
+            const map: Record<string, string> = {};
+            for (const p of parts) {
+              if (p.type !== 'literal') map[p.type] = p.value;
+            }
+            return Number(map.hour) * 60 + Number(map.minute);
+          })()
+        : 9 * 60;
+
+    let cursor = floor;
+    for (const t of list) {
+      if (t.id === taskId || !t.scheduledStart || !t.scheduledEnd) continue;
+      if (t.status === 'completed') continue;
+      const end = eventToMinutesOnDay(
+        dateStr,
+        new Date(t.scheduledStart),
+        new Date(t.scheduledEnd),
+        timeZone,
+      );
+      if (end) cursor = Math.max(cursor, end.end);
+    }
+    const need = Math.max(5, Math.round(Number(task.estimatedMinutes) || 30));
+    const start = Math.min(cursor, 24 * 60 - need);
+    const end = start + need;
+    const scheduledStart = combineDateAndMinutes(dateStr, start, timeZone);
+    const scheduledEnd = combineDateAndMinutes(dateStr, end, timeZone);
+    await this.supabase.patch('Task', `id=eq.${taskId}`, {
+      inBacklog: false,
+      scheduledStart: scheduledStart.toISOString(),
+      scheduledEnd: scheduledEnd.toISOString(),
+      scheduleLocked: false,
+      updatedAt: new Date().toISOString(),
+    });
+    const refreshed = await this.supabase.listTasks(userId, dateStr);
+    return refreshed.find((t) => t.id === taskId) ?? null;
   }
 
   async moveToBacklog(userId: string, taskId: string): Promise<TaskDto> {
@@ -873,7 +1376,9 @@ export class TasksService {
           { order: i, updatedAt: new Date().toISOString() },
         );
       }
-      await this.scheduler.rescheduleDayPreferRest(id, dateStr);
+      await this.scheduler.rescheduleDayPreferRest(id, dateStr, {
+        repackUnlocked: true,
+      });
       return this.supabase.listTasks(id, dateStr) as Promise<TaskDto[]>;
     });
     if (fromDb) return fromDb.filter((t) => !t.inBacklog);
@@ -891,7 +1396,9 @@ export class TasksService {
           }),
         ),
       );
-      await this.scheduler.rescheduleDay(userId, dateStr);
+      await this.scheduler.rescheduleDay(userId, dateStr, {
+        repackUnlocked: true,
+      });
       return this.list(userId, dateStr);
     } catch {
       return this.local.reorderTasks(userId, dateStr, taskIds);
@@ -917,6 +1424,36 @@ export class TasksService {
         where: { id: taskId, userId },
       });
       if (!task) throw new NotFoundException();
+
+      // Toggle: completed → reopen as pending
+      if (task.status === 'completed') {
+        const entries = await this.prisma.timeEntry.findMany({
+          where: { taskId },
+        });
+        const est = Math.max(1, task.estimatedMinutes || 30);
+        // Strip Done-without-timer credit so actual returns to timer-only.
+        if (
+          entries.length === 1 &&
+          entries[0]!.endedAt &&
+          (entries[0]!.actualMinutes ?? 0) === est
+        ) {
+          await this.prisma.timeEntry.delete({ where: { id: entries[0]!.id } });
+        }
+        await this.prisma.task.update({
+          where: { id: taskId },
+          data: { status: 'pending' },
+        });
+        const dateStr = formatDateOnly(task.date);
+        if (!task.inBacklog) {
+          await this.scheduler.rescheduleDay(userId, dateStr);
+        }
+        const refreshed = await this.prisma.task.findUnique({
+          where: { id: taskId },
+          include: { timeEntries: true },
+        });
+        return this.mapTask(refreshed!);
+      }
+
       const open = await this.prisma.timeEntry.findMany({
         where: { taskId, endedAt: null },
       });
@@ -1075,6 +1612,11 @@ export class TasksService {
           throw new BadRequestException('Estimated minutes must be at least 5');
         }
         data.estimatedMinutes = Math.round(n);
+        if (Math.round(n) !== existing.estimatedMinutes) {
+          data.scheduledStart = null;
+          data.scheduledEnd = null;
+          if (!existing.scheduleLocked) data.scheduleLocked = false;
+        }
       }
       if (dto.order !== undefined) {
         data.order = Math.max(0, Math.round(Number(dto.order)));
@@ -1113,9 +1655,35 @@ export class TasksService {
           (data.date
             ? formatDateOnly(data.date as Date)
             : formatDateOnly(existing.date));
+        const siblings = await this.prisma.task.findMany({
+          where: {
+            userId,
+            date: dateOnly(dateStr),
+            inBacklog: false,
+            id: { not: taskId },
+            status: { not: 'completed' },
+          },
+        });
+        for (const sib of siblings) {
+          if (!sib.scheduledStart || !sib.scheduledEnd) continue;
+          const other = eventToMinutesOnDay(
+            dateStr,
+            sib.scheduledStart,
+            sib.scheduledEnd,
+            tz,
+          );
+          if (!other) continue;
+          if (rangesOverlap(startMin, endMin, other.start, other.end)) {
+            throw new BadRequestException(
+              'That time overlaps another task. Pick a free slot that fits the full duration.',
+            );
+          }
+        }
         data.scheduledStart = combineDateAndMinutes(dateStr, startMin, tz);
         data.scheduledEnd = combineDateAndMinutes(dateStr, endMin, tz);
-        data.scheduleLocked = true;
+        if (!existing.sourceProvider && !existing.meetLink) {
+          data.scheduleLocked = false;
+        }
         data.estimatedMinutes = endMin - startMin;
         data.inBacklog = false;
       }
@@ -1175,6 +1743,10 @@ export class TasksService {
       0,
     );
     const active = t.timeEntries.find((e) => !e.endedAt);
+    const displayActual =
+      t.status === 'completed' && actualMinutes <= 0
+        ? Math.max(1, t.estimatedMinutes || 30)
+        : actualMinutes;
     return {
       id: t.id,
       date: formatDateOnly(t.date),
@@ -1184,7 +1756,7 @@ export class TasksService {
       order: t.order,
       scheduledStart: t.scheduledStart?.toISOString() ?? null,
       scheduledEnd: t.scheduledEnd?.toISOString() ?? null,
-      actualMinutes,
+      actualMinutes: displayActual,
       activeEntryId: active?.id ?? null,
       timerStartedAt: active?.startedAt?.toISOString() ?? null,
       notes: t.notes ?? null,

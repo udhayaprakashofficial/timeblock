@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DndContext,
@@ -22,11 +22,11 @@ import { MeetSourceBadge } from '../components/MeetSourceBadge';
 import { HintMark } from '../components/ui-hints';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import {
-  completeTaskOptimistic,
   createTaskOptimistic,
   fetchBacklog,
   fetchTasks,
   moveToBacklogOptimistic,
+  queueCompleteTask,
   removeTaskOptimistic,
   reorderTasksOptimistic,
   scheduleFromBacklogOptimistic,
@@ -104,6 +104,32 @@ function optimisticShiftSchedule(ordered: TaskDto[]): TaskDto[] {
       ? { ...t, scheduledStart: slot.start, scheduledEnd: slot.end }
       : t;
   });
+}
+
+const DURATION_MIN = 5;
+const DURATION_MAX = 999; // 3 digits
+const DURATION_STEP = 5;
+
+function parseDurationInput(raw: string, fallback: number): number {
+  const digits = String(raw ?? '').replace(/\D/g, '').slice(0, 3);
+  if (!digits) return Math.max(DURATION_MIN, Math.min(DURATION_MAX, fallback));
+  const n = Number(digits);
+  if (!Number.isFinite(n)) {
+    return Math.max(DURATION_MIN, Math.min(DURATION_MAX, fallback));
+  }
+  return Math.max(DURATION_MIN, Math.min(DURATION_MAX, Math.round(n)));
+}
+
+/** Keep only digit characters, max 3 (empty allowed while editing). */
+function digitsOnly(raw: string): string {
+  return String(raw ?? '').replace(/\D/g, '').slice(0, 3);
+}
+
+function nudgeDuration(raw: string, delta: number, fallback: number): string {
+  const current = parseDurationInput(raw, fallback);
+  return String(
+    Math.max(DURATION_MIN, Math.min(DURATION_MAX, current + delta)),
+  );
 }
 
 function combineIso(date: string, hm: string): string {
@@ -197,7 +223,9 @@ function nextOptimisticSlot(opts: {
   pinStart?: string;
   pinEnd?: string;
   breaks?: { start: string; end: string }[];
-}): { scheduledStart: string; scheduledEnd: string } {
+  workStart?: string;
+  workEnd?: string;
+}): { scheduledStart: string; scheduledEnd: string } | null {
   if (opts.pinStart && opts.pinEnd) {
     return {
       scheduledStart: combineIso(opts.date, opts.pinStart),
@@ -205,8 +233,13 @@ function nextOptimisticSlot(opts: {
     };
   }
   const duration = Math.max(5, opts.durationMin);
-  const now = nowMinutes(opts.timeZone);
-  let cursor = Math.ceil((now + 1) / 15) * 15;
+  const today = todayISO(opts.timeZone);
+  const dayStart = opts.workStart ? parseHm(opts.workStart) : 0;
+  const dayEnd = opts.workEnd ? parseHm(opts.workEnd) : 24 * 60;
+  let cursor =
+    opts.date === today
+      ? Math.max(dayStart, Math.ceil((nowMinutes(opts.timeZone) + 1) / 5) * 5)
+      : dayStart;
 
   const busy: { start: number; end: number }[] = [];
   for (const t of opts.tasks) {
@@ -223,8 +256,8 @@ function nextOptimisticSlot(opts: {
   }
   busy.sort((a, b) => a.start - b.start);
 
-  // Walk free gaps from cursor to midnight looking for a fit.
-  const free = subtractBusy(cursor, 24 * 60, busy);
+  // Only search inside work hours — never invent an overlapping fallback.
+  const free = subtractBusy(cursor, dayEnd, busy);
   for (const gap of free) {
     if (gap.end - gap.start >= duration) {
       const startMin = gap.start;
@@ -235,13 +268,7 @@ function nextOptimisticSlot(opts: {
       };
     }
   }
-
-  const startMin = Math.min(cursor, 24 * 60 - duration);
-  const endMin = Math.min(startMin + duration, 24 * 60 - 1);
-  return {
-    scheduledStart: isoFromMinutes(opts.date, startMin),
-    scheduledEnd: isoFromMinutes(opts.date, endMin),
-  };
+  return null;
 }
 
 function minutesOf(iso: string, timeZone?: string | null) {
@@ -284,20 +311,9 @@ export function TodayPage({
   const qc = useQueryClient();
   const dispatch = useAppDispatch();
   const [name, setName] = useState('');
-  const [pinTime, setPinTime] = useState(false);
   /** Day the new task is created on — defaults to the plan day being viewed */
   const [scheduleDate, setScheduleDate] = useState(date);
-  const defaultStart = () => {
-    const now = nowMinutes(timeZone);
-    const rounded = Math.ceil((now + 1) / 15) * 15;
-    return formatHm(Math.min(rounded, 23 * 60 + 45));
-  };
-  const defaultEnd = (startHm: string) => {
-    const start = parseHm(startHm);
-    return formatHm(Math.min(start + defaultTaskMinutes, 24 * 60 - 1));
-  };
-  const [startTime, setStartTime] = useState(defaultStart);
-  const [endTime, setEndTime] = useState(() => defaultEnd(defaultStart()));
+  const [durationDraft, setDurationDraft] = useState(String(defaultTaskMinutes));
   const [formError, setFormError] = useState<string | null>(null);
   const [createHint, setCreateHint] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -369,15 +385,6 @@ export function TodayPage({
     retry: 2,
   });
 
-  const pinnedStartForDate = (targetDate: string) => {
-    if (targetDate === today) return defaultStart();
-    const wd = new Date(`${targetDate}T12:00:00Z`).getUTCDay();
-    const tpl = scheduleQ.data?.find((t) => t.weekday === wd);
-    const ws = tpl?.workStart?.trim();
-    if (ws && /^\d{1,2}:\d{2}/.test(ws)) return ws.slice(0, 5);
-    return '09:00';
-  };
-
   const invalidateStats = () => {
     void qc.invalidateQueries({ queryKey: ['stats', date] });
     void qc.invalidateQueries({ queryKey: ['eod', date] });
@@ -407,41 +414,13 @@ export function TodayPage({
     const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(scheduleDate)
       ? scheduleDate
       : date;
-    let estimatedMinutes = defaultTaskMinutes;
-    let start: string | undefined;
-    let end: string | undefined;
-    if (pinTime) {
-      if (!startTime || !endTime) {
-        setFormError('Pick a start and end time.');
-        return;
-      }
-      const startMin = parseHm(startTime);
-      const endMin = parseHm(endTime);
-      if (!(endMin > startMin)) {
-        setFormError('End time must be after start time.');
-        return;
-      }
-      const mins = endMin - startMin;
-      if (mins < 5) {
-        setFormError('Slot must be at least 5 minutes.');
-        return;
-      }
-      const weekdayCheck = new Date(`${targetDate}T12:00:00Z`).getUTCDay();
-      const tmplCheck = scheduleQ.data?.find((t) => t.weekday === weekdayCheck);
-      for (const b of tmplCheck?.breaks ?? []) {
-        const bs = parseHm(b.start);
-        const be = parseHm(b.end);
-        if (be <= bs) continue;
-        if (startMin < be && endMin > bs) {
-          setFormError(
-            `That slot overlaps ${b.name?.trim() || 'a break'} (${b.start}–${b.end}).`,
-          );
-          return;
-        }
-      }
-      estimatedMinutes = mins;
-      start = startTime;
-      end = endTime;
+    const estimatedMinutes = parseDurationInput(
+      durationDraft,
+      defaultTaskMinutes,
+    );
+    if (estimatedMinutes < 5) {
+      setFormError('Duration must be at least 5 minutes.');
+      return;
     }
 
     const tid = tasksActions.tempId();
@@ -454,8 +433,8 @@ export function TodayPage({
       durationMin: estimatedMinutes,
       tasks: packTasks,
       timeZone,
-      pinStart: start,
-      pinEnd: end,
+      workStart: dayTemplate?.workStart,
+      workEnd: dayTemplate?.workEnd,
       breaks: dayTemplate?.breaks?.map((b) => ({
         start: b.start,
         end: b.end,
@@ -466,24 +445,19 @@ export function TodayPage({
     setCreateHint(null);
     setName('');
     dispatch(tasksActions.clearCreateError());
-    // Paint The plan + Queue immediately with a provisional slot
     dispatch(
       tasksActions.optimisticCreate({
         tempId: tid,
         date: targetDate,
         name: trimmed,
         estimatedMinutes,
-        scheduledStart: slot.scheduledStart,
-        scheduledEnd: slot.scheduledEnd,
-        scheduleLocked: Boolean(start && end),
+        scheduledStart: slot?.scheduledStart ?? null,
+        scheduledEnd: slot?.scheduledEnd ?? null,
+        scheduleLocked: false,
       }),
     );
-    const nextStart = pinnedStartForDate(targetDate);
-    setStartTime(nextStart);
-    setEndTime(defaultEnd(nextStart));
     nameInputRef.current?.focus();
 
-    // Jump the plan to the day we just scheduled so the task is visible
     if (targetDate !== date) setDate(targetDate);
 
     void dispatch(
@@ -491,8 +465,6 @@ export function TodayPage({
         date: targetDate,
         name: trimmed,
         estimatedMinutes,
-        startTime: start,
-        endTime: end,
         tempId: tid,
       }),
     ).then((result) => {
@@ -500,12 +472,11 @@ export function TodayPage({
         const task = result.payload.task;
         if (task.inBacklog) {
           setCreateHint(
-            `"${task.name}" had no free work-hour slot — check Backlog or Pin time.`,
+            `"${task.name}" had no free work-hour slot large enough for ${estimatedMinutes}m — check Backlog.`,
           );
         } else if (targetDate > today) {
           setCreateHint(`Scheduled on ${formatBacklogDay(targetDate, timeZone)}.`);
         }
-        // Reconcile packing with server in the background (UI already updated)
         void dispatch(fetchTasks(targetDate));
         void dispatch(fetchBacklog());
         void qc.invalidateQueries({ queryKey: ['stats', targetDate] });
@@ -611,7 +582,8 @@ export function TodayPage({
 
   // Scroll plan to the useful part of the day:
   // before work → work start; during work → near now; after work → late day.
-  useEffect(() => {
+  const scrollPlanIntoViewRef = useRef(() => {});
+  scrollPlanIntoViewRef.current = () => {
     const el = viewportRef.current;
     if (!el || viewStartMin == null || !span) return;
     let targetMin = viewStartMin;
@@ -627,6 +599,14 @@ export function TodayPage({
     }
     const top = Math.max(0, (targetMin - viewStartMin) * pxPerMin - 24);
     el.scrollTo({ top, behavior: 'smooth' });
+    el.closest('.schedule-board')?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'nearest',
+    });
+  };
+
+  useEffect(() => {
+    scrollPlanIntoViewRef.current();
   }, [
     date,
     viewStartMin,
@@ -638,6 +618,12 @@ export function TodayPage({
     dayStartMin,
     dayEndMin,
   ]);
+
+  useEffect(() => {
+    const onViewSchedule = () => scrollPlanIntoViewRef.current();
+    window.addEventListener('tb:view-schedule', onViewSchedule);
+    return () => window.removeEventListener('tb:view-schedule', onViewSchedule);
+  }, []);
 
   const hourMarks = useMemo(() => {
     if (viewStartMin === null || viewEndMin === null) return [];
@@ -725,28 +711,47 @@ export function TodayPage({
     }));
   }, [tasks, template?.breaks, timeZone]);
 
-  // One-shot: if any unlocked task still overlaps a break (legacy bad pack),
-  // nudge a reorder so the server re-packs without covering lunch.
+  // One-shot: if unlocked tasks overlap each other or a break, nudge a
+  // reorder so the server re-packs into non-overlapping slots.
   const overlapRepackKey = useRef<string | null>(null);
   useEffect(() => {
-    const breaks = template?.breaks ?? [];
-    if (!breaks.length || !tasks.length) return;
-    const breakBusy = breaks
+    if (!tasks.length) return;
+    const breakBusy = (template?.breaks ?? [])
       .map((b) => ({ start: parseHm(b.start), end: parseHm(b.end) }))
       .filter((b) => b.end > b.start);
-    const conflict = tasks.some((t) => {
-      if (t.scheduleLocked || t.status === 'completed') return false;
-      if (!t.scheduledStart || !t.scheduledEnd) return false;
-      const s = minutesOf(t.scheduledStart, timeZone);
-      const e = minutesOf(t.scheduledEnd, timeZone);
-      return breakBusy.some((b) => s < b.end && e > b.start);
-    });
+    const placed = tasks
+      .filter(
+        (t) =>
+          !t.scheduleLocked &&
+          t.status !== 'completed' &&
+          t.scheduledStart &&
+          t.scheduledEnd,
+      )
+      .map((t) => ({
+        id: t.id,
+        start: minutesOf(t.scheduledStart!, timeZone),
+        end: minutesOf(t.scheduledEnd!, timeZone),
+      }))
+      .filter((t) => t.end > t.start);
+    let conflict = false;
+    for (let i = 0; i < placed.length && !conflict; i++) {
+      const a = placed[i];
+      if (breakBusy.some((b) => a.start < b.end && a.end > b.start)) {
+        conflict = true;
+        break;
+      }
+      for (let j = i + 1; j < placed.length; j++) {
+        const b = placed[j];
+        if (a.start < b.end && a.end > b.start) {
+          conflict = true;
+          break;
+        }
+      }
+    }
     if (!conflict) return;
-    const key = `${date}:${tasks.map((t) => t.id).join(',')}`;
+    const key = `${date}:${placed.map((t) => `${t.id}:${t.start}-${t.end}`).join('|')}`;
     if (overlapRepackKey.current === key) return;
     overlapRepackKey.current = key;
-    const unlockedIds = tasks.filter((t) => !t.scheduleLocked).map((t) => t.id);
-    if (!unlockedIds.length) return;
     // Persist current order so the server re-packs times — do not refetch
     // and overwrite the Redux queue (fulfilled merges schedule fields).
     void dispatch(
@@ -759,6 +764,117 @@ export function TodayPage({
   }, [tasks, template?.breaks, timeZone, date, dispatch]);
 
   const timelineH = span * pxPerMin;
+  const planDragRef = useRef<{
+    taskId: string;
+    duration: number;
+    originY: number;
+    originStart: number;
+  } | null>(null);
+  const [planDragPreview, setPlanDragPreview] = useState<{
+    taskId: string;
+    startMin: number;
+  } | null>(null);
+  const [planDragError, setPlanDragError] = useState<string | null>(null);
+
+  const canPlaceAt = (taskId: string, startMin: number, duration: number) => {
+    const endMin = startMin + duration;
+    if (dayStartMin == null || dayEndMin == null) return false;
+    if (startMin < dayStartMin || endMin > dayEndMin) return false;
+    for (const b of template?.breaks ?? []) {
+      const bs = parseHm(b.start);
+      const be = parseHm(b.end);
+      if (be > bs && startMin < be && endMin > bs) return false;
+    }
+    for (const t of tasks) {
+      if (t.id === taskId || t.status === 'completed') continue;
+      if (!t.scheduledStart || !t.scheduledEnd) continue;
+      const os = minutesOf(t.scheduledStart, timeZone);
+      const oe = minutesOf(t.scheduledEnd, timeZone);
+      if (startMin < oe && endMin > os) return false;
+    }
+    return true;
+  };
+
+  const onPlanBlockPointerDown = (
+    e: PointerEvent<HTMLDivElement>,
+    task: TaskDto,
+    startMin: number,
+  ) => {
+    if (task.scheduleLocked || task.status === 'completed') return;
+    if (e.button !== 0) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    planDragRef.current = {
+      taskId: task.id,
+      duration: Math.max(5, task.estimatedMinutes),
+      originY: e.clientY,
+      originStart: startMin,
+    };
+    setPlanDragPreview({ taskId: task.id, startMin });
+    setPlanDragError(null);
+  };
+
+  const onPlanBlockPointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    const drag = planDragRef.current;
+    if (!drag || viewStartMin == null) return;
+    const deltaMin = Math.round((e.clientY - drag.originY) / pxPerMin);
+    const raw = drag.originStart + deltaMin;
+    const snapped = Math.round(raw / 5) * 5;
+    setPlanDragPreview({ taskId: drag.taskId, startMin: snapped });
+  };
+
+  const onPlanBlockPointerUp = (e: PointerEvent<HTMLDivElement>) => {
+    const drag = planDragRef.current;
+    planDragRef.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    if (!drag || !planDragPreview) {
+      setPlanDragPreview(null);
+      return;
+    }
+    const startMin = planDragPreview.startMin;
+    const endMin = startMin + drag.duration;
+    setPlanDragPreview(null);
+    if (startMin === drag.originStart) return;
+    if (!canPlaceAt(drag.taskId, startMin, drag.duration)) {
+      setPlanDragError(
+        'That drop overlaps another task or sits outside work hours.',
+      );
+      return;
+    }
+    const startHm = formatHm(startMin);
+    const endHm = formatHm(endMin);
+    dispatch(
+      tasksActions.optimisticPatch({
+        taskId: drag.taskId,
+        patch: {
+          scheduledStart: isoFromMinutes(date, startMin),
+          scheduledEnd: isoFromMinutes(date, endMin),
+          estimatedMinutes: drag.duration,
+          scheduleLocked: false,
+        },
+      }),
+    );
+    void dispatch(
+      updateTaskOptimistic({
+        taskId: drag.taskId,
+        date,
+        body: { startTime: startHm, endTime: endHm },
+      }),
+    ).then((result) => {
+      if (updateTaskOptimistic.rejected.match(result)) {
+        setPlanDragError(
+          (result.payload as { message?: string })?.message ||
+            'Could not move task — slot may be taken.',
+        );
+        void dispatch(fetchTasks(date));
+      } else {
+        invalidateStats();
+      }
+    });
+  };
 
   const onDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -841,10 +957,11 @@ export function TodayPage({
     if (next) return { task: next, mode: 'next' as const };
     return null;
   }, [liveTask, tasks, isToday, timeZone]);
+  // Finished tasks with logged time (timer or checkbox Done) — not open queue items
   const loggedSessions = useMemo(
     () =>
       tasks
-        .filter((t) => t.actualMinutes > 0)
+        .filter((t) => t.status === 'completed' && t.actualMinutes > 0)
         .sort((a, b) => b.actualMinutes - a.actualMinutes)
         .slice(0, 5),
     [tasks],
@@ -1068,6 +1185,16 @@ export function TodayPage({
                       const laneCount = Math.max(1, block.laneCount);
                       const lane = block.lane;
                       const widthPct = 100 / laneCount;
+                      const dragStart =
+                        planDragPreview?.taskId === t.id
+                          ? planDragPreview.startMin
+                          : s;
+                      const dragHeight = meet
+                        ? Math.max((e - s) * pxPerMin, 52)
+                        : Math.max(
+                            (Math.max(5, t.estimatedMinutes)) * pxPerMin,
+                            52,
+                          );
                       return (
                         <div
                           key={block.key}
@@ -1075,14 +1202,44 @@ export function TodayPage({
                             meet ? 'busy meet' : 'task'
                           }${done ? ' is-done' : ''}${
                             isLive ? ' is-live' : ''
+                          }${
+                            !meet && !done ? ' is-draggable' : ''
+                          }${
+                            planDragPreview?.taskId === t.id ? ' is-dragging-plan' : ''
                           }`}
                           style={{
-                            top: (s - viewStartMin!) * pxPerMin,
-                            height: Math.max((e - s) * pxPerMin, 52),
+                            top:
+                              (dragStart - viewStartMin!) * pxPerMin,
+                            height: dragHeight,
                             left: `calc(${lane * widthPct}% + 4px)`,
                             width: `calc(${widthPct}% - 8px)`,
                             right: 'auto',
+                            cursor: meet || done ? undefined : 'grab',
                           }}
+                          onPointerDown={
+                            meet || done
+                              ? undefined
+                              : (ev) => onPlanBlockPointerDown(ev, t, block.start)
+                          }
+                          onPointerMove={
+                            meet || done ? undefined : onPlanBlockPointerMove
+                          }
+                          onPointerUp={
+                            meet || done ? undefined : onPlanBlockPointerUp
+                          }
+                          onPointerCancel={
+                            meet || done
+                              ? undefined
+                              : () => {
+                                  planDragRef.current = null;
+                                  setPlanDragPreview(null);
+                                }
+                          }
+                          title={
+                            meet || done
+                              ? undefined
+                              : 'Drag to move — must fit without overlapping'
+                          }
                         >
                           <div className="cal-block-main">
                             {isLive && (
@@ -1106,14 +1263,7 @@ export function TodayPage({
                             </strong>
                             {!meet && (
                               <span className="cal-meta">
-                                {formatTimeRange(
-                                  t.scheduledStart,
-                                  t.scheduledEnd,
-                                  timeZone,
-                                )}
-                                {' · '}
-                                {spanMin}m
-                                {!t.scheduleLocked ? ' · Deep work' : ''}
+                                {!t.scheduleLocked ? 'Deep work' : ''}
                               </span>
                             )}
                             {isLive && (
@@ -1123,8 +1273,7 @@ export function TodayPage({
                             )}
                           </div>
                           <span className="cal-time-end">
-                            {formatHm(block.rawS)}
-                            {meet ? '' : `–${formatHm(block.rawE)}`}
+                            {meet ? formatHm(block.rawS) : `${spanMin}m`}
                           </span>
                         </div>
                       );
@@ -1184,12 +1333,15 @@ export function TodayPage({
                 <strong>{finishLabel}</strong>
               </div>
             </div>
+            {planDragError && (
+              <p className="composer-hint is-error plan-drag-error">{planDragError}</p>
+            )}
             <button
               type="button"
               className="plan-fill-btn"
               onClick={() => nameInputRef.current?.focus()}
             >
-              Fill the gap
+              Add a task
             </button>
           </div>
         </section>
@@ -1208,14 +1360,14 @@ export function TodayPage({
           </div>
 
           <form
-            className={`add-task-composer${pinTime || scheduleDate !== date ? ' is-pinning' : ''}${scheduleDate !== today ? ' is-future' : ''}`}
+            className={`add-task-composer${scheduleDate !== date ? ' is-scheduling' : ''}${scheduleDate !== today ? ' is-future' : ''}`}
             onSubmit={submitNewTask}
           >
             <input
               ref={nameInputRef}
               id="new-task-name"
               className="add-task-input"
-              placeholder="Add a task…"
+              placeholder="Add your task"
               value={name}
               autoComplete="off"
               autoCorrect="off"
@@ -1227,90 +1379,156 @@ export function TodayPage({
               }}
               aria-invalid={Boolean(formError)}
             />
-            <label className="add-task-date-wrap" title="Schedule day">
-              <input
-                type="date"
-                className="add-task-date"
-                value={scheduleDate}
-                onChange={(e) => {
-                  const next = e.target.value || date;
-                  setScheduleDate(next);
-                  if (formError) setFormError(null);
-                  if (createHint) setCreateHint(null);
-                  if (pinTime) {
-                    const s = pinnedStartForDate(next);
-                    setStartTime(s);
-                    setEndTime(defaultEnd(s));
-                  }
-                }}
-                aria-label="Schedule date"
-              />
-            </label>
-            <span className="add-task-dur" title="Default duration">
-              {pinTime
-                ? `${Math.max(5, parseHm(endTime) - parseHm(startTime))}m`
-                : `${defaultTaskMinutes}m`}
-            </span>
-            <span className="add-task-pin-wrap">
-              <button
-                type="button"
-                className={`add-task-pin-btn${pinTime ? ' is-on' : ''}`}
-                aria-pressed={pinTime}
-                aria-label="Pin time"
-                onClick={() => {
-                  setPinTime((v) => {
-                    const next = !v;
-                    if (next) {
-                      const s = pinnedStartForDate(scheduleDate);
-                      setStartTime(s);
-                      setEndTime(defaultEnd(s));
-                    }
-                    return next;
-                  });
-                }}
+            <div className="add-task-actions">
+              <label
+                className="add-task-dur-wrap"
+                title="Duration (5–999 min). ↑↓ or buttons to adjust."
               >
-                Pin
-              </button>
-              <HintMark id="dash.pin" placement="bottom" />
-            </span>
-            {pinTime && (
-              <div className="add-task-times" aria-label="Task time range">
                 <input
-                  type="time"
-                  value={startTime}
+                  className="add-task-dur-input"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={3}
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={durationDraft}
+                  placeholder="30"
+                  aria-label="Duration in minutes"
                   onChange={(e) => {
-                    const next = e.target.value;
-                    setStartTime(next);
+                    setDurationDraft(digitsOnly(e.target.value));
                     if (formError) setFormError(null);
-                    if (parseHm(endTime) <= parseHm(next)) {
-                      setEndTime(defaultEnd(next));
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      setDurationDraft(
+                        nudgeDuration(
+                          durationDraft,
+                          e.shiftKey ? 1 : DURATION_STEP,
+                          defaultTaskMinutes,
+                        ),
+                      );
+                      if (formError) setFormError(null);
+                      return;
                     }
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      setDurationDraft(
+                        nudgeDuration(
+                          durationDraft,
+                          e.shiftKey ? -1 : -DURATION_STEP,
+                          defaultTaskMinutes,
+                        ),
+                      );
+                      if (formError) setFormError(null);
+                      return;
+                    }
+                    // Allow control/navigation; block letters and symbols.
+                    if (
+                      e.ctrlKey ||
+                      e.metaKey ||
+                      e.altKey ||
+                      e.key === 'Backspace' ||
+                      e.key === 'Delete' ||
+                      e.key === 'Tab' ||
+                      e.key === 'Enter' ||
+                      e.key === 'Escape' ||
+                      e.key === 'ArrowLeft' ||
+                      e.key === 'ArrowRight' ||
+                      e.key === 'Home' ||
+                      e.key === 'End'
+                    ) {
+                      return;
+                    }
+                    if (!/^\d$/.test(e.key)) {
+                      e.preventDefault();
+                      return;
+                    }
+                    // Cap at 3 digits while typing
+                    const el = e.currentTarget;
+                    const nextLen =
+                      String(el.value).length -
+                      (el.selectionEnd! - el.selectionStart!) +
+                      1;
+                    if (nextLen > 3) e.preventDefault();
                   }}
-                  step={300}
-                  aria-label="Start time"
-                />
-                <span className="add-task-times-sep" aria-hidden>
-                  –
-                </span>
-                <input
-                  type="time"
-                  value={endTime}
-                  onChange={(e) => {
-                    setEndTime(e.target.value);
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    const pasted = e.clipboardData.getData('text') || '';
+                    setDurationDraft(digitsOnly(pasted));
                     if (formError) setFormError(null);
                   }}
-                  step={300}
-                  aria-label="End time"
+                  onBlur={() =>
+                    setDurationDraft(
+                      String(
+                        parseDurationInput(durationDraft, defaultTaskMinutes),
+                      ),
+                    )
+                  }
                 />
-              </div>
-            )}
-            <button
-              className="btn btn-primary btn-pill add-task-submit"
-              type="submit"
-              disabled={createPending || !name.trim()}
-            >
-              {createPending ? 'Adding' : scheduleDate > today ? 'Schedule' : 'Add'}
-            </button>
+                <span className="add-task-dur-suffix">min</span>
+                <span className="add-task-dur-stepper" aria-hidden={false}>
+                  <button
+                    type="button"
+                    className="add-task-dur-step"
+                    aria-label="Increase duration"
+                    tabIndex={-1}
+                    onClick={() => {
+                      setDurationDraft(
+                        nudgeDuration(
+                          durationDraft,
+                          DURATION_STEP,
+                          defaultTaskMinutes,
+                        ),
+                      );
+                      if (formError) setFormError(null);
+                    }}
+                  >
+                    ▲
+                  </button>
+                  <button
+                    type="button"
+                    className="add-task-dur-step"
+                    aria-label="Decrease duration"
+                    tabIndex={-1}
+                    onClick={() => {
+                      setDurationDraft(
+                        nudgeDuration(
+                          durationDraft,
+                          -DURATION_STEP,
+                          defaultTaskMinutes,
+                        ),
+                      );
+                      if (formError) setFormError(null);
+                    }}
+                  >
+                    ▼
+                  </button>
+                </span>
+              </label>
+              <label className="add-task-date-wrap" title="Schedule day">
+                <input
+                  type="date"
+                  className="add-task-date"
+                  value={scheduleDate}
+                  onChange={(e) => {
+                    const next = e.target.value || date;
+                    setScheduleDate(next);
+                    if (formError) setFormError(null);
+                    if (createHint) setCreateHint(null);
+                  }}
+                  aria-label="Schedule date"
+                />
+              </label>
+              <button
+                className="btn btn-primary btn-pill add-task-submit"
+                type="submit"
+                disabled={createPending || !name.trim()}
+              >
+                {createPending ? 'Adding' : scheduleDate > today ? 'Schedule' : 'Add'}
+              </button>
+            </div>
           </form>
           {(formError || createErrorRedux) && (
             <p className="composer-hint is-error">
@@ -1339,6 +1557,7 @@ export function TodayPage({
                       rank={i + 1}
                       timeZone={timeZone}
                       onChanged={refreshDay}
+                      onStatsRefresh={invalidateStats}
                     />
                   ))}
                   {tasks.length === 0 && (
@@ -1353,6 +1572,9 @@ export function TodayPage({
             {loggedSessions.length > 0 && (
               <div className="captured-sessions">
                 <h3 className="section-label">Captured sessions</h3>
+                <p className="captured-sessions-hint">
+                  Time logged on finished tasks (checkbox Done or Start/Stop).
+                </p>
                 <ul>
                   {loggedSessions.map((t) => (
                     <li key={t.id}>
@@ -1370,9 +1592,16 @@ export function TodayPage({
 
             <BacklogSection
               tasks={backlogTasks}
+              dayTasks={tasks}
               loading={false}
               today={today}
               timeZone={timeZone}
+              workStart={template?.workStart}
+              workEnd={template?.workEnd}
+              breaks={template?.breaks?.map((b) => ({
+                start: b.start,
+                end: b.end,
+              }))}
               onChanged={refreshDay}
             />
           </div>
@@ -1443,9 +1672,7 @@ function SessionBanner({
           </div>
           <p className="session-sub">
             {kind}
-            {task.scheduledStart && task.scheduledEnd
-              ? ` · planned ${formatTimeRange(task.scheduledStart, task.scheduledEnd, timeZone)}`
-              : ''}
+            {task.estimatedMinutes ? ` · ${task.estimatedMinutes}m` : ''}
           </p>
         </div>
         <div className="session-elapsed">
@@ -1502,17 +1729,18 @@ function SessionBanner({
         <button
           type="button"
           className="btn btn-pill session-done"
-          disabled={busy || task.status === 'completed'}
+          disabled={busy}
           onClick={() =>
             void run(async () => {
-              dispatch(tasksActions.optimisticComplete({ taskId: task.id }));
-              await dispatch(
-                completeTaskOptimistic({ taskId: task.id, date: task.date }),
-              );
+              await queueCompleteTask(dispatch, {
+                taskId: task.id,
+                date: task.date,
+                currentlyDone: task.status === 'completed',
+              });
             })
           }
         >
-          Done
+          {task.status === 'completed' ? 'Undo' : 'Done'}
         </button>
       </div>
     </div>
@@ -1534,15 +1762,23 @@ function formatBacklogDay(dateStr: string, timeZone?: string | null) {
 
 function BacklogSection({
   tasks,
+  dayTasks,
   loading,
   today,
   timeZone,
+  workStart,
+  workEnd,
+  breaks,
   onChanged,
 }: {
   tasks: TaskDto[];
+  dayTasks: TaskDto[];
   loading: boolean;
   today: string;
   timeZone?: string | null;
+  workStart?: string;
+  workEnd?: string;
+  breaks?: { start: string; end: string }[];
   onChanged: () => void;
 }) {
   const dispatch = useAppDispatch();
@@ -1566,7 +1802,7 @@ function BacklogSection({
             Backlog <HintMark id="dash.backlog" placement="top" />
           </h3>
           <p className="priority-sub">
-            Unfinished or unscheduled — pick up when you have room.
+            Yesterday’s unfinished work — schedule it when you have room.
           </p>
         </div>
         {tasks.length > 0 && (
@@ -1594,22 +1830,34 @@ function BacklogSection({
                 className="btn btn-primary btn-pill btn-sm"
                 type="button"
                 disabled={busyId === task.id}
-                onClick={() =>
+                onClick={() => {
+                  const slot = nextOptimisticSlot({
+                    date: today,
+                    durationMin: task.estimatedMinutes,
+                    tasks: dayTasks,
+                    timeZone,
+                    workStart,
+                    workEnd,
+                    breaks,
+                  });
+                  // Instant move onto today — don't wait for pack API.
+                  dispatch(
+                    tasksActions.optimisticScheduleFromBacklog({
+                      taskId: task.id,
+                      date: today,
+                      scheduledStart: slot?.scheduledStart ?? null,
+                      scheduledEnd: slot?.scheduledEnd ?? null,
+                    }),
+                  );
                   void run(task.id, async () => {
-                    dispatch(
-                      tasksActions.optimisticScheduleFromBacklog({
-                        taskId: task.id,
-                        date: today,
-                      }),
-                    );
                     await dispatch(
                       scheduleFromBacklogOptimistic({
                         taskId: task.id,
                         date: today,
                       }),
                     );
-                  })
-                }
+                  });
+                }}
               >
                 Schedule
               </button>
@@ -1617,19 +1865,15 @@ function BacklogSection({
                 className="btn btn-ghost btn-sm backlog-quiet"
                 type="button"
                 disabled={busyId === task.id}
-                onClick={() =>
+                onClick={() => {
                   void run(task.id, async () => {
-                    dispatch(
-                      tasksActions.optimisticComplete({ taskId: task.id }),
-                    );
-                    await dispatch(
-                      completeTaskOptimistic({
-                        taskId: task.id,
-                        date: task.date,
-                      }),
-                    );
-                  })
-                }
+                    await queueCompleteTask(dispatch, {
+                      taskId: task.id,
+                      date: today,
+                      currentlyDone: task.status === 'completed',
+                    });
+                  });
+                }}
               >
                 Done
               </button>
@@ -1637,22 +1881,21 @@ function BacklogSection({
                 className="btn btn-ghost btn-sm backlog-quiet"
                 type="button"
                 disabled={busyId === task.id}
-                onClick={() =>
+                onClick={() => {
+                  dispatch(
+                    tasksActions.optimisticRemoveFromBacklog({
+                      taskId: task.id,
+                    }),
+                  );
                   void run(task.id, async () => {
-                    dispatch(
-                      tasksActions.optimisticRemoveFromDay({
-                        taskId: task.id,
-                        date: task.date,
-                      }),
-                    );
                     await dispatch(
                       removeTaskOptimistic({
                         taskId: task.id,
                         date: today,
                       }),
                     );
-                  })
-                }
+                  });
+                }}
               >
                 Remove
               </button>
@@ -1669,32 +1912,32 @@ function SortableTask({
   task,
   timeZone,
   onChanged,
+  onStatsRefresh,
 }: {
   task: TaskDto;
   rank?: number;
   timeZone?: string | null;
   onChanged: () => void;
+  onStatsRefresh?: () => void;
 }) {
   const locked = Boolean(task.scheduleLocked);
   const done = task.status === 'completed';
   const running = Boolean(task.activeEntryId);
   const today = todayISO(timeZone);
   const isFutureDay = task.date > today;
-  const canStartTimer = !done && !isFutureDay;
+  const liveOtherId = useAppSelector((s) => {
+    for (const list of Object.values(s.tasks.byDate)) {
+      const hit = list.find((t) => t.activeEntryId && t.id !== task.id);
+      if (hit) return hit.id;
+    }
+    return null as string | null;
+  });
+  const otherSessionLive = Boolean(liveOtherId);
+  const canStartTimer = !done && !isFutureDay && !otherSessionLive;
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState(task.name);
   const [minsDraft, setMinsDraft] = useState(String(task.estimatedMinutes));
-  const [startDraft, setStartDraft] = useState(() =>
-    task.scheduledStart
-      ? formatHm(minutesOf(task.scheduledStart, timeZone))
-      : '',
-  );
-  const [endDraft, setEndDraft] = useState(() =>
-    task.scheduledEnd
-      ? formatHm(minutesOf(task.scheduledEnd, timeZone))
-      : '',
-  );
   const [editError, setEditError] = useState<string | null>(null);
   const [draft, setDraft] = useState(task.notes ?? '');
   const [appendText, setAppendText] = useState('');
@@ -1716,22 +1959,7 @@ function SortableTask({
     setDraft(task.notes ?? '');
     setNameDraft(task.name);
     setMinsDraft(String(task.estimatedMinutes));
-    if (task.scheduledStart && task.scheduledEnd) {
-      setStartDraft(formatHm(minutesOf(task.scheduledStart, timeZone)));
-      setEndDraft(formatHm(minutesOf(task.scheduledEnd, timeZone)));
-    } else {
-      setStartDraft('');
-      setEndDraft('');
-    }
-  }, [
-    task.notes,
-    task.name,
-    task.estimatedMinutes,
-    task.scheduledStart,
-    task.scheduledEnd,
-    task.id,
-    timeZone,
-  ]);
+  }, [task.notes, task.name, task.estimatedMinutes, task.id]);
 
   const dispatch = useAppDispatch();
   const [actionBusy, setActionBusy] = useState(false);
@@ -1799,13 +2027,6 @@ function SortableTask({
   const resetEditDrafts = () => {
     setNameDraft(task.name);
     setMinsDraft(String(task.estimatedMinutes));
-    if (task.scheduledStart && task.scheduledEnd) {
-      setStartDraft(formatHm(minutesOf(task.scheduledStart, timeZone)));
-      setEndDraft(formatHm(minutesOf(task.scheduledEnd, timeZone)));
-    } else {
-      setStartDraft('');
-      setEndDraft('');
-    }
     setEditError(null);
     setEditing(false);
   };
@@ -1820,54 +2041,16 @@ function SortableTask({
     const body: {
       name?: string;
       estimatedMinutes?: number;
-      startTime?: string;
-      endTime?: string;
     } = {};
     if (name !== task.name) body.name = name;
 
-    const hasTimes = Boolean(startDraft && endDraft);
-    if (hasTimes) {
-      const startMin = parseHm(startDraft);
-      const endMin = parseHm(endDraft);
-      if (!(endMin > startMin)) {
-        setEditError('End time must be after start time.');
-        return;
-      }
-      const mins = endMin - startMin;
-      if (mins < 5) {
-        setEditError('Slot must be at least 5 minutes.');
-        return;
-      }
-      const prevStart =
-        task.scheduledStart != null
-          ? formatHm(minutesOf(task.scheduledStart, timeZone))
-          : '';
-      const prevEnd =
-        task.scheduledEnd != null
-          ? formatHm(minutesOf(task.scheduledEnd, timeZone))
-          : '';
-      if (startDraft !== prevStart || endDraft !== prevEnd) {
-        body.startTime = startDraft;
-        body.endTime = endDraft;
-      } else {
-        const minsNum = Number(minsDraft);
-        if (
-          Number.isFinite(minsNum) &&
-          minsNum >= 5 &&
-          Math.round(minsNum) !== task.estimatedMinutes
-        ) {
-          body.estimatedMinutes = Math.round(minsNum);
-        }
-      }
-    } else {
-      const mins = Number(minsDraft);
-      if (
-        Number.isFinite(mins) &&
-        mins >= 5 &&
-        Math.round(mins) !== task.estimatedMinutes
-      ) {
-        body.estimatedMinutes = Math.round(mins);
-      }
+    const mins = Number(minsDraft);
+    if (!Number.isFinite(mins) || mins < 5) {
+      setEditError('Duration must be at least 5 minutes.');
+      return;
+    }
+    if (Math.round(mins) !== task.estimatedMinutes) {
+      body.estimatedMinutes = Math.round(mins);
     }
 
     if (!Object.keys(body).length) {
@@ -1933,16 +2116,19 @@ function SortableTask({
       <button
         type="button"
         className={`queue-check${done ? ' is-checked' : ''}`}
-        aria-label={done ? 'Completed' : 'Mark complete'}
-        disabled={done || busy}
-        onClick={() =>
-          void runAction(async () => {
-            dispatch(tasksActions.optimisticComplete({ taskId: task.id }));
-            await dispatch(
-              completeTaskOptimistic({ taskId: task.id, date: task.date }),
-            );
-          })
-        }
+        aria-label={done ? 'Mark incomplete' : 'Mark complete'}
+        aria-pressed={done}
+        onClick={() => {
+          // Instant toggle — never gate on API; don't refetch the whole day
+          // (that races other checkboxes still syncing).
+          void queueCompleteTask(dispatch, {
+            taskId: task.id,
+            date: task.date,
+            currentlyDone: done,
+          }).then(() => {
+            onStatsRefresh?.();
+          });
+        }}
       >
         {done ? '✓' : ''}
       </button>
@@ -1993,96 +2179,66 @@ function SortableTask({
             {locked || task.meetLink ? 'Meeting' : 'Deep work'}
           </span>
           {editing && !locked ? (
-            <span className="priority-time-edit" aria-label="Task time range">
-              <input
-                className="priority-time-input"
-                type="time"
-                value={startDraft}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setStartDraft(next);
-                  const mins = Number(minsDraft);
-                  if (next && Number.isFinite(mins) && mins >= 5) {
-                    setEndDraft(
-                      formatHm(
-                        Math.min(parseHm(next) + Math.round(mins), 24 * 60 - 1),
-                      ),
-                    );
-                  }
-                }}
-                aria-label="Start time"
-              />
-              <span className="priority-time-sep">–</span>
-              <input
-                className="priority-time-input"
-                type="time"
-                value={endDraft}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setEndDraft(next);
-                  if (startDraft && next) {
-                    const span = parseHm(next) - parseHm(startDraft);
-                    if (span >= 5) setMinsDraft(String(span));
-                  }
-                }}
-                aria-label="End time"
-              />
-              <span className="priority-time-sep">·</span>
+            <span className="priority-time-edit" aria-label="Task duration">
               <input
                 className="priority-mins-input"
-                type="number"
-                min={5}
-                step={5}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="off"
+                spellCheck={false}
                 value={minsDraft}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setMinsDraft(next);
-                  const mins = Number(next);
-                  if (startDraft && Number.isFinite(mins) && mins >= 5) {
-                    setEndDraft(
-                      formatHm(
-                        Math.min(parseHm(startDraft) + Math.round(mins), 24 * 60 - 1),
-                      ),
-                    );
-                  }
-                }}
+                onChange={(e) => setMinsDraft(digitsOnly(e.target.value))}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
                     saveEdits();
+                    return;
+                  }
+                  if (
+                    e.ctrlKey ||
+                    e.metaKey ||
+                    e.altKey ||
+                    e.key === 'Backspace' ||
+                    e.key === 'Delete' ||
+                    e.key === 'Tab' ||
+                    e.key === 'Escape' ||
+                    e.key === 'ArrowLeft' ||
+                    e.key === 'ArrowRight' ||
+                    e.key === 'Home' ||
+                    e.key === 'End'
+                  ) {
+                    return;
+                  }
+                  if (!/^\d$/.test(e.key)) {
+                    e.preventDefault();
                   }
                 }}
+                onPaste={(e) => {
+                  e.preventDefault();
+                  setMinsDraft(digitsOnly(e.clipboardData.getData('text') || ''));
+                }}
+                onBlur={() =>
+                  setMinsDraft(
+                    String(parseDurationInput(minsDraft, task.estimatedMinutes)),
+                  )
+                }
                 aria-label="Duration minutes"
               />
               <span>m</span>
             </span>
           ) : (
-            <>
-              <button
-                type="button"
-                className="priority-time-btn"
-                onClick={() => {
-                  if (!locked && !done) setEditing(true);
-                }}
-                disabled={locked || done}
-                title={locked ? undefined : 'Edit time'}
-              >
-                {formatTimeRange(task.scheduledStart, task.scheduledEnd, timeZone)}
-              </button>
-              {!locked && (
-                <>
-                  {' · '}
-                  <button
-                    type="button"
-                    className="priority-mins-btn"
-                    onClick={() => setEditing(true)}
-                    disabled={done}
-                  >
-                    {task.estimatedMinutes}m
-                  </button>
-                </>
-              )}
-            </>
+            <button
+              type="button"
+              className="priority-mins-btn"
+              onClick={() => {
+                if (!locked && !done) setEditing(true);
+              }}
+              disabled={locked || done}
+              title={locked ? undefined : 'Edit duration'}
+            >
+              {task.estimatedMinutes}m
+            </button>
           )}
           {task.actualMinutes > 0 ? ` · ${task.actualMinutes}m actual` : ''}
           {editing && !locked && (
@@ -2114,9 +2270,22 @@ function SortableTask({
 
         {commentsOpen && (
           <div className="task-comments">
-            <label className="task-comments-label" htmlFor={`notes-${task.id}`}>
-              Comments
-            </label>
+            <div className="task-comments-head">
+              <label className="task-comments-label" htmlFor={`notes-${task.id}`}>
+                Comments
+              </label>
+              <button
+                type="button"
+                className="btn btn-ghost btn-pill btn-sm task-comments-collapse"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setCommentsOpen(false);
+                }}
+              >
+                Collapse
+              </button>
+            </div>
             <textarea
               id={`notes-${task.id}`}
               className="task-comments-editor"
@@ -2180,11 +2349,16 @@ function SortableTask({
         <button
           className={`btn btn-ghost btn-pill btn-sm${commentsOpen ? ' is-active' : ''}`}
           type="button"
-          title="Comments"
+          title={commentsOpen ? 'Hide notes' : 'Notes'}
           aria-expanded={commentsOpen}
-          onClick={() => setCommentsOpen((o) => !o)}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setCommentsOpen((o) => !o);
+          }}
         >
-          Notes
+          {commentsOpen ? 'Hide notes' : 'Notes'}
         </button>
         {task.meetLink && (
           <a
@@ -2243,7 +2417,9 @@ function SortableTask({
                 ? 'Timer unlocks on that day'
                 : done
                   ? 'Already done'
-                  : 'Start timer'
+                  : otherSessionLive
+                    ? 'Pause the current session first'
+                    : 'Start timer'
             }
             onClick={() => {
               if (!canStartTimer) return;

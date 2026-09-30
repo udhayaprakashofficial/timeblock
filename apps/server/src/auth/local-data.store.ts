@@ -24,6 +24,7 @@ import {
   type Interval,
 } from '../common/time.util';
 import { buildEffortSummary } from '../stats/effort-badges';
+import { packTasks } from '../tasks/scheduler.service';
 
 type LocalTask = {
   id: string;
@@ -37,6 +38,8 @@ type LocalTask = {
   scheduledEnd: string | null;
   actualMinutes: number;
   activeEntryId: string | null;
+  /** Minutes captured only from Start/Stop — never from checkbox Done. */
+  timerLoggedMinutes?: number;
   timerStartedAt?: string | null;
   scheduleLocked?: boolean;
   meetLink?: string | null;
@@ -202,13 +205,25 @@ export class LocalDataStore {
     const db = this.read();
     let dirty = false;
     for (const t of db.tasks) {
-      if (
-        t.userId === userId &&
-        t.date === dateStr &&
-        t.status === 'completed' &&
-        t.actualMinutes <= 0
-      ) {
-        t.actualMinutes = Math.max(1, t.estimatedMinutes || 30);
+      if (t.userId !== userId || t.date !== dateStr) continue;
+      // Migrate legacy actualMinutes (mixed estimate stamps + timer) → timer-only.
+      if (t.timerLoggedMinutes == null) {
+        if (
+          t.status !== 'completed' &&
+          t.actualMinutes > 0 &&
+          t.actualMinutes !== t.estimatedMinutes
+        ) {
+          t.timerLoggedMinutes = t.actualMinutes;
+        } else if (
+          t.status === 'completed' &&
+          t.actualMinutes > 0 &&
+          t.actualMinutes !== t.estimatedMinutes
+        ) {
+          t.timerLoggedMinutes = t.actualMinutes;
+        } else {
+          t.timerLoggedMinutes = 0;
+        }
+        t.actualMinutes = t.timerLoggedMinutes;
         dirty = true;
       }
     }
@@ -234,7 +249,13 @@ export class LocalDataStore {
       .map((t) => this.toDto(t));
   }
 
-  carryOverUnfinished(userId: string, today: string): number {
+  carryOverUnfinished(userId: string, yesterday: string): number {
+    const sampleNames = new Set([
+      'plan the day',
+      'reply to emails',
+      'finish project report',
+      'deep work session',
+    ]);
     const db = this.read();
     let count = 0;
     for (const t of db.tasks) {
@@ -243,9 +264,51 @@ export class LocalDataStore {
         !t.inBacklog &&
         !t.scheduleLocked &&
         t.status !== 'completed' &&
-        t.date < today
+        t.date === yesterday &&
+        !sampleNames.has(t.name.trim().toLowerCase())
       ) {
         t.inBacklog = true;
+        t.scheduledStart = null;
+        t.scheduledEnd = null;
+        count += 1;
+      }
+    }
+    if (count) this.write(db);
+    return count;
+  }
+
+  /** Clear backlog flag on tasks older than yesterday. */
+  pruneStaleBacklog(userId: string, yesterday: string): number {
+    const db = this.read();
+    let count = 0;
+    for (const t of db.tasks) {
+      if (t.userId === userId && t.inBacklog && t.date < yesterday) {
+        t.inBacklog = false;
+        count += 1;
+      }
+    }
+    if (count) this.write(db);
+    return count;
+  }
+
+  /** Onboarding demo tasks must never clutter backlog. */
+  clearOnboardingSampleBacklog(userId: string): number {
+    const sampleNames = new Set([
+      'plan the day',
+      'reply to emails',
+      'finish project report',
+      'deep work session',
+    ]);
+    const db = this.read();
+    let count = 0;
+    for (const t of db.tasks) {
+      if (
+        t.userId === userId &&
+        t.inBacklog &&
+        t.status !== 'completed' &&
+        sampleNames.has(t.name.trim().toLowerCase())
+      ) {
+        t.inBacklog = false;
         t.scheduledStart = null;
         t.scheduledEnd = null;
         count += 1;
@@ -309,7 +372,47 @@ export class LocalDataStore {
       dayTasks.reduce((max, x) => Math.max(max, x.order), -1) + 1;
     this.write(db);
     this.rescheduleDay(userId, dateStr);
-    return this.toDto(this.read().tasks.find((x) => x.id === taskId)!);
+    let out = this.read().tasks.find((x) => x.id === taskId)!;
+    if (out.inBacklog) {
+      // Full-day pack so Schedule always lands on the plan.
+      out.inBacklog = false;
+      out.scheduledStart = null;
+      out.scheduledEnd = null;
+      this.write(this.read());
+      const db2 = this.read();
+      const row = db2.tasks.find((x) => x.id === taskId)!;
+      row.inBacklog = false;
+      row.scheduledStart = null;
+      row.scheduledEnd = null;
+      this.write(db2);
+      this.rescheduleDay(userId, dateStr, { ignorePackingFloor: true });
+      out = this.read().tasks.find((x) => x.id === taskId)!;
+    }
+    if (out.inBacklog || !out.scheduledStart) {
+      const db3 = this.read();
+      const row = db3.tasks.find((x) => x.id === taskId)!;
+      const peers = db3.tasks.filter(
+        (x) =>
+          x.userId === userId &&
+          x.date === dateStr &&
+          !x.inBacklog &&
+          x.id !== taskId &&
+          x.scheduledEnd,
+      );
+      let cursor = new Date().getHours() * 60 + new Date().getMinutes();
+      for (const p of peers) {
+        const e = new Date(p.scheduledEnd!);
+        cursor = Math.max(cursor, e.getHours() * 60 + e.getMinutes());
+      }
+      const need = Math.max(5, row.estimatedMinutes || 30);
+      const start = Math.min(cursor, 24 * 60 - need);
+      row.inBacklog = false;
+      row.scheduledStart = combineDateAndMinutes(dateStr, start).toISOString();
+      row.scheduledEnd = combineDateAndMinutes(dateStr, start + need).toISOString();
+      this.write(db3);
+      out = this.read().tasks.find((x) => x.id === taskId)!;
+    }
+    return this.toDto(out);
   }
 
   createTask(userId: string, dto: CreateTaskDto & {
@@ -318,7 +421,7 @@ export class LocalDataStore {
     scheduleLocked?: boolean;
     sourceProvider?: string | null;
     sourceExternalId?: string | null;
-  }): TaskDto {
+  }, opts?: { skipReschedule?: boolean }): TaskDto {
     this.ensureDefaultSchedule(userId);
     const db = this.read();
     if (dto.sourceProvider && dto.sourceExternalId) {
@@ -362,11 +465,14 @@ export class LocalDataStore {
       notes: null,
       inBacklog: false,
       actualMinutes: 0,
+      timerLoggedMinutes: 0,
       activeEntryId: null,
     };
     db.tasks.push(task);
     this.write(db);
-    this.rescheduleDay(userId, dto.date);
+    if (!opts?.skipReschedule) {
+      this.rescheduleDay(userId, dto.date);
+    }
     return this.toDto(
       this.read().tasks.find((t) => t.id === task.id)!,
     );
@@ -433,21 +539,40 @@ export class LocalDataStore {
     let created = 0;
     for (const t of templates) {
       const externalId = `${t.id}:${dateStr}`;
-      const before = this.read().tasks.find(
+      const db = this.read();
+      const before = db.tasks.find(
         (x) =>
           x.userId === userId &&
           x.sourceProvider === 'recurring' &&
           x.sourceExternalId === externalId,
       );
       if (before) continue;
-      this.createTask(userId, {
-        date: dateStr,
-        name: t.name,
-        estimatedMinutes: t.estimatedMinutes,
-        sourceProvider: 'recurring',
-        sourceExternalId: externalId,
-      });
+      const sameName = db.tasks.find(
+        (x) =>
+          x.userId === userId &&
+          x.date === dateStr &&
+          !x.inBacklog &&
+          x.name.trim().toLowerCase() === t.name.trim().toLowerCase(),
+      );
+      if (sameName) continue;
+      this.createTask(
+        userId,
+        {
+          date: dateStr,
+          name: t.name,
+          estimatedMinutes: t.estimatedMinutes,
+          sourceProvider: 'recurring',
+          sourceExternalId: externalId,
+        },
+        { skipReschedule: true },
+      );
       created += 1;
+    }
+    if (created) {
+      this.rescheduleDay(userId, dateStr, {
+        ignorePackingFloor: true,
+        repackUnlocked: true,
+      });
     }
     return created;
   }
@@ -458,10 +583,17 @@ export class LocalDataStore {
       const t = db.tasks.find(
         (x) => x.id === id && x.userId === userId && x.date === dateStr,
       );
-      if (t) t.order = index;
+      if (t) {
+        t.order = index;
+        // Queue reorder → full re-pack of unlocked tasks by new priority
+        if (!t.scheduleLocked && t.status !== 'completed') {
+          t.scheduledStart = null;
+          t.scheduledEnd = null;
+        }
+      }
     });
     this.write(db);
-    this.rescheduleDay(userId, dateStr);
+    this.rescheduleDay(userId, dateStr, { repackUnlocked: true });
     return this.listTasks(userId, dateStr);
   }
 
@@ -469,18 +601,31 @@ export class LocalDataStore {
     const db = this.read();
     const t = db.tasks.find((x) => x.id === taskId && x.userId === userId);
     if (!t) throw new Error('Task not found');
+
+    if (t.status === 'completed') {
+      // Reopen: keep timer-logged time only (drop estimate credit from Done).
+      t.status = 'pending';
+      const logged = Math.max(0, t.timerLoggedMinutes ?? 0);
+      t.actualMinutes = logged;
+      this.write(db);
+      if (!t.inBacklog) this.rescheduleDay(userId, t.date);
+      return this.toDto(this.read().tasks.find((x) => x.id === taskId)!);
+    }
+
     if (t.activeEntryId && t.timerStartedAt) {
       const started = new Date(t.timerStartedAt).getTime();
       const elapsed = Math.max(1, Math.round((Date.now() - started) / 60000));
-      t.actualMinutes += elapsed;
+      t.timerLoggedMinutes = Math.max(0, t.timerLoggedMinutes ?? 0) + elapsed;
+      t.actualMinutes = t.timerLoggedMinutes;
       t.activeEntryId = null;
       t.timerStartedAt = null;
     }
-    // Checkbox Done without a timer still counts planned time (proof of work)
-    if (t.actualMinutes <= 0) {
-      t.actualMinutes = Math.max(1, t.estimatedMinutes || 30);
-    }
+    // Pending actual stays timer-only. Done without a timer credits estimate
+    // only while status === completed (see toDto).
+    t.actualMinutes = Math.max(0, t.timerLoggedMinutes ?? t.actualMinutes ?? 0);
+    t.timerLoggedMinutes = t.actualMinutes;
     t.status = 'completed';
+    t.inBacklog = false;
     this.write(db);
     this.rescheduleDay(userId, t.date);
     return this.toDto(this.read().tasks.find((x) => x.id === taskId)!);
@@ -545,9 +690,14 @@ export class LocalDataStore {
         endMin,
         timeZone,
       ).toISOString();
-      t.scheduleLocked = true;
+      t.scheduleLocked = false;
       t.estimatedMinutes = endMin - startMin;
       t.inBacklog = false;
+    }
+    if (patch.estimatedMinutes !== undefined && !(startTime || endTime)) {
+      // Clear sticky times so packer places with the new duration
+      t.scheduledStart = null;
+      t.scheduledEnd = null;
     }
     this.write(db);
     if (!t.inBacklog) this.rescheduleDay(userId, t.date);
@@ -575,17 +725,20 @@ export class LocalDataStore {
     // Block timers for future civil days (UTC fallback — local store has no user TZ)
     const todayUtc = new Date().toISOString().slice(0, 10);
     if (t.date > todayUtc) throw new Error('Cannot start a timer on a future day');
-    // Stop any other running timers for this user
-    for (const other of db.tasks) {
-      if (other.userId !== userId || other.id === taskId) continue;
-      if (!other.activeEntryId || !other.timerStartedAt) continue;
-      const started = new Date(other.timerStartedAt).getTime();
-      const elapsed = Math.max(1, Math.round((Date.now() - started) / 60000));
-      other.actualMinutes += elapsed;
-      other.activeEntryId = null;
-      other.timerStartedAt = null;
-      if (other.status === 'in_progress') other.status = 'pending';
+    // One live session at a time — pause the current task first.
+    const otherLive = db.tasks.find(
+      (other) =>
+        other.userId === userId &&
+        other.id !== taskId &&
+        Boolean(other.activeEntryId),
+    );
+    if (otherLive) {
+      throw new Error('Pause the current session before starting another');
     }
+    // Strip leftover estimate credit so the clock starts at 0 / prior timer log.
+    const logged = Math.max(0, t.timerLoggedMinutes ?? 0);
+    t.timerLoggedMinutes = logged;
+    t.actualMinutes = logged;
     t.activeEntryId = `lentry_${randomBytes(6).toString('hex')}`;
     t.timerStartedAt = new Date().toISOString();
     if (t.status === 'pending') t.status = 'in_progress';
@@ -605,7 +758,8 @@ export class LocalDataStore {
       1,
       Math.round((Date.now() - started) / 60000),
     );
-    t.actualMinutes += elapsed;
+    t.timerLoggedMinutes = Math.max(0, t.timerLoggedMinutes ?? 0) + elapsed;
+    t.actualMinutes = t.timerLoggedMinutes;
     t.activeEntryId = null;
     t.timerStartedAt = null;
     if (t.status === 'in_progress') t.status = 'pending';
@@ -821,87 +975,86 @@ export class LocalDataStore {
     }
   }
 
-  private rescheduleDay(userId: string, dateStr: string) {
+  /** Public wrapper so TasksService can pack without the “now” floor (onboarding). */
+  rescheduleDayPublic(
+    userId: string,
+    dateStr: string,
+    options?: { repackUnlocked?: boolean; ignorePackingFloor?: boolean },
+  ) {
+    this.rescheduleDay(userId, dateStr, options);
+  }
+
+  private rescheduleDay(
+    userId: string,
+    dateStr: string,
+    options?: { repackUnlocked?: boolean; ignorePackingFloor?: boolean },
+  ) {
     const db = this.read();
-    const day = dateOnly(dateStr);
     const { intervals } = this.getAvailable(userId, dateStr);
-    const dayTasks = db.tasks
-      .filter((t) => t.userId === userId && t.date === dateStr && !t.inBacklog)
-      .sort((a, b) => a.order - b.order);
-
-    const completed = dayTasks.filter((t) => t.status === 'completed');
-    const locked = dayTasks.filter(
-      (t) => t.scheduleLocked && t.status !== 'completed',
-    );
-    const pending = dayTasks.filter(
-      (t) => t.status !== 'completed' && !t.scheduleLocked,
-    );
-
-    const busyFixed: Interval[] = [];
-    for (const t of [...completed, ...locked]) {
-      if (t.scheduledStart && t.scheduledEnd) {
-        const s = new Date(t.scheduledStart);
-        const e = new Date(t.scheduledEnd);
-        busyFixed.push({
-          start: s.getUTCHours() * 60 + s.getUTCMinutes(),
-          end: e.getUTCHours() * 60 + e.getUTCMinutes(),
-        });
-      }
-    }
-
-    let free = subtractIntervals(intervals, busyFixed);
-    // Don't pack unlocked tasks into the past when scheduling today.
+    let free = intervals;
     const todayLocal = formatDateOnly(new Date());
-    if (dateStr === todayLocal) {
+    let floor: number | null = null;
+    if (!options?.ignorePackingFloor && dateStr === todayLocal) {
       const now = new Date();
-      const floor = now.getHours() * 60 + now.getMinutes();
+      floor = now.getHours() * 60 + now.getMinutes();
       const coverageEnd = free.reduce((m, i) => Math.max(m, i.end), 0);
-      // Extend only after the last free slot — never re-fill lunch/break gaps.
       if (coverageEnd <= floor + 45) {
         const end = Math.min(24 * 60, floor + 4 * 60);
         const start = Math.max(floor, coverageEnd);
         if (end > start) free = [...free, { start, end }];
       }
-      free = free
-        .map((i) => ({ start: Math.max(i.start, floor), end: i.end }))
-        .filter((i) => i.end > i.start);
     }
 
-    for (const task of pending) {
-      const need = Math.max(5, task.estimatedMinutes);
-      let placed: Interval | null = null;
-      for (let i = 0; i < free.length; i++) {
-        const slot = free[i];
-        if (slot.end - slot.start >= need) {
-          placed = { start: slot.start, end: slot.start + need };
-          free = [
-            ...free.slice(0, i),
-            ...(slot.start + need < slot.end
-              ? [{ start: slot.start + need, end: slot.end }]
-              : []),
-            ...free.slice(i + 1),
-          ];
-          break;
-        }
-      }
-      if (placed) {
-        task.scheduledStart = combineDateAndMinutes(
-          day,
-          placed.start,
-        ).toISOString();
-        task.scheduledEnd = combineDateAndMinutes(day, placed.end).toISOString();
-      } else {
+    const dayTasks = db.tasks
+      .filter((t) => t.userId === userId && t.date === dateStr && !t.inBacklog)
+      .sort((a, b) => a.order - b.order);
+
+    const packed = packTasks(
+      dayTasks.map((t) => ({
+        id: t.id,
+        estimatedMinutes: t.estimatedMinutes,
+        status: t.status,
+        scheduleLocked: Boolean(t.scheduleLocked),
+        scheduledStart: t.scheduledStart ? new Date(t.scheduledStart) : null,
+        scheduledEnd: t.scheduledEnd ? new Date(t.scheduledEnd) : null,
+      })),
+      free,
+      dateStr,
+      null,
+      floor,
+      options,
+    );
+
+    for (const p of packed) {
+      const task = dayTasks.find((t) => t.id === p.id);
+      if (!task) continue;
+      const unplaced =
+        !task.scheduleLocked &&
+        task.status !== 'completed' &&
+        !p.scheduledStart;
+      if (unplaced) {
         task.inBacklog = true;
         task.scheduledStart = null;
         task.scheduledEnd = null;
         task.scheduleLocked = false;
+        continue;
       }
+      task.scheduledStart = p.scheduledStart
+        ? p.scheduledStart.toISOString()
+        : null;
+      task.scheduledEnd = p.scheduledEnd ? p.scheduledEnd.toISOString() : null;
     }
 
     this.write(db);
   }
 
   private toDto(t: LocalTask): TaskDto {
+    const timerLogged = Math.max(0, t.timerLoggedMinutes ?? 0);
+    // Pending: timer only (0 until Start/Stop). Completed with no timer: assigned time.
+    const actualMinutes =
+      t.status === 'completed' && timerLogged <= 0
+        ? Math.max(1, t.estimatedMinutes || 30)
+        : timerLogged;
     return {
       id: t.id,
       date: t.date,
@@ -911,7 +1064,7 @@ export class LocalDataStore {
       order: t.order,
       scheduledStart: t.scheduledStart,
       scheduledEnd: t.scheduledEnd,
-      actualMinutes: t.actualMinutes,
+      actualMinutes,
       activeEntryId: t.activeEntryId,
       timerStartedAt: t.activeEntryId ? t.timerStartedAt ?? null : null,
       scheduleLocked: Boolean(t.scheduleLocked),

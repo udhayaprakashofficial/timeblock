@@ -34,10 +34,10 @@ const WEEKDAYS: Array<{ value: Weekday; label: string }> = [
 ];
 
 const SAMPLE_PLANS: PlanDraft[] = [
-  { id: 'sample-1', name: 'Plan the Day', minutes: 60, recurring: true },
-  { id: 'sample-2', name: 'Reply to emails', minutes: 60, recurring: true },
-  { id: 'sample-3', name: 'Finish Project Report', minutes: 60, recurring: true },
-  { id: 'sample-4', name: 'Deep work session', minutes: 80, recurring: true },
+  { id: 'sample-1', name: 'Plan the Day', minutes: 60, recurring: false },
+  { id: 'sample-2', name: 'Reply to emails', minutes: 60, recurring: false },
+  { id: 'sample-3', name: 'Finish Project Report', minutes: 60, recurring: false },
+  { id: 'sample-4', name: 'Deep work session', minutes: 80, recurring: false },
 ];
 
 function toHm(value: string, fallback = '09:00'): string {
@@ -678,21 +678,60 @@ export function OnboardingFlow({
                   />
                   <input
                     className="onboard-plan-mins"
-                    type="number"
-                    min={5}
-                    max={480}
-                    step={5}
-                    value={p.minutes}
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={String(p.minutes)}
                     onChange={(e) => {
+                      const digits = e.target.value.replace(/\D/g, '');
+                      const n = digits ? Number(digits) : 0;
                       setPlans((prev) =>
                         prev.map((row) =>
                           row.id === p.id
                             ? {
                                 ...row,
-                                minutes: Math.max(
-                                  5,
-                                  Number(e.target.value) || 30,
-                                ),
+                                minutes: digits
+                                  ? Math.max(5, Math.min(480, n))
+                                  : 5,
+                              }
+                            : row,
+                        ),
+                      );
+                    }}
+                    onKeyDown={(e) => {
+                      if (
+                        e.ctrlKey ||
+                        e.metaKey ||
+                        e.altKey ||
+                        e.key === 'Backspace' ||
+                        e.key === 'Delete' ||
+                        e.key === 'Tab' ||
+                        e.key === 'Enter' ||
+                        e.key === 'Escape' ||
+                        e.key === 'ArrowLeft' ||
+                        e.key === 'ArrowRight' ||
+                        e.key === 'Home' ||
+                        e.key === 'End'
+                      ) {
+                        return;
+                      }
+                      if (!/^\d$/.test(e.key)) e.preventDefault();
+                    }}
+                    onPaste={(e) => {
+                      e.preventDefault();
+                      const digits = (e.clipboardData.getData('text') || '').replace(
+                        /\D/g,
+                        '',
+                      );
+                      const n = digits ? Number(digits) : 30;
+                      setPlans((prev) =>
+                        prev.map((row) =>
+                          row.id === p.id
+                            ? {
+                                ...row,
+                                minutes: Math.max(5, Math.min(480, n || 30)),
                               }
                             : row,
                         ),
@@ -740,7 +779,7 @@ export function OnboardingFlow({
                         id: `custom-${Date.now()}`,
                         name: '',
                         minutes: 30,
-                        recurring: true,
+                        recurring: false,
                       },
                     ])
                   }

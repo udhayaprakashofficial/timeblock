@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   useCallback,
   useEffect,
@@ -241,6 +241,11 @@ function RailAvatar({ name, userId }: { name: string; userId: string }) {
   const items = [
     { href: '/settings', label: 'Profile', external: false },
     { href: '/settings?panel=account', label: 'Account', external: false },
+    {
+      href: '/settings?panel=subscription',
+      label: 'Subscription',
+      external: false,
+    },
     { href: '/settings?panel=help', label: 'Help', external: false },
     { href: FEEDBACK_URL, label: 'Feedback', external: true },
   ] as const;
@@ -606,16 +611,6 @@ function Shell({
             <span className="nav-label">Badges</span>
           </NavItem>
           <NavItem
-            href="/subscription"
-            title={HINTS['nav.subscription'].title}
-            tip={HINTS['nav.subscription'].body}
-          >
-            <span className="nav-icon" aria-hidden>
-              ◆
-            </span>
-            <span className="nav-label">Subscription</span>
-          </NavItem>
-          <NavItem
             href="/settings"
             title={HINTS['nav.settings'].title}
             tip={HINTS['nav.settings'].body}
@@ -725,12 +720,16 @@ export function App({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const isLanding = pathname === '/';
   const isLogin = pathname === '/login';
   const isOnboarding = pathname.startsWith('/onboarding');
   const isSharedTimesheet = pathname.startsWith('/share/');
   const isPricing = pathname.startsWith('/pricing');
-  const isSubscription = pathname.startsWith('/subscription');
+  const isSubscription =
+    pathname.startsWith('/subscription') ||
+    (pathname.startsWith('/settings') &&
+      searchParams.get('panel') === 'subscription');
   const isPublic =
     isLanding || isLogin || isSharedTimesheet || isPricing;
   const [sessionUser, setSessionUser] = useState<UserDto | null>(null);
@@ -921,7 +920,7 @@ export function App({ children }: { children: ReactNode }) {
     }
     // Finished users: leave landing/login. Never auto-leave /onboarding —
     // only Build day / Skip navigates via onFinished → handleSignedIn.
-    // Pricing stays reachable while signed in (Subscription sidebar).
+    // Pricing stays reachable while signed in (Settings → Subscription).
     if (!needsOnboarding(user) && (isLanding || isLogin)) {
       router.replace('/schedule');
     }

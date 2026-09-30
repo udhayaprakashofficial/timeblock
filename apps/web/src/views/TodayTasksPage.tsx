@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { StatsOverviewDto, TaskDto } from '@timeblock/shared-types';
-import { api, formatTimeRange, parseInstant, todayISO } from '../api';
+import { api, parseInstant, todayISO } from '../api';
 import { MeetSourceBadge } from '../components/MeetSourceBadge';
 
 type Filter = 'all' | 'open' | 'done';
@@ -207,20 +207,15 @@ export function TodayTasksPage({ timeZone }: { timeZone?: string | null }) {
                   >
                     <div className="tw-task-copy">
                       <span className="tw-task-time">
-                        {task.scheduledStart
-                          ? formatTimeRange(
-                              task.scheduledStart,
-                              task.scheduledEnd,
-                              timeZone,
-                            )
-                          : 'Unscheduled'}
+                        {task.estimatedMinutes}m
                       </span>
                       <strong>{task.name}</strong>
                       <span className="tw-task-meta">
-                        {task.estimatedMinutes}m est
                         {task.actualMinutes > 0
-                          ? ` · ${task.actualMinutes}m actual`
-                          : ''}
+                          ? `${task.actualMinutes}m actual`
+                          : task.scheduledStart
+                            ? 'Scheduled'
+                            : 'Unscheduled'}
                       </span>
                     </div>
                     {running || done || !locked ? (
@@ -388,9 +383,8 @@ function TaskDetail({
       <div className="tw-detail-head">
         <div>
           <p className="tw-detail-time">
-            {task.scheduledStart
-              ? formatTimeRange(task.scheduledStart, task.scheduledEnd, timeZone)
-              : 'Unscheduled'}
+            {task.estimatedMinutes}m
+            {task.scheduledStart ? '' : ' · Unscheduled'}
           </p>
           <h3>{task.name}</h3>
         </div>
@@ -504,7 +498,7 @@ function TaskDetail({
               disabled={busy}
               onClick={() => complete.mutate()}
             >
-              Mark done
+              {done ? 'Reopen' : 'Mark done'}
             </button>
             {!locked && (
               <button

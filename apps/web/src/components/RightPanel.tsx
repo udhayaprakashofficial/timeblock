@@ -1,13 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { StatsOverviewDto, TaskDto, UserDto } from '@timeblock/shared-types';
-import { api, formatTimeRange, parseInstant, todayISO } from '../api';
+import { api, parseInstant, todayISO } from '../api';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import {
-  completeTaskOptimistic,
   fetchTasks,
+  queueCompleteTask,
   startTimerOptimistic,
   tasksActions,
 } from '../store/tasksSlice';
@@ -24,6 +25,19 @@ import {
 import type { WeeklyReportDto } from '@timeblock/shared-types';
 
 const EMPTY_PANEL_TASKS: TaskDto[] = [];
+
+type FocusBand = 'low' | 'balanced' | 'busy' | 'packed';
+
+/** Short status for the Focus widget — no long recommendations. */
+function focusScheduleStatus(loadPct: number): {
+  band: FocusBand;
+  status: string;
+} {
+  if (loadPct < 40) return { band: 'low', status: 'Too much open time' };
+  if (loadPct <= 65) return { band: 'balanced', status: 'Well balanced' };
+  if (loadPct <= 85) return { band: 'busy', status: 'A little packed' };
+  return { band: 'packed', status: 'Very packed' };
+}
 
 function minutesOf(iso: string, timeZone?: string | null) {
   const d = parseInstant(iso);
@@ -98,10 +112,20 @@ export function RightPanel({ user }: { user: UserDto }) {
   const date = todayISO(user.timezone);
   const qc = useQueryClient();
   const dispatch = useAppDispatch();
+  const pathname = usePathname();
+  const router = useRouter();
   const [tick, setTick] = useState(0);
   const [mutedUntil, setMutedUntil] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+
+  const viewSchedule = () => {
+    if (pathname.startsWith('/schedule')) {
+      window.dispatchEvent(new Event('tb:view-schedule'));
+      return;
+    }
+    router.push('/schedule');
+  };
 
   const MUTE_KEY = 'tb.coachMuteUntil';
 
@@ -182,6 +206,7 @@ export function RightPanel({ user }: { user: UserDto }) {
     0,
     Math.min(100, Math.round(100 - Math.abs(loadPct - 55) * 1.2)),
   );
+  const focusCopy = focusScheduleStatus(loadPct);
 
   // Bar segments: logged deep / logged meet / still planned / open capacity
   const openMins = Math.max(
@@ -342,13 +367,7 @@ export function RightPanel({ user }: { user: UserDto }) {
             {current.mode === 'now' ? 'Now' : 'Up next'}
           </div>
           <strong>{current.task.name}</strong>
-          <span>
-            {formatTimeRange(
-              current.task.scheduledStart,
-              current.task.scheduledEnd,
-              user.timezone,
-            )}
-          </span>
+          <span>{current.task.estimatedMinutes}m</span>
           {current.task.status !== 'completed' && (
             <div className="side-now-actions">
               <button
@@ -376,10 +395,11 @@ export function RightPanel({ user }: { user: UserDto }) {
                 onClick={() => {
                   const t = current.task!;
                   setBusy(true);
-                  dispatch(tasksActions.optimisticComplete({ taskId: t.id }));
-                  void dispatch(
-                    completeTaskOptimistic({ taskId: t.id, date }),
-                  ).finally(() => {
+                  void queueCompleteTask(dispatch, {
+                    taskId: t.id,
+                    date,
+                    currentlyDone: t.status === 'completed',
+                  }).finally(() => {
                     setBusy(false);
                     afterMutation();
                   });
@@ -392,20 +412,46 @@ export function RightPanel({ user }: { user: UserDto }) {
         </div>
       )}
 
-      <div className="side-card focus-card">
+      <div
+        className="side-card focus-card"
+        data-focus-band={focusCopy.band}
+      >
         <div className="side-card-label">
           Focus <HintMark id="side.focus" placement="left" />
         </div>
         <div
           className="focus-ring"
           style={{ ['--pct' as string]: focusScore }}
+          role="img"
+          aria-label={`Focus score ${focusScore} out of 100. ${focusCopy.status}. ${loadPct}% scheduled.`}
         >
           <strong>{focusScore}</strong>
           <span>Focus</span>
         </div>
-        <p className="focus-blurb">
-          {loadPct}% of work hours booked. Highest near 55%.
-        </p>
+        <p className="focus-status">{focusCopy.status}</p>
+        <p className="focus-metric">{loadPct}% scheduled</p>
+        <div
+          className="focus-health"
+          role="img"
+          aria-label={`Scheduled work: ${loadPct}% of work hours`}
+        >
+          <div className="focus-health-track">
+            <span className="focus-health-zone is-low" />
+            <span className="focus-health-zone is-balanced" />
+            <span className="focus-health-zone is-packed" />
+            <i
+              className="focus-health-marker"
+              style={{ left: `${Math.max(2, Math.min(98, loadPct))}%` }}
+            />
+          </div>
+        </div>
+        <button
+          type="button"
+          className="focus-schedule-link"
+          onClick={viewSchedule}
+        >
+          View schedule →
+        </button>
       </div>
 
       <div className="side-card">

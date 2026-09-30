@@ -1,11 +1,14 @@
 'use client';
 
-import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UserDto } from '@timeblock/shared-types';
 import { api } from '../api';
-import { buildProCheckoutUrl, catalogFromApi } from '../lib/billing';
+import {
+  buildAnnualWelcomeCheckoutUrl,
+  buildProCheckoutUrl,
+  catalogFromApi,
+} from '../lib/billing';
 import './subscription.css';
 
 type InvoiceRow = {
@@ -34,6 +37,20 @@ type BillingSummary = {
   apiKeyConfigured?: boolean;
 };
 
+const PRO_HIGHLIGHTS = [
+  'Everything in Free',
+  'AI work summaries',
+  'Searchable work history',
+  'Priority support',
+];
+
+const ANNUAL_HIGHLIGHTS = [
+  'Everything in Pro for a year',
+  'Lock in $12/year',
+  'AI features the day they ship',
+  'Founding member list',
+];
+
 function formatSince(iso: string | null | undefined): string {
   if (!iso) return '—';
   try {
@@ -53,6 +70,7 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
   const [err, setErr] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const summary = useQuery({
     queryKey: ['billing-summary'],
@@ -84,7 +102,6 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
     const subscriptionId =
       params.get('subscription_id') || params.get('subscriptionId') || '';
 
-    // Subscriptions return status=active + subscription_id (not pay_ + succeeded)
     const okStatus =
       status === 'succeeded' || status === 'success' || status === 'active';
     if (!okStatus) return;
@@ -95,7 +112,7 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
       /^sub_[\w-]+$/i.test(paymentId);
     if (!idIsPay && !idIsSub) {
       setErr(
-        'Checkout returned without a payment or subscription id. If you were charged, wait a minute and refresh, or contact support with your Dodo receipt.',
+        'Checkout returned without a payment or subscription id. If you were charged, wait a minute and refresh, or contact support with your receipt.',
       );
       return;
     }
@@ -154,32 +171,71 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
   const plan = summary.data?.plan ?? user.plan ?? 'free';
   const isPro = plan === 'pro';
   const isPending =
-    summary.data?.isPending ??
-    (isPro && user.planStatus !== 'active');
+    summary.data?.isPending ?? (isPro && user.planStatus !== 'active');
   const isActive =
-    summary.data?.isActive ??
-    (isPro && user.planStatus === 'active');
+    summary.data?.isActive ?? (isPro && user.planStatus === 'active');
   const statusLabel =
     summary.data?.statusLabel ??
     (isActive
       ? 'Active'
       : isPro
         ? 'Paid — waiting for AI go-live'
-        : 'No paid subscription');
+        : 'No active subscription');
   const planLabel = summary.data?.planLabel ?? (isPro ? 'Pro' : 'Free');
   const planTier = summary.data?.planTier;
   const isAnnualWelcome = planTier === 'annual_welcome';
   const invoices = summary.data?.invoices ?? [];
 
-  const upgradeHref = useMemo(
-    () =>
-      buildProCheckoutUrl(billingCatalog, {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-      }),
-    [billingCatalog, user.id, user.email, user.name],
+  const priceDisplay = !isPro
+    ? { amount: '$0', note: 'Forever' }
+    : isAnnualWelcome
+      ? { amount: '$12', note: '/ year' }
+      : { amount: '$10', note: '/ month' };
+
+  const badgeLabel = isActive ? 'Active' : isPro ? 'Paid' : 'Free';
+  const badgeTone = isActive ? 'is-pro' : isPro ? 'is-pending' : 'is-free';
+
+  const checkoutCustomer = useMemo(
+    () => ({ id: user.id, email: user.email, name: user.name }),
+    [user.id, user.email, user.name],
   );
+
+  const proCheckoutHref = useMemo(
+    () => buildProCheckoutUrl(billingCatalog, checkoutCustomer),
+    [billingCatalog, checkoutCustomer],
+  );
+
+  const annualCheckoutHref = useMemo(
+    () => buildAnnualWelcomeCheckoutUrl(billingCatalog, checkoutCustomer),
+    [billingCatalog, checkoutCustomer],
+  );
+
+  const refreshPaymentStatus = () => {
+    setSyncing(true);
+    setErr(null);
+    void api
+      .post<{
+        synced?: boolean;
+        plan?: string;
+        user?: UserDto;
+      }>('/api/billing/sync')
+      .then(async (result) => {
+        if (result.user) qc.setQueryData(['me'], result.user);
+        await qc.invalidateQueries({ queryKey: ['billing-summary'] });
+        await qc.invalidateQueries({ queryKey: ['me'] });
+        if (result.synced || result.plan === 'pro') {
+          setBanner('Payment found — Pro is locked in for your account.');
+        } else {
+          setErr('No successful payment found for this email yet.');
+        }
+      })
+      .catch((e) => {
+        setErr(
+          e instanceof Error ? e.message : 'Could not refresh payment status',
+        );
+      })
+      .finally(() => setSyncing(false));
+  };
 
   const onDownload = async (paymentId: string) => {
     setErr(null);
@@ -218,145 +274,130 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
 
   return (
     <div className="sub-page">
-      <header className="sub-head">
-        <p className="sub-kicker">Subscription</p>
-        <h1>Your plan</h1>
-        <p className="sub-lede">
-          Current status for this account — plan, activation, and invoices.
-        </p>
-      </header>
-
       {banner ? (
         <p className="sub-banner" role="status">
           {banner}
         </p>
       ) : null}
 
-      {isPending ? (
-        <section className="sub-card sub-congrats" aria-label="Congratulations">
-          <p className="sub-label">Congratulations</p>
-          <p className="sub-plan-name">
-            You’re locked into {planLabel}
-          </p>
-          <p className="sub-note">
-            Thanks for supporting Cupkey. AI features aren’t live yet — paid
-            access activates the day those features ship.
-            {isAnnualWelcome
-              ? ' Your $12/year welcome rate is locked; billing year starts on activation day, not today.'
-              : ' Your subscription countdown starts on that activation day, not today.'}
-          </p>
-        </section>
-      ) : null}
-
-      <section className="sub-card" aria-label="Current plan">
-        <div className="sub-card-row">
+      <section className="sub-current" aria-label="Current plan">
+        <div className="sub-current-top">
           <div>
             <p className="sub-label">Current plan</p>
-            <p className="sub-plan-name">{planLabel}</p>
+            <h2 className="sub-plan-name">{planLabel}</h2>
           </div>
-          <span
-            className={`sub-badge${
-              isActive ? ' is-pro' : isPro ? ' is-pending' : ' is-free'
-            }`}
-          >
-            {isActive ? 'Active' : isPro ? 'Paid' : 'Free'}
-          </span>
+          <span className={`sub-badge ${badgeTone}`}>{badgeLabel}</span>
+        </div>
+
+        <div className="sub-current-price">
+          <strong>{priceDisplay.amount}</strong>
+          <span>{priceDisplay.note}</span>
         </div>
 
         <dl className="sub-meta">
           <div>
-            <dt>Status</dt>
+            <dt>Billing status</dt>
             <dd>{confirming ? 'Confirming…' : statusLabel}</dd>
           </div>
+          {isPro ? (
+            <div>
+              <dt>{isActive ? 'Cycle ends' : 'Paid'}</dt>
+              <dd>
+                {isActive
+                  ? `${formatSince(summary.data?.periodEnd ?? null)}${
+                      summary.data?.daysRemaining != null
+                        ? ` · ${summary.data.daysRemaining}d left`
+                        : ''
+                    }`
+                  : formatSince(summary.data?.paidAt ?? summary.data?.since)}
+              </dd>
+            </div>
+          ) : null}
           <div>
-            <dt>Paid</dt>
-            <dd>{formatSince(summary.data?.paidAt ?? summary.data?.since)}</dd>
-          </div>
-          <div>
-            <dt>{isActive ? 'Cycle ends' : 'Account'}</dt>
-            <dd>
-              {isActive
-                ? `${formatSince(summary.data?.periodEnd ?? null)}${
-                    summary.data?.daysRemaining != null
-                      ? ` · ${summary.data.daysRemaining}d left`
-                      : ''
-                  }`
-                : user.email}
-            </dd>
+            <dt>Account</dt>
+            <dd>{user.email}</dd>
           </div>
         </dl>
 
-        {!isPro ? (
-          <div className="sub-actions">
-            <Link href="/pricing" className="sub-btn is-primary">
-              View plans & upgrade
-            </Link>
-            <a
-              href={upgradeHref}
-              className="sub-btn is-outline"
-              rel="noopener noreferrer"
-            >
-              Pro checkout — $10/mo
-            </a>
-            {summary.data?.apiKeyConfigured ? (
-              <button
-                type="button"
-                className="sub-btn is-outline"
-                disabled={confirming}
-                onClick={() => {
-                  setConfirming(true);
-                  setErr(null);
-                  void api
-                    .post<{
-                      synced?: boolean;
-                      plan?: string;
-                      user?: UserDto;
-                    }>('/api/billing/sync')
-                    .then(async (result) => {
-                      if (result.user) qc.setQueryData(['me'], result.user);
-                      await qc.invalidateQueries({
-                        queryKey: ['billing-summary'],
-                      });
-                      await qc.invalidateQueries({ queryKey: ['me'] });
-                      if (result.synced || result.plan === 'pro') {
-                        setBanner(
-                          'Payment found — Pro is locked in for your account.',
-                        );
-                      } else {
-                        setErr(
-                          'No successful Dodo payment found for this email yet.',
-                        );
-                      }
-                    })
-                    .catch((e) => {
-                      setErr(
-                        e instanceof Error
-                          ? e.message
-                          : 'Could not sync payment from Dodo',
-                      );
-                    })
-                    .finally(() => setConfirming(false));
-                }}
-              >
-                {confirming ? 'Checking Dodo…' : 'I paid — refresh status'}
-              </button>
-            ) : null}
-          </div>
-        ) : isActive ? (
+        {isPending ? (
           <p className="sub-note">
-            Pro is live. Subscription period started{' '}
-            {formatSince(summary.data?.activatedAt)}. Next cycle ends{' '}
-            {formatSince(summary.data?.periodEnd)}.
+            Billing starts when AI features go live. You’ll get an email when{' '}
+            {planLabel} activates.
           </p>
-        ) : (
-          <p className="sub-note">
-            You’ll get an email the moment we activate {planLabel} when AI
-            features go live.
-          </p>
-        )}
+        ) : null}
       </section>
 
-      {isPro ? (
+      {!isPro ? (
+        <section className="sub-upgrade" aria-label="Upgrade plans">
+          <div className="sub-upgrade-head">
+            <h3>Upgrade your plan</h3>
+            <p>Choose a plan that fits your workflow.</p>
+          </div>
+
+          <div className="sub-plan-grid">
+            <article className="sub-plan-card">
+              <div className="sub-plan-card-head">
+                <h4>Pro</h4>
+                <span className="sub-plan-pill">Recommended</span>
+              </div>
+              <p className="sub-plan-price">
+                $10<span> / month</span>
+              </p>
+              <p className="sub-plan-blurb">
+                Lock the price now. Billing starts when AI ships.
+              </p>
+              <ul>
+                {PRO_HIGHLIGHTS.map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+              </ul>
+              <a
+                href={proCheckoutHref}
+                className="sub-btn is-primary"
+                rel="noopener noreferrer"
+              >
+                Upgrade to Pro
+              </a>
+            </article>
+
+            <article className="sub-plan-card is-accent">
+              <div className="sub-plan-card-head">
+                <h4>Annual welcome</h4>
+                <span className="sub-plan-pill is-solid">Limited</span>
+              </div>
+              <p className="sub-plan-price">
+                $12<span> / year</span>
+              </p>
+              <p className="sub-plan-blurb">
+                Founding rate for early supporters.
+              </p>
+              <ul>
+                {ANNUAL_HIGHLIGHTS.map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+              </ul>
+              <a
+                href={annualCheckoutHref}
+                className="sub-btn is-primary"
+                rel="noopener noreferrer"
+              >
+                Get Annual Plan
+              </a>
+            </article>
+          </div>
+
+          {summary.data?.apiKeyConfigured ? (
+            <button
+              type="button"
+              className="sub-sync-link"
+              disabled={syncing || confirming}
+              onClick={refreshPaymentStatus}
+            >
+              {syncing ? 'Checking payment…' : 'Already paid? Refresh status'}
+            </button>
+          ) : null}
+        </section>
+      ) : (
         <section className="sub-card" aria-label="Invoices">
           <div className="sub-card-row">
             <div>
@@ -375,26 +416,14 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
             </button>
           </div>
 
-          {err ? (
-            <p className="sub-error" role="alert">
-              {err}
-            </p>
-          ) : null}
-
           {summary.isLoading ? (
             <p className="sub-empty">Loading invoices…</p>
           ) : summary.data?.invoicesAvailable === false ? (
             <p className="sub-empty">
-              Invoices come from Dodo Payments. Add{' '}
-              <code>DODO_PAYMENTS_API_KEY</code> on the server (Dodo → Developer
-              → API), restart, then Refresh.
+              Invoices will appear here once billing is configured.
             </p>
           ) : invoices.length === 0 ? (
-            <p className="sub-empty">
-              No Dodo invoices found yet for this account. If you just paid,
-              wait a minute and hit Refresh — or confirm checkout returned a{' '}
-              <code>payment_id</code>.
-            </p>
+            <p className="sub-empty">No invoices yet for this account.</p>
           ) : (
             <ul className="sub-invoice-list">
               {invoices.map((inv) => (
@@ -414,14 +443,16 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
                   >
                     {downloading === inv.paymentId
                       ? 'Downloading…'
-                      : 'Download invoice'}
+                      : 'Download'}
                   </button>
                 </li>
               ))}
             </ul>
           )}
         </section>
-      ) : err ? (
+      )}
+
+      {err ? (
         <p className="sub-error" role="alert">
           {err}
         </p>

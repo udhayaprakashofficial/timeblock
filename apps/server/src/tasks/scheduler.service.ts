@@ -10,6 +10,7 @@ import {
   minutesInTimeZone,
   normalizeTimeZone,
   parseHm,
+  rangesOverlap,
   subtractIntervals,
   type Interval,
 } from '../common/time.util';
@@ -35,7 +36,36 @@ function clipFreeAfter(
     .filter((i) => i.end > i.start);
 }
 
-/** Pure packer: place unlocked tasks into contiguous free slots; keep locked Meet/calendar tasks fixed. */
+function carveFree(free: Interval[], placed: Interval): Interval[] {
+  const next: Interval[] = [];
+  for (const slot of free) {
+    if (placed.end <= slot.start || placed.start >= slot.end) {
+      next.push(slot);
+      continue;
+    }
+    if (slot.start < placed.start) {
+      next.push({ start: slot.start, end: placed.start });
+    }
+    if (placed.end < slot.end) {
+      next.push({ start: placed.end, end: slot.end });
+    }
+  }
+  return next.filter((s) => s.end > s.start);
+}
+
+/** True when [start, end) sits fully inside one free interval. */
+function fitsInFree(free: Interval[], start: number, end: number): boolean {
+  if (!(end > start)) return false;
+  return free.some((slot) => start >= slot.start && end <= slot.end);
+}
+
+/**
+ * Pure packer: place unlocked tasks into free slots without overlap.
+ * - Locked Meet/calendar tasks stay fixed.
+ * - Completed tasks keep their windows as busy.
+ * - Unlocked tasks with a still-valid slot keep it (sticky) unless `repackUnlocked`.
+ * - Everything else packs into the earliest slot that fits `estimatedMinutes`.
+ */
 export function packTasks(
   tasks: PackableTask[],
   intervals: Interval[],
@@ -43,7 +73,9 @@ export function packTasks(
   timeZone?: string | null,
   /** When set (typically “now” for today), unlocked tasks pack only into slots at/after this minute. */
   notBeforeMinutes?: number | null,
+  options?: { repackUnlocked?: boolean },
 ): Array<{ id: string; scheduledStart: Date | null; scheduledEnd: Date | null }> {
+  const repackUnlocked = Boolean(options?.repackUnlocked);
   const locked = tasks.filter(
     (t) => t.scheduleLocked && t.status !== 'completed',
   );
@@ -65,10 +97,11 @@ export function packTasks(
     }
   }
 
-  let free = clipFreeAfter(
-    subtractIntervals(intervals, busyFixed),
-    notBeforeMinutes,
-  );
+  // Full-day free (work hours − breaks/meetings/locked). Sticky keeps existing
+  // morning slots even when “now” has moved past them — otherwise onboarding
+  // packs from 09:00 then the next reschedule throws everything after lunch.
+  const dayFree = subtractIntervals(intervals, busyFixed);
+  let free = clipFreeAfter(dayFree, notBeforeMinutes);
   const result: Array<{
     id: string;
     scheduledStart: Date | null;
@@ -85,25 +118,58 @@ export function packTasks(
     });
   }
 
+  const needsPack: PackableTask[] = [];
+  const placedUnlocked: Interval[] = [];
+
   for (const task of pending) {
-    const need = Math.max(5, task.estimatedMinutes);
+    const need = Math.max(5, Math.round(Number(task.estimatedMinutes) || 30));
+    if (
+      !repackUnlocked &&
+      task.scheduledStart &&
+      task.scheduledEnd
+    ) {
+      const existing = eventToMinutesOnDay(
+        day,
+        new Date(task.scheduledStart),
+        new Date(task.scheduledEnd),
+        timeZone,
+      );
+      if (existing) {
+        const start = existing.start;
+        const end = start + need;
+        const overlapsSibling = placedUnlocked.some((p) =>
+          rangesOverlap(start, end, p.start, p.end),
+        );
+        // Validate against the full day, not the “now”-clipped free window.
+        if (!overlapsSibling && fitsInFree(dayFree, start, end)) {
+          const placed = { start, end };
+          free = carveFree(free, placed);
+          placedUnlocked.push(placed);
+          result.push({
+            id: task.id,
+            scheduledStart: combineDateAndMinutes(day, placed.start, timeZone),
+            scheduledEnd: combineDateAndMinutes(day, placed.end, timeZone),
+          });
+          continue;
+        }
+      }
+    }
+    needsPack.push(task);
+  }
+
+  for (const task of needsPack) {
+    const need = Math.max(5, Math.round(Number(task.estimatedMinutes) || 30));
     let placed: Interval | null = null;
     for (let i = 0; i < free.length; i++) {
       const slot = free[i];
       if (slot.end - slot.start >= need) {
         placed = { start: slot.start, end: slot.start + need };
-        free = [
-          ...free.slice(0, i),
-          ...(slot.start + need < slot.end
-            ? [{ start: slot.start + need, end: slot.end }]
-            : []),
-          ...free.slice(i + 1),
-        ];
+        free = carveFree(free, placed);
         break;
       }
     }
 
-    // Today after hours: pin near “now”, but only inside a free slot
+    // Today after hours: place near “now”, but only inside a free slot
     // (never over lunch/breaks or locked meetings).
     if (
       !placed &&
@@ -116,16 +182,12 @@ export function packTasks(
         const start = Math.max(slot.start, floor);
         if (slot.end - start < need) continue;
         placed = { start, end: start + need };
-        free = [
-          ...free.slice(0, i),
-          ...(placed.end < slot.end
-            ? [{ start: placed.end, end: slot.end }]
-            : []),
-          ...free.slice(i + 1),
-        ];
+        free = carveFree(free, placed);
         break;
       }
     }
+
+    if (placed) placedUnlocked.push(placed);
 
     result.push({
       id: task.id,
@@ -136,6 +198,47 @@ export function packTasks(
         ? combineDateAndMinutes(day, placed.end, timeZone)
         : null,
     });
+  }
+
+  // Safety: if any unlocked results still overlap, force a full re-pack once.
+  if (!repackUnlocked) {
+    const unlockedPlaced = result.filter((r) => {
+      const src = tasks.find((t) => t.id === r.id);
+      return (
+        src &&
+        !src.scheduleLocked &&
+        src.status !== 'completed' &&
+        r.scheduledStart &&
+        r.scheduledEnd
+      );
+    });
+    let overlap = false;
+    for (let i = 0; i < unlockedPlaced.length && !overlap; i++) {
+      const a = eventToMinutesOnDay(
+        day,
+        unlockedPlaced[i].scheduledStart!,
+        unlockedPlaced[i].scheduledEnd!,
+        timeZone,
+      );
+      if (!a) continue;
+      for (let j = i + 1; j < unlockedPlaced.length; j++) {
+        const b = eventToMinutesOnDay(
+          day,
+          unlockedPlaced[j].scheduledStart!,
+          unlockedPlaced[j].scheduledEnd!,
+          timeZone,
+        );
+        if (b && rangesOverlap(a.start, a.end, b.start, b.end)) {
+          overlap = true;
+          break;
+        }
+      }
+    }
+    if (overlap) {
+      return packTasks(tasks, intervals, day, timeZone, notBeforeMinutes, {
+        repackUnlocked: true,
+      });
+    }
   }
 
   return result;
@@ -181,9 +284,13 @@ export class SchedulerService {
     }
   }
 
-  async rescheduleDay(userId: string, dateStr: string) {
+  async rescheduleDay(
+    userId: string,
+    dateStr: string,
+    options?: { repackUnlocked?: boolean; ignorePackingFloor?: boolean },
+  ) {
     try {
-      await this.reschedulePrisma(userId, dateStr);
+      await this.reschedulePrisma(userId, dateStr, options);
       return;
     } catch (err) {
       this.logger.warn(
@@ -193,15 +300,19 @@ export class SchedulerService {
       );
     }
     if (this.supabase?.isConfigured()) {
-      await this.rescheduleRest(userId, dateStr);
+      await this.rescheduleRest(userId, dateStr, options);
     }
   }
 
   /** Force REST packing (used after REST task create/reorder). */
-  async rescheduleDayPreferRest(userId: string, dateStr: string) {
+  async rescheduleDayPreferRest(
+    userId: string,
+    dateStr: string,
+    options?: { repackUnlocked?: boolean; ignorePackingFloor?: boolean },
+  ) {
     if (this.supabase?.isConfigured()) {
       try {
-        await this.rescheduleRest(userId, dateStr);
+        await this.rescheduleRest(userId, dateStr, options);
         return;
       } catch (err) {
         this.logger.warn(
@@ -209,7 +320,7 @@ export class SchedulerService {
         );
       }
     }
-    await this.rescheduleDay(userId, dateStr);
+    await this.rescheduleDay(userId, dateStr, options);
   }
 
   private async getAvailablePrisma(userId: string, dateStr: string) {
@@ -348,17 +459,30 @@ export class SchedulerService {
     return [...intervals, { start, end }];
   }
 
-  private async reschedulePrisma(userId: string, dateStr: string) {
+  private async reschedulePrisma(
+    userId: string,
+    dateStr: string,
+    options?: { repackUnlocked?: boolean; ignorePackingFloor?: boolean },
+  ) {
     const day = dateOnly(dateStr);
     const timeZone = await this.resolveTimeZone(userId);
-    const floor = this.packingFloorMinutes(dateStr, timeZone);
+    const floor = options?.ignorePackingFloor
+      ? null
+      : this.packingFloorMinutes(dateStr, timeZone);
     const available = await this.getAvailablePrisma(userId, dateStr);
     const intervals = this.ensureEveningPackWindow(available.intervals, floor);
     const tasks = await this.prisma.task.findMany({
       where: { userId, date: day, inBacklog: false },
       orderBy: { order: 'asc' },
     });
-    const packed = packTasks(tasks, intervals, dateStr, timeZone, floor);
+    const packed = packTasks(
+      tasks,
+      intervals,
+      dateStr,
+      timeZone,
+      floor,
+      options,
+    );
     for (const p of packed) {
       const task = tasks.find((t) => t.id === p.id);
       const unplaced =
@@ -388,15 +512,28 @@ export class SchedulerService {
     }
   }
 
-  private async rescheduleRest(userId: string, dateStr: string) {
+  private async rescheduleRest(
+    userId: string,
+    dateStr: string,
+    options?: { repackUnlocked?: boolean; ignorePackingFloor?: boolean },
+  ) {
     const timeZone = await this.resolveTimeZone(userId);
-    const floor = this.packingFloorMinutes(dateStr, timeZone);
+    const floor = options?.ignorePackingFloor
+      ? null
+      : this.packingFloorMinutes(dateStr, timeZone);
     const available = await this.getAvailableRest(userId, dateStr);
     const intervals = this.ensureEveningPackWindow(available.intervals, floor);
     const tasks = (await this.supabase!.listTasks(userId, dateStr)).filter(
       (t) => !t.inBacklog,
     );
-    const packed = packTasks(tasks, intervals, dateStr, timeZone, floor);
+    const packed = packTasks(
+      tasks,
+      intervals,
+      dateStr,
+      timeZone,
+      floor,
+      options,
+    );
     const now = new Date().toISOString();
     for (const p of packed) {
       const task = tasks.find((t) => t.id === p.id);

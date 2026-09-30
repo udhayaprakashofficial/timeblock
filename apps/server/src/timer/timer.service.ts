@@ -67,6 +67,11 @@ export class TimerService {
         if (msg.includes('already running')) {
           throw new BadRequestException('Timer already running for this task');
         }
+        if (msg.includes('Pause the current session')) {
+          throw new BadRequestException(
+            'Pause the current session before starting another',
+          );
+        }
         if (msg.includes('future day')) {
           throw new BadRequestException('Cannot start a timer on a future day');
         }
@@ -88,6 +93,11 @@ export class TimerService {
         if (msg.includes('already running')) {
           throw new BadRequestException('Timer already running for this task');
         }
+        if (msg.includes('Pause the current session')) {
+          throw new BadRequestException(
+            'Pause the current session before starting another',
+          );
+        }
         throw new NotFoundException('Task not found');
       }
     }
@@ -106,7 +116,18 @@ export class TimerService {
         throw new BadRequestException('Timer already running for this task');
       }
 
-      await this.stopOtherOpenTimersPrisma(userId, taskId);
+      const otherOpen = await this.prisma.timeEntry.findFirst({
+        where: {
+          endedAt: null,
+          task: { userId },
+          taskId: { not: taskId },
+        },
+      });
+      if (otherOpen) {
+        throw new BadRequestException(
+          'Pause the current session before starting another',
+        );
+      }
 
       await this.prisma.timeEntry.create({
         data: { taskId, startedAt: new Date() },
@@ -192,34 +213,6 @@ export class TimerService {
         throw err;
       }
       return this.local.stopTimer(userId, taskId);
-    }
-  }
-
-  private async stopOtherOpenTimersPrisma(userId: string, exceptTaskId: string) {
-    const open = await this.prisma.timeEntry.findMany({
-      where: {
-        endedAt: null,
-        task: { userId },
-        NOT: { taskId: exceptTaskId },
-      },
-      include: { task: true },
-    });
-    const now = new Date();
-    for (const entry of open) {
-      const actualMinutes = Math.max(
-        1,
-        Math.round((now.getTime() - entry.startedAt.getTime()) / 60000),
-      );
-      await this.prisma.timeEntry.update({
-        where: { id: entry.id },
-        data: { endedAt: now, actualMinutes },
-      });
-      if (entry.task.status !== 'completed') {
-        await this.prisma.task.update({
-          where: { id: entry.taskId },
-          data: { status: 'pending' },
-        });
-      }
     }
   }
 }

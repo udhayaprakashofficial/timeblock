@@ -93,6 +93,14 @@ export function todayInTimeZone(timeZone?: string | null): string {
   return formatDateInTimeZone(new Date(), timeZone);
 }
 
+/** Yesterday's civil date in the given timezone. */
+export function yesterdayInTimeZone(timeZone?: string | null): string {
+  const today = todayInTimeZone(timeZone);
+  const d = new Date(`${today}T12:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
 /**
  * Offset of `timeZone` at UTC instant `date` (ms to add to local wall to get UTC?);
  * returns (utcEpoch - wallAsUtcEpoch) equivalent: wallUTC - actualUTC... 
@@ -246,6 +254,16 @@ export function addDays(d: Date, days: number): Date {
 export interface Interval {
   start: number; // minutes from midnight in the user's timezone
   end: number;
+}
+
+/** Half-open overlap: start < otherEnd && end > otherStart */
+export function rangesOverlap(
+  aStart: number,
+  aEnd: number,
+  bStart: number,
+  bEnd: number,
+): boolean {
+  return aStart < bEnd && aEnd > bStart;
 }
 
 export function subtractIntervals(

@@ -85,6 +85,74 @@ function tempId() {
   return `temp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+type CompleteStatus = 'completed' | 'pending';
+
+/** Latest checkbox intent per task — wins over in-flight toggle responses. */
+const completeIntentById = new Map<
+  string,
+  { epoch: number; status: CompleteStatus }
+>();
+const completeChainById = new Map<string, Promise<unknown>>();
+
+/** Call before optimisticComplete + completeTaskOptimistic. */
+export function beginCompleteIntent(
+  taskId: string,
+  status: CompleteStatus,
+): number {
+  const epoch = (completeIntentById.get(taskId)?.epoch ?? 0) + 1;
+  completeIntentById.set(taskId, { epoch, status });
+  return epoch;
+}
+
+function enqueueComplete<T>(taskId: string, run: () => Promise<T>): Promise<T> {
+  const prev = completeChainById.get(taskId) ?? Promise.resolve();
+  const next = prev.then(run, run);
+  completeChainById.set(
+    taskId,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
+}
+
+/** Merge a server day snapshot without clobbering in-flight checkbox toggles. */
+function mergeDayPreservingPendingCompletes(
+  state: TasksState,
+  date: string,
+  serverTasks: TaskDto[],
+  opts?: { focusTaskId?: string; focusTask?: TaskDto },
+) {
+  const byId = new Map(serverTasks.map((t) => [t.id, t] as const));
+  if (opts?.focusTask) byId.set(opts.focusTask.id, opts.focusTask);
+  const current = dayList(state, date);
+  const merged = current.map((t) => {
+    const server = byId.get(t.id);
+    if (!server) return t;
+    const keepOptimistic =
+      t.id !== opts?.focusTaskId &&
+      state.pendingKeys.includes(`complete:${t.id}`);
+    if (keepOptimistic) {
+      return {
+        ...server,
+        status: t.status,
+        actualMinutes: t.actualMinutes,
+        activeEntryId: t.activeEntryId,
+        timerStartedAt: t.timerStartedAt,
+        inBacklog: t.inBacklog,
+      };
+    }
+    return { ...t, ...server };
+  });
+  for (const t of byId.values()) {
+    if (!merged.some((m) => m.id === t.id) && !t.inBacklog) {
+      merged.push(t);
+    }
+  }
+  state.byDate[date] = sortDayTasks(merged);
+}
+
 /** Fetch day tasks — fills Redux cache. */
 export const fetchTasks = createAsyncThunk(
   'tasks/fetchTasks',
@@ -145,18 +213,57 @@ export const createTaskOptimistic = createAsyncThunk(
 
 export const completeTaskOptimistic = createAsyncThunk(
   'tasks/complete',
-  async (payload: { taskId: string; date: string }, { rejectWithValue }) => {
+  async (
+    payload: {
+      taskId: string;
+      date: string;
+      desiredStatus: CompleteStatus;
+      epoch: number;
+    },
+    { rejectWithValue },
+  ) => {
     try {
-      const task = await api.patch<TaskDto>(
-        `/api/tasks/${payload.taskId}/complete`,
-      );
-      const tasks = await api.get<TaskDto[]>(
-        `/api/tasks?date=${payload.date}`,
-      );
-      return { date: payload.date, task, tasks };
+      return await enqueueComplete(payload.taskId, async () => {
+        // Snapshot intent at job start. If a newer click lands mid-flight,
+        // fulfilled ignores this response (epoch mismatch) and the next
+        // queued job syncs to the latest intent.
+        const intent = completeIntentById.get(payload.taskId);
+        const desired = intent?.status ?? payload.desiredStatus;
+        const epoch = intent?.epoch ?? payload.epoch;
+
+        const listed = await api.get<TaskDto[]>(
+          `/api/tasks?date=${payload.date}`,
+        );
+        let task = listed.find((t) => t.id === payload.taskId) ?? null;
+
+        if (!task || task.status !== desired) {
+          task = await api.patch<TaskDto>(
+            `/api/tasks/${payload.taskId}/complete`,
+          );
+          if (task.status !== desired) {
+            task = await api.patch<TaskDto>(
+              `/api/tasks/${payload.taskId}/complete`,
+            );
+          }
+        }
+
+        const tasks = await api.get<TaskDto[]>(
+          `/api/tasks?date=${payload.date}`,
+        );
+        const fromList = tasks.find((t) => t.id === payload.taskId);
+        return {
+          date: payload.date,
+          task: fromList ?? task,
+          tasks,
+          epoch,
+        };
+      });
     } catch (err) {
       return rejectWithValue({
         date: payload.date,
+        taskId: payload.taskId,
+        epoch: payload.epoch,
+        desiredStatus: payload.desiredStatus,
         message: err instanceof Error ? err.message : 'Could not complete',
       });
     }
@@ -333,8 +440,8 @@ const tasksSlice = createSlice({
         date: string;
         name: string;
         estimatedMinutes: number;
-        scheduledStart: string;
-        scheduledEnd: string;
+        scheduledStart: string | null;
+        scheduledEnd: string | null;
         scheduleLocked?: boolean;
       }>,
     ) {
@@ -363,48 +470,85 @@ const tasksSlice = createSlice({
       pushPending(state, `create:${p.tempId}`);
     },
     optimisticComplete(state, action: PayloadAction<{ taskId: string }>) {
-      const hit = findTask(state, action.payload.taskId);
-      if (!hit) return;
-      const list = dayList(state, hit.date);
-      const idx = list.findIndex((t) => t.id === hit.task.id);
-      if (idx < 0) return;
-      const t = list[idx];
-      const actual =
-        t.actualMinutes > 0
-          ? t.actualMinutes
-          : Math.max(1, t.estimatedMinutes || 30);
-      list[idx] = {
+      const taskId = action.payload.taskId;
+      // Day list first
+      for (const date of Object.keys(state.byDate)) {
+        const list = dayList(state, date);
+        const idx = list.findIndex((t) => t.id === taskId);
+        if (idx < 0) continue;
+        const t = list[idx];
+        if (t.status === 'completed') {
+          // Reopen: pending actual is timer-only. Estimate credit only while Done.
+          // If actual equals estimate it was likely Done-without-timer — clear it.
+          // Real timer totals that happen to match estimate are rare; server is source of truth.
+          const keepTimer =
+            t.actualMinutes > 0 && t.actualMinutes !== t.estimatedMinutes
+              ? t.actualMinutes
+              : 0;
+          list[idx] = {
+            ...t,
+            status: 'pending',
+            actualMinutes: keepTimer,
+          };
+        } else {
+          const timerActual = Math.max(0, t.actualMinutes || 0);
+          list[idx] = {
+            ...t,
+            status: 'completed',
+            activeEntryId: null,
+            timerStartedAt: null,
+            // Done without timer → show assigned time as actual while completed
+            actualMinutes:
+              timerActual > 0
+                ? timerActual
+                : Math.max(1, t.estimatedMinutes || 30),
+            inBacklog: false,
+          };
+        }
+        state.byDate[date] = sortDayTasks(list);
+        state.backlog = state.backlog.filter((b) => b.id !== taskId);
+        pushPending(state, `complete:${taskId}`);
+        return;
+      }
+      // Backlog → mark done and drop from backlog (lands on that day as completed)
+      const bIdx = state.backlog.findIndex((t) => t.id === taskId);
+      if (bIdx < 0) return;
+      const t = state.backlog[bIdx]!;
+      const timerActual = Math.max(0, t.actualMinutes || 0);
+      const done: TaskDto = {
         ...t,
         status: 'completed',
+        inBacklog: false,
         activeEntryId: null,
         timerStartedAt: null,
-        actualMinutes: actual,
-        inBacklog: false,
+        actualMinutes:
+          timerActual > 0
+            ? timerActual
+            : Math.max(1, t.estimatedMinutes || 30),
       };
-      state.byDate[hit.date] = sortDayTasks(list);
-      pushPending(state, `complete:${hit.task.id}`);
+      state.backlog = state.backlog.filter((b) => b.id !== taskId);
+      state.byDate[t.date] = sortDayTasks([
+        ...dayList(state, t.date).filter((x) => x.id !== taskId),
+        done,
+      ]);
+      pushPending(state, `complete:${taskId}`);
     },
     optimisticStart(state, action: PayloadAction<{ taskId: string }>) {
       const hit = findTask(state, action.payload.taskId);
       if (!hit) return;
-      // Pause any other live timers locally
+      // Block if another task is already live — user must Pause first.
       for (const date of Object.keys(state.byDate)) {
-        state.byDate[date] = state.byDate[date].map((t) => {
-          if (!t.activeEntryId) return t;
-          if (t.id === action.payload.taskId) return t;
-          return {
-            ...t,
-            activeEntryId: null,
-            timerStartedAt: null,
-            status: t.status === 'in_progress' ? 'pending' : t.status,
-          };
-        });
+        const other = state.byDate[date].find(
+          (t) => t.activeEntryId && t.id !== action.payload.taskId,
+        );
+        if (other) return;
       }
       const list = dayList(state, hit.date);
       const idx = list.findIndex((t) => t.id === hit.task.id);
       if (idx < 0) return;
+      const t = list[idx]!;
       list[idx] = {
-        ...list[idx],
+        ...t,
         activeEntryId: `opt_${Date.now()}`,
         timerStartedAt: new Date().toISOString(),
         status: 'in_progress',
@@ -477,22 +621,43 @@ const tasksSlice = createSlice({
       };
       state.backlog = [moved, ...state.backlog.filter((t) => t.id !== moved.id)];
     },
+    optimisticRemoveFromBacklog(
+      state,
+      action: PayloadAction<{ taskId: string }>,
+    ) {
+      state.backlog = state.backlog.filter((t) => t.id !== action.payload.taskId);
+      for (const date of Object.keys(state.byDate)) {
+        state.byDate[date] = removeTask(dayList(state, date), action.payload.taskId);
+      }
+    },
     optimisticScheduleFromBacklog(
       state,
-      action: PayloadAction<{ taskId: string; date: string }>,
+      action: PayloadAction<{
+        taskId: string;
+        date: string;
+        scheduledStart?: string | null;
+        scheduledEnd?: string | null;
+      }>,
     ) {
       const task = state.backlog.find((t) => t.id === action.payload.taskId);
       if (!task) return;
       state.backlog = state.backlog.filter((t) => t.id !== task.id);
+      const order = dayList(state, action.payload.date).length;
       const placed: TaskDto = {
         ...task,
         date: action.payload.date,
         inBacklog: false,
+        order,
+        status: task.status === 'completed' ? 'pending' : task.status,
+        scheduledStart: action.payload.scheduledStart ?? task.scheduledStart,
+        scheduledEnd: action.payload.scheduledEnd ?? task.scheduledEnd,
+        scheduleLocked: false,
       };
       state.byDate[action.payload.date] = sortDayTasks([
         ...dayList(state, action.payload.date),
         placed,
       ]);
+      pushPending(state, `schedule:${task.id}`);
     },
   },
   extraReducers: (builder) => {
@@ -509,6 +674,17 @@ const tasksSlice = createSlice({
         ) {
           state.loadingDate = null;
           state.loadedDates[action.payload.date] = true;
+          return;
+        }
+        // Checkbox toggles in flight: keep optimistic checked state.
+        if (state.pendingKeys.some((k) => k.startsWith('complete:'))) {
+          mergeDayPreservingPendingCompletes(
+            state,
+            action.payload.date,
+            action.payload.tasks,
+          );
+          state.loadedDates[action.payload.date] = true;
+          state.loadingDate = null;
           return;
         }
         state.byDate[action.payload.date] = sortDayTasks(action.payload.tasks);
@@ -554,15 +730,58 @@ const tasksSlice = createSlice({
         }
       })
       .addCase(completeTaskOptimistic.fulfilled, (state, action) => {
-        popPending(state, `complete:${action.meta.arg.taskId}`);
-        state.byDate[action.payload.date] = sortDayTasks(action.payload.tasks);
+        const taskId = action.meta.arg.taskId;
+        const latest = completeIntentById.get(taskId)?.epoch;
+        // Older serialized response — a newer click owns the checkbox UI.
+        if (latest != null && action.payload.epoch !== latest) {
+          return;
+        }
+        popPending(state, `complete:${taskId}`);
+        mergeDayPreservingPendingCompletes(
+          state,
+          action.payload.date,
+          action.payload.tasks,
+          {
+            focusTaskId: taskId,
+            focusTask: action.payload.task,
+          },
+        );
+        state.backlog = state.backlog.filter((b) => b.id !== taskId);
       })
       .addCase(completeTaskOptimistic.rejected, (state, action) => {
-        popPending(state, `complete:${action.meta.arg.taskId}`);
-        // Soft recovery — leave optimistic state; caller may refetch
-        state.error =
-          (action.payload as { message?: string } | undefined)?.message ??
-          'Complete failed';
+        const taskId = action.meta.arg.taskId;
+        const payload = action.payload as
+          | {
+              date?: string;
+              epoch?: number;
+              desiredStatus?: CompleteStatus;
+              message?: string;
+            }
+          | undefined;
+        const latest = completeIntentById.get(taskId)?.epoch;
+        if (
+          latest != null &&
+          payload?.epoch != null &&
+          payload.epoch !== latest
+        ) {
+          return;
+        }
+        popPending(state, `complete:${taskId}`);
+        // Revert to the opposite of what this click wanted.
+        const date = action.meta.arg.date;
+        const desired =
+          payload?.desiredStatus ?? action.meta.arg.desiredStatus;
+        const list = dayList(state, date);
+        const idx = list.findIndex((t) => t.id === taskId);
+        if (idx >= 0) {
+          const t = list[idx]!;
+          list[idx] = {
+            ...t,
+            status: desired === 'completed' ? 'pending' : 'completed',
+          };
+          state.byDate[date] = sortDayTasks(list);
+        }
+        state.error = payload?.message ?? 'Complete failed';
       })
       .addCase(startTimerOptimistic.fulfilled, (state, action) => {
         popPending(state, `start:${action.meta.arg.taskId}`);
@@ -633,8 +852,15 @@ const tasksSlice = createSlice({
         state.backlog = action.payload.backlog;
       })
       .addCase(scheduleFromBacklogOptimistic.fulfilled, (state, action) => {
+        popPending(state, `schedule:${action.meta.arg.taskId}`);
         state.byDate[action.payload.date] = sortDayTasks(action.payload.tasks);
         state.backlog = action.payload.backlog;
+      })
+      .addCase(scheduleFromBacklogOptimistic.rejected, (state, action) => {
+        popPending(state, `schedule:${action.meta.arg.taskId}`);
+        state.error =
+          (action.payload as { message?: string } | undefined)?.message ??
+          'Could not schedule';
       })
       .addCase(removeTaskOptimistic.fulfilled, (state, action) => {
         state.byDate[action.payload.date] = sortDayTasks(action.payload.tasks);
@@ -647,6 +873,27 @@ export const tasksActions = {
   ...tasksSlice.actions,
   tempId,
 };
+
+/** Instant checkbox + durable sync. Safe when clicking many tasks in a row. */
+export function queueCompleteTask(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dispatch: (action: any) => any,
+  args: { taskId: string; date: string; currentlyDone: boolean },
+) {
+  const desiredStatus: CompleteStatus = args.currentlyDone
+    ? 'pending'
+    : 'completed';
+  const epoch = beginCompleteIntent(args.taskId, desiredStatus);
+  dispatch(tasksActions.optimisticComplete({ taskId: args.taskId }));
+  return dispatch(
+    completeTaskOptimistic({
+      taskId: args.taskId,
+      date: args.date,
+      desiredStatus,
+      epoch,
+    }),
+  );
+}
 
 export const selectTasksForDate = (date: string) => (state: { tasks: TasksState }) =>
   state.tasks.byDate[date] ?? [];

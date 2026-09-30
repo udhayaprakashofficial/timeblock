@@ -68,7 +68,7 @@ export const HINTS: Record<HintId, HintCopy> = {
   'nav.settings': {
     id: 'nav.settings',
     title: 'Settings',
-    body: 'Profile, calendars, and the work hours Cupkey schedules into.',
+    body: 'Profile, subscription, calendars, and the work hours Cupkey schedules into.',
   },
   'nav.subscription': {
     id: 'nav.subscription',
@@ -93,22 +93,22 @@ export const HINTS: Record<HintId, HintCopy> = {
   'dash.backlog': {
     id: 'dash.backlog',
     title: 'Backlog',
-    body: 'Unscheduled or leftover work. Pull a task into today when you have room.',
+    body: 'Yesterday’s unfinished work (and anything you park today). Schedule it when you have room.',
   },
   'dash.pin': {
     id: 'dash.pin',
-    title: 'Pin time',
-    body: 'Lock a start–end on the chosen date so Cupkey places the task at that wall-clock slot.',
+    title: 'Duration',
+    body: 'Enter any length (30, 34m, 1h). Cupkey finds the earliest free slot that fits the full duration — no overlap, no Pin required.',
   },
   'dash.scheduleDate': {
     id: 'dash.scheduleDate',
     title: 'Schedule date',
-    body: 'Pick today or a future day. Use Pin to lock a specific start–end time on that day.',
+    body: 'Pick today or a future day. The task auto-schedules into the earliest free slot that fits its duration.',
   },
   'side.focus': {
     id: 'side.focus',
-    title: 'Focus score',
-    body: 'From how full today is — not from deep-work minutes. It peaks when about 55% of your work hours are booked. An empty day and a packed day both score lower.',
+    title: 'Focus',
+    body: 'Focus measures how well your workday is planned. It is highest when you have a good balance between scheduled work and free time. A completely empty or completely packed day can lower your score.',
   },
   'side.load': {
     id: 'side.load',

@@ -50,7 +50,9 @@ export type ProCheckoutCustomer = {
 };
 
 function defaultRedirectUrl(customer?: ProCheckoutCustomer | null): string {
-  const path = customer?.id?.trim() ? '/subscription' : '/pricing';
+  const path = customer?.id?.trim()
+    ? '/settings?panel=subscription'
+    : '/pricing';
   if (typeof window !== 'undefined' && window.location?.origin) {
     return `${window.location.origin}${path}`;
   }

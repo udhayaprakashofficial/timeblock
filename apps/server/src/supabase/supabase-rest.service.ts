@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { createId } from './create-id';
-import { dayBoundsInTimeZone, toUtcIso, parseHm, combineDateAndMinutes, elapsedMinutes, entryActualMinutes, todayInTimeZone, normalizeTimeZone } from '../common/time.util';
+import { dayBoundsInTimeZone, toUtcIso, parseHm, combineDateAndMinutes, elapsedMinutes, entryActualMinutes, todayInTimeZone, normalizeTimeZone, eventToMinutesOnDay, rangesOverlap } from '../common/time.util';
 
 type Json = Record<string, unknown>;
 
@@ -763,21 +763,89 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async carryOverUnfinished(userId: string, today: string): Promise<number> {
+  async carryOverUnfinished(userId: string, yesterday: string): Promise<number> {
+    const sampleNames = new Set([
+      'plan the day',
+      'reply to emails',
+      'finish project report',
+      'deep work session',
+    ]);
     try {
-      const rows = await this.select<{ id: string }>('Task', 'id', {
-        filter: `userId=eq.${userId}&inBacklog=eq.false&scheduleLocked=eq.false&status=in.(pending,in_progress)&date=lt.${today}`,
+      const rows = await this.select<{ id: string; name?: string }>('Task', 'id,name', {
+        filter: `userId=eq.${userId}&inBacklog=eq.false&scheduleLocked=eq.false&status=in.(pending,in_progress)&date=eq.${yesterday}`,
       });
       const now = new Date().toISOString();
+      let count = 0;
       for (const row of rows) {
+        const name = String(row.name ?? '')
+          .trim()
+          .toLowerCase();
+        if (sampleNames.has(name)) continue;
         await this.patch('Task', `id=eq.${row.id}`, {
           inBacklog: true,
           scheduledStart: null,
           scheduledEnd: null,
           updatedAt: now,
         });
+        count += 1;
+      }
+      return count;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** Clear backlog flag on tasks older than yesterday. */
+  async pruneStaleBacklog(userId: string, yesterday: string): Promise<number> {
+    try {
+      const rows = await this.select<{ id: string }>('Task', 'id', {
+        filter: `userId=eq.${userId}&inBacklog=eq.true&date=lt.${yesterday}`,
+      });
+      const now = new Date().toISOString();
+      for (const row of rows) {
+        await this.patch('Task', `id=eq.${row.id}`, {
+          inBacklog: false,
+          updatedAt: now,
+        });
       }
       return rows.length;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** Onboarding demo tasks must never clutter backlog. */
+  async clearOnboardingSampleBacklog(userId: string): Promise<number> {
+    const sampleNames = new Set([
+      'plan the day',
+      'reply to emails',
+      'finish project report',
+      'deep work session',
+    ]);
+    try {
+      const rows = await this.select<{ id: string; name?: string }>(
+        'Task',
+        'id,name',
+        {
+          filter: `userId=eq.${userId}&inBacklog=eq.true&status=in.(pending,in_progress)`,
+        },
+      );
+      const now = new Date().toISOString();
+      let count = 0;
+      for (const row of rows) {
+        const name = String(row.name ?? '')
+          .trim()
+          .toLowerCase();
+        if (!sampleNames.has(name)) continue;
+        await this.patch('Task', `id=eq.${row.id}`, {
+          inBacklog: false,
+          scheduledStart: null,
+          scheduledEnd: null,
+          updatedAt: now,
+        });
+        count += 1;
+      }
+      return count;
     } catch {
       return 0;
     }
@@ -945,6 +1013,15 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
     }
     if (dto.estimatedMinutes !== undefined) {
       patch.estimatedMinutes = Math.round(Number(dto.estimatedMinutes));
+      // Duration changed — clear sticky slot so packer places with new length
+      if (
+        Math.round(Number(dto.estimatedMinutes)) !==
+        Math.round(Number(rows[0].estimatedMinutes) || 0)
+      ) {
+        patch.scheduledStart = null;
+        patch.scheduledEnd = null;
+        if (!rows[0].scheduleLocked) patch.scheduleLocked = false;
+      }
     }
     if (dto.order !== undefined) patch.order = Math.max(0, Math.round(dto.order));
     if (dto.date !== undefined) patch.date = dto.date;
@@ -979,6 +1056,32 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
         (typeof rows[0].date === 'string'
           ? String(rows[0].date).slice(0, 10)
           : String(rows[0].date).slice(0, 10));
+
+      // Reject overlaps with other non-completed tasks (meetings + deep work)
+      const siblings = await this.select<Record<string, unknown>>(
+        'Task',
+        'id,scheduledStart,scheduledEnd,status,scheduleLocked',
+        {
+          filter: `userId=eq.${userId}&date=eq.${dateStr}&inBacklog=eq.false&id=neq.${taskId}`,
+        },
+      );
+      for (const sib of siblings) {
+        if (String(sib.status) === 'completed') continue;
+        if (!sib.scheduledStart || !sib.scheduledEnd) continue;
+        const other = eventToMinutesOnDay(
+          dateStr,
+          new Date(String(sib.scheduledStart)),
+          new Date(String(sib.scheduledEnd)),
+          timeZone,
+        );
+        if (!other) continue;
+        if (rangesOverlap(startMin, endMin, other.start, other.end)) {
+          throw new Error(
+            'That time overlaps another task. Pick a free slot that fits the full duration.',
+          );
+        }
+      }
+
       patch.scheduledStart = combineDateAndMinutes(
         dateStr,
         startMin,
@@ -989,7 +1092,10 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
         endMin,
         timeZone,
       ).toISOString();
-      patch.scheduleLocked = true;
+      // User-placed times stay sticky without Pin; only calendar meets stay locked
+      if (!rows[0].sourceProvider && !rows[0].meetLink) {
+        patch.scheduleLocked = false;
+      }
       patch.estimatedMinutes = endMin - startMin;
       patch.inBacklog = false;
     }
@@ -1011,6 +1117,25 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       limit: 1,
     });
     if (!rows[0]) throw new Error('Task not found');
+
+    // Toggle: completed → reopen
+    if (String(rows[0].status) === 'completed') {
+      // Drop estimate-credit entries so pending actual is timer-only again.
+      await this.deleteCompletionCreditEntries(
+        taskId,
+        Math.max(1, Number(rows[0].estimatedMinutes) || 30),
+      );
+      const updated = await this.patch<Record<string, unknown>>(
+        'Task',
+        `id=eq.${taskId}`,
+        { status: 'pending', updatedAt: new Date().toISOString() },
+      );
+      const entries = await this.select<Record<string, unknown>>('TimeEntry', '*', {
+        filter: `taskId=eq.${taskId}`,
+      });
+      return this.mapTaskRow(updated[0] ?? { ...rows[0], status: 'pending' }, entries);
+    }
+
     // Close any open timer before marking done
     await this.closeOpenEntriesForTask(taskId);
     let entries = await this.select<Record<string, unknown>>('TimeEntry', '*', {
@@ -1032,6 +1157,18 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
         endedAt: endedAt.toISOString(),
         actualMinutes: mins,
         createdAt: endedAt.toISOString(),
+        // Marker so reopen can strip estimate credit without wiping real sessions
+        notes: '__completion_credit__',
+      }).catch(async () => {
+        // notes column may be missing — insert without it
+        await this.insert('TimeEntry', {
+          id: createId(),
+          taskId,
+          startedAt: startedAt.toISOString(),
+          endedAt: endedAt.toISOString(),
+          actualMinutes: mins,
+          createdAt: endedAt.toISOString(),
+        });
       });
       entries = await this.select<Record<string, unknown>>('TimeEntry', '*', {
         filter: `taskId=eq.${taskId}`,
@@ -1040,9 +1177,34 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
     const updated = await this.patch<Record<string, unknown>>(
       'Task',
       `id=eq.${taskId}`,
-      { status: 'completed', updatedAt: new Date().toISOString() },
+      { status: 'completed', inBacklog: false, updatedAt: new Date().toISOString() },
     );
     return this.mapTaskRow(updated[0] ?? rows[0], entries);
+  }
+
+  /** Remove Done-without-timer credit entries so Start can begin at 0. */
+  private async deleteCompletionCreditEntries(
+    taskId: string,
+    estimatedMinutes: number,
+  ) {
+    const entries = await this.select<Record<string, unknown>>('TimeEntry', '*', {
+      filter: `taskId=eq.${taskId}`,
+    });
+    for (const e of entries) {
+      const notes = String(e.notes ?? '');
+      const mins = entryActualMinutes(e);
+      const isCredit =
+        notes.includes('__completion_credit__') ||
+        (entries.length === 1 &&
+          mins === estimatedMinutes &&
+          Boolean(e.endedAt));
+      if (!isCredit) continue;
+      try {
+        await this.delete('TimeEntry', `id=eq.${e.id}`);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   async deleteTask(userId: string, taskId: string) {
@@ -1221,8 +1383,11 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
     if (entries.some((e) => !e.endedAt)) {
       throw new Error('Timer already running for this task');
     }
-    // Only one active timer per user — stop others first
-    await this.stopOtherOpenTimers(userId, taskId);
+    // One live session at a time — require Pause before starting another.
+    const otherOpen = await this.findOtherOpenTimer(userId, taskId);
+    if (otherOpen) {
+      throw new Error('Pause the current session before starting another');
+    }
     const now = new Date().toISOString();
     await this.insert('TimeEntry', {
       id: createId(),
@@ -1288,37 +1453,25 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** Stop every other open timer for this user so only one task can be Live. */
-  private async stopOtherOpenTimers(userId: string, exceptTaskId: string) {
-    const dayTasks = await this.select<{ id: string; status: string }>(
+  private async findOtherOpenTimer(
+    userId: string,
+    exceptTaskId: string,
+  ): Promise<boolean> {
+    const dayTasks = await this.select<{ id: string }>(
       'Task',
-      'id,status',
+      'id',
       { filter: `userId=eq.${userId}` },
     );
     for (const t of dayTasks) {
       if (t.id === exceptTaskId) continue;
-      const entries = await this.select<{
-        id: string;
-        startedAt: string;
-        endedAt: string | null;
-      }>('TimeEntry', 'id,startedAt,endedAt', {
-        filter: `taskId=eq.${t.id}`,
-      });
-      const active = entries.find((e) => !e.endedAt);
-      if (!active) continue;
-      const endedAt = new Date();
-      const actualMinutes = elapsedMinutes(String(active.startedAt), endedAt);
-      await this.patch('TimeEntry', `id=eq.${active.id}`, {
-        endedAt: endedAt.toISOString(),
-        actualMinutes,
-      });
-      if (t.status !== 'completed') {
-        await this.patch('Task', `id=eq.${t.id}`, {
-          status: 'pending',
-          updatedAt: endedAt.toISOString(),
-        });
-      }
+      const entries = await this.select<{ endedAt: string | null }>(
+        'TimeEntry',
+        'endedAt',
+        { filter: `taskId=eq.${t.id}` },
+      );
+      if (entries.some((e) => !e.endedAt)) return true;
     }
+    return false;
   }
 
   async listTasksInRange(userId: string, from: string, to: string) {
@@ -1342,11 +1495,18 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
     t: Record<string, unknown>,
     entries: Record<string, unknown>[],
   ) {
-    const actualMinutes = entries.reduce(
+    const logged = entries.reduce(
       (sum, e) => sum + entryActualMinutes(e),
       0,
     );
     const active = entries.find((e) => !e.endedAt);
+    const status = String(t.status) as 'pending' | 'in_progress' | 'completed';
+    const estimatedMinutes = Number(t.estimatedMinutes);
+    // Pending: timer only. Completed with no timer sessions: assigned time.
+    const actualMinutes =
+      status === 'completed' && logged <= 0
+        ? Math.max(1, estimatedMinutes || 30)
+        : logged;
     const dateVal = t.date;
     const date =
       typeof dateVal === 'string'
@@ -1356,8 +1516,8 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       id: String(t.id),
       date,
       name: String(t.name),
-      estimatedMinutes: Number(t.estimatedMinutes),
-      status: String(t.status) as 'pending' | 'in_progress' | 'completed',
+      estimatedMinutes,
+      status,
       order: Number(t.order),
       scheduledStart: toUtcIso(
         t.scheduledStart != null ? String(t.scheduledStart) : null,
