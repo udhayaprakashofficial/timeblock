@@ -1378,6 +1378,7 @@ export class TasksService {
       }
       await this.scheduler.rescheduleDayPreferRest(id, dateStr, {
         repackUnlocked: true,
+        ignorePackingFloor: true,
       });
       return this.supabase.listTasks(id, dateStr) as Promise<TaskDto[]>;
     });
@@ -1398,6 +1399,7 @@ export class TasksService {
       );
       await this.scheduler.rescheduleDay(userId, dateStr, {
         repackUnlocked: true,
+        ignorePackingFloor: true,
       });
       return this.list(userId, dateStr);
     } catch {

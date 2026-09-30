@@ -2,17 +2,13 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import type { StatsOverviewDto, TaskDto, UserDto } from '@timeblock/shared-types';
 import { api, parseInstant, todayISO } from '../api';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import {
   fetchTasks,
-  queueCompleteTask,
-  startTimerOptimistic,
-  tasksActions,
 } from '../store/tasksSlice';
-import { fetchStats } from '../store/statsSlice';
 import { HintMark } from './ui-hints';
 import { CoachSlot, resolveCoachSlot } from './coach';
 import { ShareStudio } from './share/ShareStudio';
@@ -110,13 +106,11 @@ function resolveCurrentTask(
 
 export function RightPanel({ user }: { user: UserDto }) {
   const date = todayISO(user.timezone);
-  const qc = useQueryClient();
   const dispatch = useAppDispatch();
   const pathname = usePathname();
   const router = useRouter();
   const [tick, setTick] = useState(0);
   const [mutedUntil, setMutedUntil] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
 
   const viewSchedule = () => {
@@ -350,68 +344,8 @@ export function RightPanel({ user }: { user: UserDto }) {
     }
   };
 
-  const afterMutation = () => {
-    void qc.invalidateQueries({ queryKey: ['stats', date] });
-    void dispatch(fetchStats(date)).then((action) => {
-      if (fetchStats.fulfilled.match(action)) {
-        qc.setQueryData(['stats', date], action.payload.stats);
-      }
-    });
-  };
-
   return (
     <aside className="right-panel dash-side">
-      {current.task && current.mode !== 'live' && (
-        <div className="side-now">
-          <div className="side-now-kicker">
-            {current.mode === 'now' ? 'Now' : 'Up next'}
-          </div>
-          <strong>{current.task.name}</strong>
-          <span>{current.task.estimatedMinutes}m</span>
-          {current.task.status !== 'completed' && (
-            <div className="side-now-actions">
-              <button
-                type="button"
-                className="btn btn-primary btn-pill btn-sm"
-                disabled={busy}
-                onClick={() => {
-                  const t = current.task!;
-                  setBusy(true);
-                  dispatch(tasksActions.optimisticStart({ taskId: t.id }));
-                  void dispatch(
-                    startTimerOptimistic({ taskId: t.id, date }),
-                  ).finally(() => {
-                    setBusy(false);
-                    afterMutation();
-                  });
-                }}
-              >
-                Start
-              </button>
-              <button
-                type="button"
-                className="btn btn-outline btn-pill btn-sm"
-                disabled={busy}
-                onClick={() => {
-                  const t = current.task!;
-                  setBusy(true);
-                  void queueCompleteTask(dispatch, {
-                    taskId: t.id,
-                    date,
-                    currentlyDone: t.status === 'completed',
-                  }).finally(() => {
-                    setBusy(false);
-                    afterMutation();
-                  });
-                }}
-              >
-                Done
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
       <div
         className="side-card focus-card"
         data-focus-band={focusCopy.band}

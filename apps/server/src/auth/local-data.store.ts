@@ -593,7 +593,10 @@ export class LocalDataStore {
       }
     });
     this.write(db);
-    this.rescheduleDay(userId, dateStr, { repackUnlocked: true });
+    this.rescheduleDay(userId, dateStr, {
+      repackUnlocked: true,
+      ignorePackingFloor: true,
+    });
     return this.listTasks(userId, dateStr);
   }
 

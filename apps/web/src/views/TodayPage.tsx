@@ -70,34 +70,71 @@ function sortDay(list: TaskDto[]): TaskDto[] {
   });
 }
 
-/** After a queue reorder, shift unlocked task windows so times follow the new order immediately. */
-function optimisticShiftSchedule(ordered: TaskDto[]): TaskDto[] {
-  const movable = ordered.filter(
-    (t) =>
-      !t.scheduleLocked &&
-      t.status !== 'completed' &&
-      t.scheduledStart &&
-      t.scheduledEnd,
-  );
-  if (movable.length < 2) return ordered;
-  let cursor = Math.min(
-    ...movable.map((t) => new Date(t.scheduledStart!).getTime()),
-  );
-  const nextTimes = new Map<string, { start: string; end: string }>();
-  for (const t of movable) {
-    const durMs = Math.max(
-      5 * 60_000,
-      new Date(t.scheduledEnd!).getTime() -
-        new Date(t.scheduledStart!).getTime(),
-    );
-    const start = cursor;
-    const end = start + durMs;
-    nextTimes.set(t.id, {
-      start: new Date(start).toISOString(),
-      end: new Date(end).toISOString(),
-    });
-    cursor = end;
+/** After a queue reorder, re-pack unlocked tasks into free slots (skips breaks). */
+function optimisticRepackSchedule(
+  ordered: TaskDto[],
+  opts: {
+    date: string;
+    timeZone?: string | null;
+    workStart?: string;
+    workEnd?: string;
+    breaks?: { start: string; end: string }[];
+  },
+): TaskDto[] {
+  const dayStart = opts.workStart ? parseHm(opts.workStart) : 0;
+  const dayEnd = opts.workEnd ? parseHm(opts.workEnd) : 24 * 60;
+  if (!(dayEnd > dayStart)) return ordered;
+
+  const fixedBusy: { start: number; end: number }[] = [];
+  for (const b of opts.breaks ?? []) {
+    const s = parseHm(b.start);
+    const e = parseHm(b.end);
+    if (e > s) fixedBusy.push({ start: s, end: e });
   }
+  for (const t of ordered) {
+    if (!(t.scheduleLocked || t.status === 'completed')) continue;
+    if (!t.scheduledStart || !t.scheduledEnd) continue;
+    const s = minutesOf(t.scheduledStart, opts.timeZone);
+    const e = minutesOf(t.scheduledEnd, opts.timeZone);
+    if (e > s) fixedBusy.push({ start: s, end: e });
+  }
+
+  // Full-day pack for queue reorder — do not clip to “now” or evening
+  // reorders wipe the plan (empty free window → no blocks on The plan).
+  let free = subtractBusy(dayStart, dayEnd, fixedBusy);
+  const nextTimes = new Map<string, { start: string; end: string }>();
+
+  for (const t of ordered) {
+    if (t.scheduleLocked || t.status === 'completed') continue;
+    const duration = Math.max(5, t.estimatedMinutes || 30);
+    let placed: { start: number; end: number } | null = null;
+    for (const gap of free) {
+      if (gap.end - gap.start >= duration) {
+        placed = { start: gap.start, end: gap.start + duration };
+        break;
+      }
+    }
+    if (!placed) {
+      // Keep prior window rather than blanking The plan when the day is full.
+      continue;
+    }
+    nextTimes.set(t.id, {
+      start: isoFromMinutes(opts.date, placed.start),
+      end: isoFromMinutes(opts.date, placed.end),
+    });
+    free = free.flatMap((gap) => {
+      if (placed!.end <= gap.start || placed!.start >= gap.end) return [gap];
+      const parts: { start: number; end: number }[] = [];
+      if (gap.start < placed!.start) {
+        parts.push({ start: gap.start, end: placed!.start });
+      }
+      if (placed!.end < gap.end) {
+        parts.push({ start: placed!.end, end: gap.end });
+      }
+      return parts;
+    });
+  }
+
   return ordered.map((t) => {
     const slot = nextTimes.get(t.id);
     return slot
@@ -886,11 +923,18 @@ export function TodayPage({
       return;
     }
     const previous = tasks.map((t, i) => ({ ...t, order: i }));
-    const next = optimisticShiftSchedule(
+    const next = optimisticRepackSchedule(
       arrayMove(tasks, oldIndex, newIndex).map((t, i) => ({
         ...t,
         order: i,
       })),
+      {
+        date,
+        timeZone,
+        workStart: template?.workStart,
+        workEnd: template?.workEnd,
+        breaks: template?.breaks,
+      },
     );
     // UI follows Redux immediately — API only persists + refreshes times.
     dispatch(tasksActions.optimisticReorder({ date, tasks: next }));
@@ -1189,12 +1233,13 @@ export function TodayPage({
                         planDragPreview?.taskId === t.id
                           ? planDragPreview.startMin
                           : s;
-                      const dragHeight = meet
-                        ? Math.max((e - s) * pxPerMin, 52)
-                        : Math.max(
-                            (Math.max(5, t.estimatedMinutes)) * pxPerMin,
-                            52,
-                          );
+                      const dragHeight =
+                        planDragPreview?.taskId === t.id
+                          ? Math.max(
+                              Math.max(5, t.estimatedMinutes) * pxPerMin,
+                              52,
+                            )
+                          : Math.max((e - s) * pxPerMin, 52);
                       return (
                         <div
                           key={block.key}
