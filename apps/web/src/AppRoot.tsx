@@ -717,6 +717,14 @@ function Shell({
 }
 
 export function App({ children }: { children: ReactNode }) {
+  return (
+    <Suspense fallback={null}>
+      <AppWithSearchParams>{children}</AppWithSearchParams>
+    </Suspense>
+  );
+}
+
+function AppWithSearchParams({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
   const router = useRouter();
   const pathname = usePathname();
