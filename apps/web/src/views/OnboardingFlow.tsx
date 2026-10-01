@@ -40,6 +40,15 @@ const SAMPLE_PLANS: PlanDraft[] = [
   { id: 'sample-4', name: 'Deep work session', minutes: 80, recurring: false },
 ];
 
+const PLAN_MINS_MIN = 5;
+const PLAN_MINS_MAX = 480;
+const PLAN_MINS_STEP = 5;
+
+function clampPlanMinutes(n: number, fallback = 30): number {
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.max(PLAN_MINS_MIN, Math.min(PLAN_MINS_MAX, Math.round(n)));
+}
+
 function toHm(value: string, fallback = '09:00'): string {
   const m = String(value ?? '').match(/(\d{1,2}):(\d{2})/);
   if (!m) return fallback;
@@ -292,6 +301,31 @@ export function OnboardingFlow({
   const [plans, setPlans] = useState<PlanDraft[]>(() =>
     SAMPLE_PLANS.map((p) => ({ ...p })),
   );
+  /** Draft strings while typing duration so empty/partial values aren't clamped mid-edit */
+  const [minsDraft, setMinsDraft] = useState<Record<string, string>>({});
+
+  const setPlanMinutes = (id: string, minutes: number) => {
+    const next = clampPlanMinutes(minutes);
+    setPlans((prev) =>
+      prev.map((row) => (row.id === id ? { ...row, minutes: next } : row)),
+    );
+    setMinsDraft((prev) => {
+      if (!(id in prev)) return prev;
+      const copy = { ...prev };
+      delete copy[id];
+      return copy;
+    });
+  };
+
+  const bumpPlanMinutes = (id: string, delta: number) => {
+    const current =
+      minsDraft[id] !== undefined
+        ? Number(minsDraft[id]) ||
+          plans.find((p) => p.id === id)?.minutes ||
+          30
+        : plans.find((p) => p.id === id)?.minutes || 30;
+    setPlanMinutes(id, current + delta);
+  };
 
   const workableMins = useMemo(() => {
     const span = Math.max(0, minutesOf(workEnd) - minutesOf(workStart));
@@ -438,16 +472,24 @@ export function OnboardingFlow({
       } catch {
         /* ignore */
       }
+      const resolvedPlans = plans.map((p) => {
+        const draft = minsDraft[p.id];
+        const minutes =
+          draft !== undefined
+            ? clampPlanMinutes(draft === '' ? p.minutes : Number(draft), p.minutes)
+            : clampPlanMinutes(p.minutes);
+        return { ...p, minutes };
+      });
       await completeOnboarding.mutateAsync({
         createTasks: alsoCreateTasks,
         weekdays,
         workStart: toHm(workStart),
         workEnd: toHm(workEnd),
         breaks,
-        tasks: plans
+        tasks: resolvedPlans
           .map((p) => ({
             name: p.name.trim(),
-            estimatedMinutes: Math.max(5, Math.min(480, p.minutes || 30)),
+            estimatedMinutes: p.minutes,
             recurring: Boolean(p.recurring),
           }))
           .filter((p) => p.name),
@@ -661,117 +703,210 @@ export function OnboardingFlow({
             </p>
 
             <div className="onboard-plan-list">
-              {plans.map((p) => (
-                <div key={p.id} className="onboard-plan-row">
-                  <input
-                    value={p.name}
-                    placeholder="Task name"
-                    onChange={(e) => {
-                      setPlans((prev) =>
-                        prev.map((row) =>
-                          row.id === p.id
-                            ? { ...row, name: e.target.value }
-                            : row,
-                        ),
-                      );
-                    }}
-                  />
-                  <input
-                    className="onboard-plan-mins"
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={String(p.minutes)}
-                    onChange={(e) => {
-                      const digits = e.target.value.replace(/\D/g, '');
-                      const n = digits ? Number(digits) : 0;
-                      setPlans((prev) =>
-                        prev.map((row) =>
-                          row.id === p.id
-                            ? {
-                                ...row,
-                                minutes: digits
-                                  ? Math.max(5, Math.min(480, n))
-                                  : 5,
-                              }
-                            : row,
-                        ),
-                      );
-                    }}
-                    onKeyDown={(e) => {
-                      if (
-                        e.ctrlKey ||
-                        e.metaKey ||
-                        e.altKey ||
-                        e.key === 'Backspace' ||
-                        e.key === 'Delete' ||
-                        e.key === 'Tab' ||
-                        e.key === 'Enter' ||
-                        e.key === 'Escape' ||
-                        e.key === 'ArrowLeft' ||
-                        e.key === 'ArrowRight' ||
-                        e.key === 'Home' ||
-                        e.key === 'End'
-                      ) {
-                        return;
-                      }
-                      if (!/^\d$/.test(e.key)) e.preventDefault();
-                    }}
-                    onPaste={(e) => {
-                      e.preventDefault();
-                      const digits = (e.clipboardData.getData('text') || '').replace(
-                        /\D/g,
-                        '',
-                      );
-                      const n = digits ? Number(digits) : 30;
-                      setPlans((prev) =>
-                        prev.map((row) =>
-                          row.id === p.id
-                            ? {
-                                ...row,
-                                minutes: Math.max(5, Math.min(480, n || 30)),
-                              }
-                            : row,
-                        ),
-                      );
-                    }}
-                  />
-                  <span className="onboard-plan-unit">Min</span>
-                  <label className="onboard-plan-recur" title="Repeat on your workdays">
+              {plans.map((p, index) => (
+                <div
+                  key={p.id}
+                  className={`onboard-plan-row${p.recurring ? ' is-recurring' : ''}${
+                    !p.name.trim() ? ' is-blank' : ''
+                  }`}
+                >
+                  <span className="onboard-plan-index" aria-hidden>
+                    {String(index + 1).padStart(2, '0')}
+                  </span>
+                  <div className="onboard-plan-fields">
                     <input
-                      type="checkbox"
-                      checked={p.recurring}
+                      className="onboard-plan-name"
+                      value={p.name}
+                      placeholder="Name this block…"
+                      aria-label={`Task ${index + 1} name`}
                       onChange={(e) => {
                         setPlans((prev) =>
                           prev.map((row) =>
                             row.id === p.id
-                              ? { ...row, recurring: e.target.checked }
+                              ? { ...row, name: e.target.value }
                               : row,
                           ),
                         );
                       }}
                     />
-                    Repeat
-                  </label>
+                    <div className="onboard-plan-meta">
+                      <div
+                        className="onboard-plan-duration"
+                        title="Duration in minutes"
+                      >
+                        <input
+                          className="onboard-plan-mins"
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          autoComplete="off"
+                          spellCheck={false}
+                          value={
+                            minsDraft[p.id] !== undefined
+                              ? minsDraft[p.id]
+                              : String(p.minutes)
+                          }
+                          aria-label={`Task ${index + 1} duration in minutes`}
+                          onChange={(e) => {
+                            const digits = e.target.value
+                              .replace(/\D/g, '')
+                              .slice(0, 3);
+                            setMinsDraft((prev) => ({
+                              ...prev,
+                              [p.id]: digits,
+                            }));
+                          }}
+                          onBlur={() => {
+                            const raw = minsDraft[p.id];
+                            if (raw === undefined) return;
+                            setPlanMinutes(
+                              p.id,
+                              raw === '' ? p.minutes : Number(raw),
+                            );
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'ArrowUp') {
+                              e.preventDefault();
+                              bumpPlanMinutes(p.id, PLAN_MINS_STEP);
+                              return;
+                            }
+                            if (e.key === 'ArrowDown') {
+                              e.preventDefault();
+                              bumpPlanMinutes(p.id, -PLAN_MINS_STEP);
+                              return;
+                            }
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              (e.target as HTMLInputElement).blur();
+                              return;
+                            }
+                            if (
+                              e.ctrlKey ||
+                              e.metaKey ||
+                              e.altKey ||
+                              e.key === 'Backspace' ||
+                              e.key === 'Delete' ||
+                              e.key === 'Tab' ||
+                              e.key === 'Escape' ||
+                              e.key === 'ArrowLeft' ||
+                              e.key === 'ArrowRight' ||
+                              e.key === 'Home' ||
+                              e.key === 'End'
+                            ) {
+                              return;
+                            }
+                            if (!/^\d$/.test(e.key)) e.preventDefault();
+                          }}
+                          onPaste={(e) => {
+                            e.preventDefault();
+                            const digits = (
+                              e.clipboardData.getData('text') || ''
+                            )
+                              .replace(/\D/g, '')
+                              .slice(0, 3);
+                            setMinsDraft((prev) => ({
+                              ...prev,
+                              [p.id]: digits,
+                            }));
+                          }}
+                        />
+                        <span className="onboard-plan-unit">min</span>
+                        <div className="onboard-plan-stepper">
+                          <button
+                            type="button"
+                            className="onboard-plan-step"
+                            aria-label={`Increase task ${index + 1} duration`}
+                            tabIndex={-1}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() =>
+                              bumpPlanMinutes(p.id, PLAN_MINS_STEP)
+                            }
+                          >
+                            <svg
+                              className="onboard-plan-step-icon"
+                              viewBox="0 0 12 8"
+                              width="12"
+                              height="8"
+                              aria-hidden
+                            >
+                              <path
+                                d="M1.5 6.25 L6 1.75 L10.5 6.25"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.75"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            className="onboard-plan-step"
+                            aria-label={`Decrease task ${index + 1} duration`}
+                            tabIndex={-1}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() =>
+                              bumpPlanMinutes(p.id, -PLAN_MINS_STEP)
+                            }
+                          >
+                            <svg
+                              className="onboard-plan-step-icon"
+                              viewBox="0 0 12 8"
+                              width="12"
+                              height="8"
+                              aria-hidden
+                            >
+                              <path
+                                d="M1.5 1.75 L6 6.25 L10.5 1.75"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.75"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                      <label
+                        className={`onboard-plan-recur${p.recurring ? ' is-on' : ''}`}
+                        title="Repeat on your workdays"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={p.recurring}
+                          onChange={(e) => {
+                            setPlans((prev) =>
+                              prev.map((row) =>
+                                row.id === p.id
+                                  ? { ...row, recurring: e.target.checked }
+                                  : row,
+                              ),
+                            );
+                          }}
+                        />
+                        <span className="onboard-plan-recur-mark" aria-hidden />
+                        <span>Weekly</span>
+                      </label>
+                    </div>
+                  </div>
                   <button
                     type="button"
-                    className="btn btn-ghost onboard-plan-remove"
+                    className="onboard-plan-remove"
                     aria-label={`Remove ${p.name || 'task'}`}
                     title="Remove"
                     onClick={() =>
                       setPlans((prev) => prev.filter((row) => row.id !== p.id))
                     }
                   >
-                    Remove
+                    <span aria-hidden>×</span>
                   </button>
                 </div>
               ))}
               {plans.length < 6 && (
                 <button
                   type="button"
-                  className="btn btn-secondary onboard-add-plan"
+                  className="onboard-add-plan"
                   onClick={() =>
                     setPlans((prev) => [
                       ...prev,
@@ -784,7 +919,10 @@ export function OnboardingFlow({
                     ])
                   }
                 >
-                  + Add a task
+                  <span className="onboard-add-plan-plus" aria-hidden>
+                    +
+                  </span>
+                  Add another block
                 </button>
               )}
             </div>

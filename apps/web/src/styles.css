@@ -5616,6 +5616,30 @@ td.is-under,
   font-size: 0.68rem;
   color: var(--text-muted);
   font-weight: 500;
+  margin-left: 4px;
+}
+
+.timesheet-hrs-hint.is-over {
+  color: color-mix(in srgb, #ff7043 80%, var(--text-muted));
+}
+
+.timesheet-hrs-hint.is-under {
+  color: color-mix(in srgb, #3ecf8e 75%, var(--text-muted));
+}
+
+.timesheet-hrs-est {
+  color: var(--text-muted);
+  font-weight: 550;
+}
+
+.timesheet-hrs-act {
+  font-weight: 750;
+  color: var(--text);
+}
+
+.timesheet-hrs-empty {
+  color: var(--text-muted);
+  font-weight: 500;
 }
 
 .timesheet-remarks {
@@ -9549,6 +9573,28 @@ td.is-under,
 .overflow-modal-actions .btn {
   width: 100%;
   justify-content: center;
+  gap: 8px;
+}
+
+.overflow-modal-actions .btn[aria-busy='true'] {
+  opacity: 0.92;
+  cursor: wait;
+}
+
+.overflow-btn-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  animation: overflow-btn-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes overflow-btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 [data-theme='light'] .overflow-modal {

@@ -339,6 +339,7 @@ function TaskDetail({
   const dirtyNotes = notesDraft !== (task.notes ?? '');
 
   const onSave = () => {
+    if (running) return;
     const name = nameDraft.trim();
     if (!name) return;
     const body: { name?: string; estimatedMinutes?: number } = {};
@@ -357,6 +358,7 @@ function TaskDetail({
   };
 
   const onAddComment = () => {
+    if (running) return;
     const line = comment.trim();
     if (!line) return;
     const stamp = new Date().toLocaleString(undefined, {
@@ -414,7 +416,7 @@ function TaskDetail({
           <span>Task name</span>
           <input
             value={nameDraft}
-            disabled={done}
+            disabled={done || running}
             onChange={(e) => setNameDraft(e.target.value)}
           />
         </label>
@@ -429,7 +431,7 @@ function TaskDetail({
               min={5}
               step={5}
               value={minsDraft}
-              disabled={done}
+              disabled={done || running}
               onChange={(e) => setMinsDraft(e.target.value)}
             />
             <em>minutes</em>
@@ -443,6 +445,7 @@ function TaskDetail({
           rows={5}
           value={notesDraft}
           placeholder="Notes stay with this task"
+          disabled={running}
           onChange={(e) => setNotesDraft(e.target.value)}
         />
       </label>
@@ -451,7 +454,10 @@ function TaskDetail({
         <input
           type="text"
           value={comment}
-          placeholder="Add a comment"
+          placeholder={
+            running ? 'Pause the timer to add comments' : 'Add a comment'
+          }
+          disabled={running}
           onChange={(e) => setComment(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
@@ -463,7 +469,7 @@ function TaskDetail({
         <button
           type="button"
           className="btn btn-ghost btn-sm"
-          disabled={busy || !comment.trim()}
+          disabled={busy || running || !comment.trim()}
           onClick={onAddComment}
         >
           Add
@@ -500,7 +506,7 @@ function TaskDetail({
             >
               {done ? 'Reopen' : 'Mark done'}
             </button>
-            {!locked && (
+            {!locked && !running && (
               <button
                 type="button"
                 className="btn btn-primary btn-pill"
@@ -512,7 +518,7 @@ function TaskDetail({
             )}
           </>
         )}
-        {!locked && (
+        {!locked && !running && (
           <button
             type="button"
             className="btn btn-ghost tw-delete"

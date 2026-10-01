@@ -19,7 +19,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { api, formatTimeRange, todayISO, parseInstant, shiftDateISO } from '../api';
 import { MeetSourceBadge } from '../components/MeetSourceBadge';
-import { HintMark } from '../components/ui-hints';
+import { HintMark, UiTooltip } from '../components/ui-hints';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import {
   createTaskOptimistic,
@@ -101,7 +101,16 @@ function optimisticRepackSchedule(
     if (e > s) fixedBusy.push({ start: s, end: e });
   }
   for (const t of ordered) {
-    if (!(t.scheduleLocked || t.status === 'completed')) continue;
+    // Meetings, completed, and live timers keep their slot — never move a running task.
+    if (
+      !(
+        t.scheduleLocked ||
+        t.status === 'completed' ||
+        Boolean(t.activeEntryId)
+      )
+    ) {
+      continue;
+    }
     if (!t.scheduledStart || !t.scheduledEnd) continue;
     const s = minutesOf(t.scheduledStart, opts.timeZone);
     const e = minutesOf(t.scheduledEnd, opts.timeZone);
@@ -119,7 +128,13 @@ function optimisticRepackSchedule(
   );
 
   for (const t of ordered) {
-    if (t.scheduleLocked || t.status === 'completed') continue;
+    if (
+      t.scheduleLocked ||
+      t.status === 'completed' ||
+      Boolean(t.activeEntryId)
+    ) {
+      continue;
+    }
     const duration = Math.max(5, t.estimatedMinutes || 30);
     let placed: { start: number; end: number } | null = null;
     for (const gap of free) {
@@ -192,6 +207,7 @@ function resolveDisplaySchedule(
     (t) =>
       !t.scheduleLocked &&
       t.status !== 'completed' &&
+      !t.activeEntryId &&
       t.scheduledStart &&
       t.scheduledEnd,
   );
@@ -546,6 +562,7 @@ export function TodayPage({
     workStart: string;
     workEnd: string;
   } | null>(null);
+  const [overflowMovingNext, setOverflowMovingNext] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   const reduxTasks = useAppSelector((s) => {
@@ -1082,6 +1099,7 @@ export function TodayPage({
         (t) =>
           !t.scheduleLocked &&
           t.status !== 'completed' &&
+          !t.activeEntryId &&
           t.scheduledStart &&
           t.scheduledEnd,
       )
@@ -1166,6 +1184,7 @@ export function TodayPage({
     for (const t of tasks) {
       if (t.id === taskId || t.status === 'completed') continue;
       if (!t.scheduledStart || !t.scheduledEnd) continue;
+      // Live timers are fixed on the plan — don't allow drops over them.
       const os = minutesOf(t.scheduledStart, timeZone);
       const oe = minutesOf(t.scheduledEnd, timeZone);
       if (startMin < oe && endMin > os) return false;
@@ -1178,7 +1197,8 @@ export function TodayPage({
     task: TaskDto,
     startMin: number,
   ) => {
-    if (task.scheduleLocked || task.status === 'completed') return;
+    if (task.scheduleLocked || task.status === 'completed' || task.activeEntryId)
+      return;
     if (e.button !== 0) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     planDragRef.current = {
@@ -1260,7 +1280,12 @@ export function TodayPage({
     const oldIndex = tasks.findIndex((t) => t.id === active.id);
     const newIndex = tasks.findIndex((t) => t.id === over.id);
     if (oldIndex < 0 || newIndex < 0) return;
-    if (tasks[oldIndex]?.scheduleLocked || tasks[newIndex]?.scheduleLocked) {
+    if (
+      tasks[oldIndex]?.scheduleLocked ||
+      tasks[newIndex]?.scheduleLocked ||
+      tasks[oldIndex]?.activeEntryId ||
+      tasks[newIndex]?.activeEntryId
+    ) {
       return;
     }
     const previous = tasks.map((t, i) => ({ ...t, order: i }));
@@ -1643,7 +1668,7 @@ export function TodayPage({
                           }${done ? ' is-done' : ''}${
                             isLive ? ' is-live' : ''
                           }${
-                            !meet && !done ? ' is-draggable' : ''
+                            !meet && !done && !isLive ? ' is-draggable' : ''
                           }${
                             planDragPreview?.taskId === t.id ? ' is-dragging-plan' : ''
                           }${
@@ -1656,21 +1681,26 @@ export function TodayPage({
                             left: `calc(${lane * widthPct}% + 4px)`,
                             width: `calc(${widthPct}% - 8px)`,
                             right: 'auto',
-                            cursor: meet || done ? undefined : 'grab',
+                            cursor:
+                              meet || done || isLive ? undefined : 'grab',
                           }}
                           onPointerDown={
-                            meet || done
+                            meet || done || isLive
                               ? undefined
                               : (ev) => onPlanBlockPointerDown(ev, t, block.start)
                           }
                           onPointerMove={
-                            meet || done ? undefined : onPlanBlockPointerMove
+                            meet || done || isLive
+                              ? undefined
+                              : onPlanBlockPointerMove
                           }
                           onPointerUp={
-                            meet || done ? undefined : onPlanBlockPointerUp
+                            meet || done || isLive
+                              ? undefined
+                              : onPlanBlockPointerUp
                           }
                           onPointerCancel={
-                            meet || done
+                            meet || done || isLive
                               ? undefined
                               : () => {
                                   planDragRef.current = null;
@@ -1678,9 +1708,11 @@ export function TodayPage({
                                 }
                           }
                           title={
-                            meet || done
-                              ? undefined
-                              : 'Drag to move — must fit without overlapping'
+                            isLive
+                              ? 'Pause the timer to move this task'
+                              : meet || done
+                                ? undefined
+                                : 'Drag to move — must fit without overlapping'
                           }
                         >
                           <div className="cal-block-main">
@@ -2069,13 +2101,17 @@ export function TodayPage({
         <div
           className="overflow-modal-backdrop"
           role="presentation"
-          onClick={() => setOverflowPrompt(null)}
+          onClick={() => {
+            if (overflowMovingNext) return;
+            setOverflowPrompt(null);
+          }}
         >
           <div
             className="overflow-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="overflow-modal-title"
+            aria-busy={overflowMovingNext}
             onClick={(ev) => ev.stopPropagation()}
           >
             <h2 id="overflow-modal-title">
@@ -2090,33 +2126,52 @@ export function TodayPage({
               <button
                 type="button"
                 className="btn btn-primary"
+                disabled={overflowMovingNext}
+                aria-busy={overflowMovingNext}
                 onClick={() => {
+                  if (overflowMovingNext) return;
                   const prompt = overflowPrompt;
+                  setOverflowMovingNext(true);
                   void (async () => {
-                    const next = await findNextWorkingDay(
-                      prompt.targetDate,
-                      prompt.estimatedMinutes,
-                    );
-                    if (!next) {
-                      setOverflowPrompt(null);
-                      setFormError(
-                        'No free working day found in the next two weeks.',
+                    try {
+                      const next = await findNextWorkingDay(
+                        prompt.targetDate,
+                        prompt.estimatedMinutes,
                       );
-                      return;
+                      if (!next) {
+                        setOverflowMovingNext(false);
+                        setOverflowPrompt(null);
+                        setFormError(
+                          'No free working day found in the next two weeks.',
+                        );
+                        return;
+                      }
+                      commitNewTask({
+                        targetDate: next,
+                        name: prompt.name,
+                        estimatedMinutes: prompt.estimatedMinutes,
+                      });
+                      setOverflowMovingNext(false);
+                    } catch {
+                      setOverflowMovingNext(false);
+                      setFormError('Could not move the task to another day.');
                     }
-                    commitNewTask({
-                      targetDate: next,
-                      name: prompt.name,
-                      estimatedMinutes: prompt.estimatedMinutes,
-                    });
                   })();
                 }}
               >
-                Move to next day
+                {overflowMovingNext ? (
+                  <>
+                    <span className="overflow-btn-spinner" aria-hidden />
+                    Moving…
+                  </>
+                ) : (
+                  'Move to next day'
+                )}
               </button>
               <button
                 type="button"
                 className="btn btn-outline"
+                disabled={overflowMovingNext}
                 onClick={() => {
                   const prompt = overflowPrompt;
                   commitNewTask({
@@ -2132,6 +2187,7 @@ export function TodayPage({
               <button
                 type="button"
                 className="btn btn-outline"
+                disabled={overflowMovingNext}
                 onClick={() => {
                   const prompt = overflowPrompt;
                   commitNewTask({
@@ -2148,6 +2204,7 @@ export function TodayPage({
               <button
                 type="button"
                 className="btn btn-ghost"
+                disabled={overflowMovingNext}
                 onClick={() => setOverflowPrompt(null)}
               >
                 Cancel
@@ -2357,14 +2414,9 @@ function BacklogSection({
   return (
     <div className="priority-section backlog-section">
       <div className="priority-header">
-        <div>
-          <h3 className="section-label" style={{ marginBottom: 2 }}>
-            Backlog <HintMark id="dash.backlog" placement="top" />
-          </h3>
-          <p className="priority-sub">
-            Unscheduled tasks — park from the plan, or overflow that couldn’t fit.
-          </p>
-        </div>
+        <h3 className="section-label">
+          Backlog <HintMark id="dash.backlog" placement="top" />
+        </h3>
         {tasks.length > 0 && (
           <span className="priority-count">{tasks.length}</span>
         )}
@@ -2483,6 +2535,8 @@ function SortableTask({
   const locked = Boolean(task.scheduleLocked);
   const done = task.status === 'completed';
   const running = Boolean(task.activeEntryId);
+  /** While timer is on, only Pause / Complete — no schedule or content edits. */
+  const timerLocked = running;
   const today = todayISO(timeZone);
   const isFutureDay = task.date > today;
   const liveOtherId = useAppSelector((s) => {
@@ -2508,7 +2562,7 @@ function SortableTask({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: task.id, disabled: locked || done });
+  } = useSortable({ id: task.id, disabled: locked || done || timerLocked });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -2520,6 +2574,13 @@ function SortableTask({
     setNameDraft(task.name);
     setMinsDraft(String(task.estimatedMinutes));
   }, [task.notes, task.name, task.estimatedMinutes, task.id]);
+
+  useEffect(() => {
+    if (!timerLocked) return;
+    setEditing(false);
+    setCommentsOpen(false);
+    setEditError(null);
+  }, [timerLocked]);
 
   const dispatch = useAppDispatch();
   const [actionBusy, setActionBusy] = useState(false);
@@ -2594,6 +2655,7 @@ function SortableTask({
   };
 
   const saveEdits = () => {
+    if (timerLocked) return;
     const name = nameDraft.trim();
     if (!name) {
       setEditError('Name is required.');
@@ -2657,9 +2719,17 @@ function SortableTask({
         .filter(Boolean)
         .join(' ')}
     >
-      {locked ? (
-        <span className="priority-grip is-locked" title="Fixed meeting time" aria-hidden>
-          ⌖
+      {locked || timerLocked ? (
+        <span
+          className="priority-grip is-locked"
+          title={
+            timerLocked
+              ? 'Pause the timer to reorder'
+              : 'Fixed meeting time'
+          }
+          aria-hidden
+        >
+          {timerLocked ? '●' : '⌖'}
         </span>
       ) : (
         <button
@@ -2697,7 +2767,7 @@ function SortableTask({
 
       <div className="priority-body">
         <div className="priority-title-row">
-          {editing && !locked ? (
+          {editing && !locked && !timerLocked ? (
             <input
               className="priority-title-input"
               value={nameDraft}
@@ -2714,11 +2784,19 @@ function SortableTask({
           ) : (
             <strong
               className="priority-title"
-              title={locked ? undefined : 'Click to rename'}
+              title={
+                timerLocked
+                  ? 'Pause the timer to edit'
+                  : locked
+                    ? undefined
+                    : 'Click to rename'
+              }
               onClick={() => {
-                if (!locked && !done) setEditing(true);
+                if (!locked && !done && !timerLocked) setEditing(true);
               }}
-              style={{ cursor: locked || done ? undefined : 'text' }}
+              style={{
+                cursor: locked || done || timerLocked ? undefined : 'text',
+              }}
             >
               {task.name}
             </strong>
@@ -2753,7 +2831,7 @@ function SortableTask({
           <span className="queue-cat">
             {locked || task.meetLink ? 'Meeting' : 'Deep work'}
           </span>
-          {editing && !locked ? (
+          {editing && !locked && !timerLocked ? (
             <span className="priority-time-edit" aria-label="Task duration">
               <input
                 className="priority-mins-input"
@@ -2807,16 +2885,22 @@ function SortableTask({
               type="button"
               className="priority-mins-btn"
               onClick={() => {
-                if (!locked && !done) setEditing(true);
+                if (!locked && !done && !timerLocked) setEditing(true);
               }}
-              disabled={locked || done}
-              title={locked ? undefined : 'Edit duration'}
+              disabled={locked || done || timerLocked}
+              title={
+                timerLocked
+                  ? 'Pause the timer to change duration'
+                  : locked
+                    ? undefined
+                    : 'Edit duration'
+              }
             >
               {task.estimatedMinutes}m
             </button>
           )}
           {task.actualMinutes > 0 ? ` · ${Math.round(task.actualMinutes)}m actual` : ''}
-          {editing && !locked && (
+          {editing && !locked && !timerLocked && (
             <span className="priority-edit-actions">
               <button
                 type="button"
@@ -2921,24 +3005,36 @@ function SortableTask({
       </div>
 
       <div className="priority-actions">
-        <button
-          className={`btn btn-ghost btn-pill btn-sm priority-icon-btn${commentsOpen ? ' is-active' : ''}`}
-          type="button"
-          title={commentsOpen ? 'Hide notes' : 'Notes'}
-          aria-label={commentsOpen ? 'Hide notes' : 'Notes'}
-          aria-expanded={commentsOpen}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setCommentsOpen((o) => !o);
-          }}
+        <UiTooltip
+          label={
+            timerLocked
+              ? 'Pause the timer to edit notes'
+              : commentsOpen
+                ? 'Hide notes'
+                : 'Notes'
+          }
+          placement="top"
         >
-          <NotesIcon />
-          {hasNotes && !commentsOpen ? (
-            <i className="priority-icon-dot" aria-hidden />
-          ) : null}
-        </button>
+          <button
+            className={`btn btn-ghost btn-pill btn-sm priority-icon-btn${commentsOpen ? ' is-active' : ''}`}
+            type="button"
+            aria-label={commentsOpen ? 'Hide notes' : 'Notes'}
+            aria-expanded={commentsOpen}
+            disabled={timerLocked}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (timerLocked) return;
+              setCommentsOpen((o) => !o);
+            }}
+          >
+            <NotesIcon />
+            {hasNotes && !commentsOpen ? (
+              <i className="priority-icon-dot" aria-hidden />
+            ) : null}
+          </button>
+        </UiTooltip>
         {task.meetLink && (
           <a
             className="btn btn-outline btn-pill btn-sm"
@@ -2949,27 +3045,28 @@ function SortableTask({
             Join
           </a>
         )}
-        {!locked && !done && (
-          <button
-            className="btn btn-ghost btn-pill btn-sm priority-icon-btn"
-            type="button"
-            disabled={busy}
-            title="Park in Backlog (unscheduled)"
-            aria-label="Park in Backlog"
-            onClick={() =>
-              void runAction(async () => {
-                dispatch(tasksActions.optimisticToBacklog({ taskId: task.id }));
-                await dispatch(
-                  moveToBacklogOptimistic({
-                    taskId: task.id,
-                    date: task.date,
-                  }),
-                );
-              })
-            }
-          >
-            <ParkIcon />
-          </button>
+        {!locked && !done && !timerLocked && (
+          <UiTooltip label="Park in Backlog" placement="top">
+            <button
+              className="btn btn-ghost btn-pill btn-sm priority-icon-btn"
+              type="button"
+              disabled={busy}
+              aria-label="Park in Backlog"
+              onClick={() =>
+                void runAction(async () => {
+                  dispatch(tasksActions.optimisticToBacklog({ taskId: task.id }));
+                  await dispatch(
+                    moveToBacklogOptimistic({
+                      taskId: task.id,
+                      date: task.date,
+                    }),
+                  );
+                })
+              }
+            >
+              <ParkIcon />
+            </button>
+          </UiTooltip>
         )}
         {running ? (
           <button

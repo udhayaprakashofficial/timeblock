@@ -16,10 +16,14 @@ function statusLabel(status: string) {
 
 function hoursLabel(minutes: number) {
   const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
+  const m = Math.round(minutes % 60);
   if (h <= 0) return `${m}m`;
   if (m === 0) return `${h}h`;
   return `${h}h ${m}m`;
+}
+
+function hoursDecimal(minutes: number) {
+  return (Math.max(0, minutes) / 60).toFixed(2);
 }
 
 function clock(iso: string | null | undefined, timeZone?: string | null) {
@@ -32,6 +36,11 @@ function clock(iso: string | null | undefined, timeZone?: string | null) {
     minute: '2-digit',
     timeZone: tz,
   });
+}
+
+/** Logged time for the sheet — never fall back to estimate in the Actual column. */
+function actualUsedMinutes(t: EodTaskRowDto): number {
+  return Math.max(0, Number(t.actualMinutes) || 0);
 }
 
 export type TimesheetSheetProps = {
@@ -105,10 +114,10 @@ export function TimesheetSheetView({
           <p>{employeeEmail || '—'}</p>
         </div>
         <div>
-          <span>Total hours (actual)</span>
+          <span>Hours used (actual)</span>
           <strong>{hoursLabel(totalActual)}</strong>
           <p>
-            Estimated {hoursLabel(totalEst)} · {summary?.completed ?? 0}/
+            Planned {hoursLabel(totalEst)} · {summary?.completed ?? 0}/
             {summary?.total ?? 0} tasks done
           </p>
         </div>
@@ -122,55 +131,77 @@ export function TimesheetSheetView({
               <th>Task / activity</th>
               <th>From</th>
               <th>To</th>
-              <th>Hours</th>
+              <th>Est. hours</th>
+              <th>Actual hours</th>
               <th>Status</th>
               <th>Remarks</th>
             </tr>
           </thead>
           <tbody>
-            {tasks.map((t, i) => (
-              <tr
-                key={t.id}
-                className={t.status === 'completed' ? 'is-done' : ''}
-              >
-                <td className="mono">{i + 1}</td>
-                <td>
-                  <strong>{t.name}</strong>
-                  {t.scheduleLocked ? (
-                    <MeetSourceBadge meetLink={t.meetLink} />
-                  ) : null}
-                </td>
-                <td className="mono">{clock(t.scheduledStart, timeZone)}</td>
-                <td className="mono">{clock(t.scheduledEnd, timeZone)}</td>
-                <td className="mono">
-                  {(
-                    (t.actualMinutes > 0
-                      ? t.actualMinutes
-                      : t.estimatedMinutes) / 60
-                  ).toFixed(2)}
-                  <span className="timesheet-hrs-hint">
-                    {t.actualMinutes > 0 ? ' act' : ' est'}
-                  </span>
-                </td>
-                <td>
-                  <span className={`status-pill ${t.status}`}>
-                    {statusLabel(t.status)}
-                  </span>
-                </td>
-                <td className="timesheet-remarks">{t.notes?.trim() || '—'}</td>
-              </tr>
-            ))}
+            {tasks.map((t, i) => {
+              const actual = actualUsedMinutes(t);
+              const variance = actual - (t.estimatedMinutes || 0);
+              return (
+                <tr
+                  key={t.id}
+                  className={t.status === 'completed' ? 'is-done' : ''}
+                >
+                  <td className="mono">{i + 1}</td>
+                  <td>
+                    <strong>{t.name}</strong>
+                    {t.scheduleLocked ? (
+                      <MeetSourceBadge meetLink={t.meetLink} />
+                    ) : null}
+                  </td>
+                  <td className="mono">{clock(t.scheduledStart, timeZone)}</td>
+                  <td className="mono">{clock(t.scheduledEnd, timeZone)}</td>
+                  <td className="mono timesheet-hrs-est">
+                    {hoursDecimal(t.estimatedMinutes || 0)}
+                  </td>
+                  <td className="mono timesheet-hrs-act">
+                    {actual > 0 ? (
+                      <>
+                        {hoursDecimal(actual)}
+                        {t.status === 'completed' &&
+                        Math.abs(variance) >= 1 ? (
+                          <span
+                            className={`timesheet-hrs-hint${
+                              variance > 0 ? ' is-over' : ' is-under'
+                            }`}
+                          >
+                            {variance > 0
+                              ? ` +${hoursDecimal(variance)}`
+                              : ` ${hoursDecimal(variance)}`}
+                          </span>
+                        ) : null}
+                      </>
+                    ) : (
+                      <span className="timesheet-hrs-empty">—</span>
+                    )}
+                  </td>
+                  <td>
+                    <span className={`status-pill ${t.status}`}>
+                      {statusLabel(t.status)}
+                    </span>
+                  </td>
+                  <td className="timesheet-remarks">{t.notes?.trim() || '—'}</td>
+                </tr>
+              );
+            })}
             {tasks.length === 0 && (
               <tr>
-                <td colSpan={7}>No tasks for this date.</td>
+                <td colSpan={8}>No tasks for this date.</td>
               </tr>
             )}
           </tbody>
           {tasks.length > 0 && (
             <tfoot>
               <tr>
-                <td colSpan={4}>Total hours (actual)</td>
-                <td className="mono">{(totalActual / 60).toFixed(2)}</td>
+                <td colSpan={4}>Totals</td>
+                <td className="mono">{hoursDecimal(totalEst)}</td>
+                <td className="mono timesheet-hrs-act">
+                  {hoursDecimal(totalActual)}
+                </td>
                 <td colSpan={2} />
               </tr>
             </tfoot>
@@ -179,7 +210,8 @@ export function TimesheetSheetView({
       </div>
 
       <p className="timesheet-footnote">
-        Timesheet for {dateLabel}. Hours from Cupkey task timers and schedule.
+        Timesheet for {dateLabel}. Actual hours come from Start / Pause / Done
+        sessions — planned estimates stay in Est. hours.
         {footnoteExtra ? ` ${footnoteExtra}` : ''}
       </p>
     </article>

@@ -47,6 +47,44 @@ function clock(iso: string | null | undefined, timeZone?: string | null) {
   });
 }
 
+/** Banked + live open-timer minutes for a task. */
+function liveActualMinutes(t: TaskDto): number {
+  const banked = Math.max(0, Number(t.actualMinutes) || 0);
+  if (!t.activeEntryId || !t.timerStartedAt) return banked;
+  const started = Date.parse(t.timerStartedAt);
+  if (!Number.isFinite(started)) return banked;
+  const liveMin = Math.max(0, (Date.now() - started) / 60_000);
+  return banked + liveMin;
+}
+
+function rebuildSummary(
+  date: string,
+  rows: EodSheetDto['tasks'],
+): EodSheetDto {
+  const total = rows.length;
+  const completed = rows.filter((t) => t.status === 'completed').length;
+  const inProgress = rows.filter((t) => t.status === 'in_progress').length;
+  return {
+    date,
+    generatedAt: new Date().toISOString(),
+    summary: {
+      total,
+      completed,
+      pending: total - completed,
+      inProgress,
+      estimatedMinutes: rows.reduce((s, t) => s + (t.estimatedMinutes || 0), 0),
+      actualMinutes: rows.reduce((s, t) => s + (t.actualMinutes || 0), 0),
+      completionPercent:
+        total === 0 ? 0 : Math.round((completed / total) * 100),
+    },
+    tasks: rows,
+    shipped: rows.filter((t) => t.status === 'completed').map((t) => t.name),
+    remaining: rows
+      .filter((t) => t.status !== 'completed')
+      .map((t) => t.name),
+  };
+}
+
 function isIsoDate(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
@@ -160,45 +198,70 @@ export function TimesheetPage({
     queryFn: () => api.get<EodSheetDto>(`/api/stats/eod?date=${date}`),
   });
 
-  // Prefer EOD (includes backlog-dated history); fall back to live plan tasks
+  // Prefer EOD (includes backlog-dated history); merge live task actuals so
+  // timer / Done minutes show in Actual hours without waiting on a stale EOD.
   const sheet: EodSheetDto | null = useMemo(() => {
-    if (eodQ.data) return eodQ.data;
-    const list = tasksQ.data ?? [];
-    if (!list.length) return null;
-    const rows = list.map((t) => ({
-      id: t.id,
-      name: t.name,
-      status: t.status,
-      estimatedMinutes: t.estimatedMinutes,
-      actualMinutes: t.actualMinutes,
-      varianceMinutes: t.actualMinutes - t.estimatedMinutes,
-      scheduledStart: t.scheduledStart,
-      scheduledEnd: t.scheduledEnd,
-      scheduleLocked: Boolean(t.scheduleLocked),
-      meetLink: t.meetLink ?? null,
-      notes: t.notes ?? null,
-    }));
-    const total = rows.length;
-    const completed = rows.filter((t) => t.status === 'completed').length;
-    return {
-      date,
-      generatedAt: new Date().toISOString(),
-      summary: {
-        total,
-        completed,
-        pending: total - completed,
-        inProgress: rows.filter((t) => t.status === 'in_progress').length,
-        estimatedMinutes: rows.reduce((s, t) => s + t.estimatedMinutes, 0),
-        actualMinutes: rows.reduce((s, t) => s + t.actualMinutes, 0),
-        completionPercent:
-          total === 0 ? 0 : Math.round((completed / total) * 100),
-      },
-      tasks: rows,
-      shipped: rows.filter((t) => t.status === 'completed').map((t) => t.name),
-      remaining: rows
-        .filter((t) => t.status !== 'completed')
-        .map((t) => t.name),
-    };
+    const liveList = tasksQ.data ?? [];
+    const liveById = new Map(liveList.map((t) => [t.id, t]));
+
+    if (eodQ.data) {
+      const seen = new Set<string>();
+      const rows = eodQ.data.tasks.map((row) => {
+        seen.add(row.id);
+        const live = liveById.get(row.id);
+        const actual = live
+          ? Math.max(row.actualMinutes || 0, liveActualMinutes(live))
+          : Math.max(0, row.actualMinutes || 0);
+        return {
+          ...row,
+          actualMinutes: actual,
+          varianceMinutes: actual - (row.estimatedMinutes || 0),
+          notes: live?.notes ?? row.notes,
+          status: live?.status ?? row.status,
+        };
+      });
+      // Include same-day tasks present in live fetch but missing from EOD.
+      for (const t of liveList) {
+        if (seen.has(t.id)) continue;
+        const actual = liveActualMinutes(t);
+        rows.push({
+          id: t.id,
+          name: t.name,
+          status: t.status,
+          estimatedMinutes: t.estimatedMinutes,
+          actualMinutes: actual,
+          varianceMinutes: actual - t.estimatedMinutes,
+          scheduledStart: t.scheduledStart,
+          scheduledEnd: t.scheduledEnd,
+          scheduleLocked: Boolean(t.scheduleLocked),
+          meetLink: t.meetLink ?? null,
+          notes: t.notes ?? null,
+        });
+      }
+      return {
+        ...rebuildSummary(date, rows),
+        generatedAt: eodQ.data.generatedAt,
+      };
+    }
+
+    if (!liveList.length) return null;
+    const rows = liveList.map((t) => {
+      const actual = liveActualMinutes(t);
+      return {
+        id: t.id,
+        name: t.name,
+        status: t.status,
+        estimatedMinutes: t.estimatedMinutes,
+        actualMinutes: actual,
+        varianceMinutes: actual - t.estimatedMinutes,
+        scheduledStart: t.scheduledStart,
+        scheduledEnd: t.scheduledEnd,
+        scheduleLocked: Boolean(t.scheduleLocked),
+        meetLink: t.meetLink ?? null,
+        notes: t.notes ?? null,
+      };
+    });
+    return rebuildSummary(date, rows);
   }, [eodQ.data, tasksQ.data, date]);
 
   const tasks = sheet?.tasks ?? [];
