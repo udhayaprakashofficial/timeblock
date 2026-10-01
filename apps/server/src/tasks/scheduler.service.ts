@@ -287,7 +287,12 @@ export class SchedulerService {
   async rescheduleDay(
     userId: string,
     dateStr: string,
-    options?: { repackUnlocked?: boolean; ignorePackingFloor?: boolean },
+    options?: {
+      repackUnlocked?: boolean;
+      ignorePackingFloor?: boolean;
+      allowOvertime?: boolean;
+      overtimeMinutes?: number;
+    },
   ) {
     try {
       await this.reschedulePrisma(userId, dateStr, options);
@@ -308,7 +313,12 @@ export class SchedulerService {
   async rescheduleDayPreferRest(
     userId: string,
     dateStr: string,
-    options?: { repackUnlocked?: boolean; ignorePackingFloor?: boolean },
+    options?: {
+      repackUnlocked?: boolean;
+      ignorePackingFloor?: boolean;
+      allowOvertime?: boolean;
+      overtimeMinutes?: number;
+    },
   ) {
     if (this.supabase?.isConfigured()) {
       try {
@@ -437,6 +447,21 @@ export class SchedulerService {
   }
 
   /**
+   * Append free time after the workday so a task can pack into overtime.
+   * Only used when the user explicitly chose “Add to end of the day”.
+   */
+  private ensureOvertimePackWindow(
+    intervals: Interval[],
+    extraMinutes = 8 * 60,
+  ): Interval[] {
+    const coverageEnd = intervals.reduce((m, i) => Math.max(m, i.end), 0);
+    const start = coverageEnd;
+    const end = Math.min(24 * 60, start + Math.max(60, extraMinutes));
+    if (end <= start) return intervals;
+    return [...intervals, { start, end }];
+  }
+
+  /**
    * If “now” is past (or nearly past) the workday end, open an evening
    * window so new tasks still land on the plan.
    *
@@ -462,7 +487,12 @@ export class SchedulerService {
   private async reschedulePrisma(
     userId: string,
     dateStr: string,
-    options?: { repackUnlocked?: boolean; ignorePackingFloor?: boolean },
+    options?: {
+      repackUnlocked?: boolean;
+      ignorePackingFloor?: boolean;
+      allowOvertime?: boolean;
+      overtimeMinutes?: number;
+    },
   ) {
     const day = dateOnly(dateStr);
     const timeZone = await this.resolveTimeZone(userId);
@@ -470,7 +500,12 @@ export class SchedulerService {
       ? null
       : this.packingFloorMinutes(dateStr, timeZone);
     const available = await this.getAvailablePrisma(userId, dateStr);
-    const intervals = this.ensureEveningPackWindow(available.intervals, floor);
+    let intervals = options?.allowOvertime
+      ? this.ensureOvertimePackWindow(
+          available.intervals,
+          options.overtimeMinutes,
+        )
+      : this.ensureEveningPackWindow(available.intervals, floor);
     const tasks = await this.prisma.task.findMany({
       where: { userId, date: day, inBacklog: false },
       orderBy: { order: 'asc' },
@@ -480,7 +515,7 @@ export class SchedulerService {
       intervals,
       dateStr,
       timeZone,
-      floor,
+      options?.allowOvertime ? null : floor,
       options,
     );
     for (const p of packed) {
@@ -515,14 +550,24 @@ export class SchedulerService {
   private async rescheduleRest(
     userId: string,
     dateStr: string,
-    options?: { repackUnlocked?: boolean; ignorePackingFloor?: boolean },
+    options?: {
+      repackUnlocked?: boolean;
+      ignorePackingFloor?: boolean;
+      allowOvertime?: boolean;
+      overtimeMinutes?: number;
+    },
   ) {
     const timeZone = await this.resolveTimeZone(userId);
     const floor = options?.ignorePackingFloor
       ? null
       : this.packingFloorMinutes(dateStr, timeZone);
     const available = await this.getAvailableRest(userId, dateStr);
-    const intervals = this.ensureEveningPackWindow(available.intervals, floor);
+    const intervals = options?.allowOvertime
+      ? this.ensureOvertimePackWindow(
+          available.intervals,
+          options.overtimeMinutes,
+        )
+      : this.ensureEveningPackWindow(available.intervals, floor);
     const tasks = (await this.supabase!.listTasks(userId, dateStr)).filter(
       (t) => !t.inBacklog,
     );
@@ -531,7 +576,7 @@ export class SchedulerService {
       intervals,
       dateStr,
       timeZone,
-      floor,
+      options?.allowOvertime ? null : floor,
       options,
     );
     const now = new Date().toISOString();

@@ -1154,28 +1154,68 @@ export class TasksService {
         scheduleLocked: payload.scheduleLocked,
         inBacklog: false,
       });
-      await this.scheduler.rescheduleDayPreferRest(id, payload.date);
-      const list = await this.supabase.listTasks(id, payload.date);
+      if (dto.overflowMode === 'reprioritize') {
+        const list = await this.supabase.listTasks(id, payload.date);
+        const ids = [
+          created.id,
+          ...list.filter((t) => t.id !== created.id).map((t) => t.id),
+        ];
+        for (let i = 0; i < ids.length; i++) {
+          await this.supabase.patch(
+            'Task',
+            `id=eq.${ids[i]}&userId=eq.${id}`,
+            { order: i, updatedAt: new Date().toISOString() },
+          );
+        }
+        await this.scheduler.rescheduleDayPreferRest(id, payload.date, {
+          repackUnlocked: true,
+          ignorePackingFloor: true,
+        });
+      } else if (dto.overflowMode === 'overtime') {
+        await this.scheduler.rescheduleDayPreferRest(id, payload.date, {
+          allowOvertime: true,
+          overtimeMinutes: payload.estimatedMinutes + 60,
+          ignorePackingFloor: true,
+          repackUnlocked: true,
+        });
+      } else {
+        await this.scheduler.rescheduleDayPreferRest(id, payload.date);
+      }
+      const dayList = await this.supabase.listTasks(id, payload.date);
       const backlog = await this.supabase.listBacklogTasks(id);
       return (
-        list.find((t) => t.id === created.id) ??
+        dayList.find((t) => t.id === created.id) ??
         backlog.find((t) => t.id === created.id) ??
-        list.find((t) => t.name === payload.name && t.date === payload.date) ??
+        dayList.find((t) => t.name === payload.name && t.date === payload.date) ??
         created
       );
     });
     if (fromDb) return fromDb as TaskDto;
 
     if (userId.startsWith('local_')) {
-      return this.local.createTask(userId, payload);
+      return this.local.createTask(userId, {
+        ...payload,
+        overflowMode: dto.overflowMode,
+      });
     }
     try {
       const day = dateOnly(payload.date);
-      const max = await this.prisma.task.aggregate({
+      const peers = await this.prisma.task.findMany({
         where: { userId, date: day, inBacklog: false },
-        _max: { order: true },
+        orderBy: { order: 'asc' },
       });
-      const order = (max._max.order ?? -1) + 1;
+      const order =
+        dto.overflowMode === 'reprioritize'
+          ? 0
+          : peers.reduce((max, t) => Math.max(max, t.order), -1) + 1;
+      if (dto.overflowMode === 'reprioritize') {
+        for (let i = 0; i < peers.length; i++) {
+          await this.prisma.task.update({
+            where: { id: peers[i]!.id },
+            data: { order: i + 1 },
+          });
+        }
+      }
       const task = await this.prisma.task.create({
         data: {
           userId,
@@ -1190,14 +1230,31 @@ export class TasksService {
         },
         include: { timeEntries: true },
       });
-      await this.scheduler.rescheduleDay(userId, payload.date);
+      if (dto.overflowMode === 'overtime') {
+        await this.scheduler.rescheduleDay(userId, payload.date, {
+          allowOvertime: true,
+          overtimeMinutes: payload.estimatedMinutes + 60,
+          ignorePackingFloor: true,
+          repackUnlocked: true,
+        });
+      } else if (dto.overflowMode === 'reprioritize') {
+        await this.scheduler.rescheduleDay(userId, payload.date, {
+          repackUnlocked: true,
+          ignorePackingFloor: true,
+        });
+      } else {
+        await this.scheduler.rescheduleDay(userId, payload.date);
+      }
       const refreshed = await this.prisma.task.findUnique({
         where: { id: task.id },
         include: { timeEntries: true },
       });
       return this.mapTask(refreshed!);
     } catch {
-      return this.local.createTask(userId, payload);
+      return this.local.createTask(userId, {
+        ...payload,
+        overflowMode: dto.overflowMode,
+      });
     }
   }
 
@@ -1379,6 +1436,7 @@ export class TasksService {
       await this.scheduler.rescheduleDayPreferRest(id, dateStr, {
         repackUnlocked: true,
         ignorePackingFloor: true,
+        allowOvertime: true,
       });
       return this.supabase.listTasks(id, dateStr) as Promise<TaskDto[]>;
     });
@@ -1400,6 +1458,7 @@ export class TasksService {
       await this.scheduler.rescheduleDay(userId, dateStr, {
         repackUnlocked: true,
         ignorePackingFloor: true,
+        allowOvertime: true,
       });
       return this.list(userId, dateStr);
     } catch {

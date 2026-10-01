@@ -421,6 +421,7 @@ export class LocalDataStore {
     scheduleLocked?: boolean;
     sourceProvider?: string | null;
     sourceExternalId?: string | null;
+    overflowMode?: 'overtime' | 'reprioritize';
   }, opts?: { skipReschedule?: boolean }): TaskDto {
     this.ensureDefaultSchedule(userId);
     const db = this.read();
@@ -436,8 +437,13 @@ export class LocalDataStore {
     const dayTasks = db.tasks.filter(
       (t) => t.userId === userId && t.date === dto.date && !t.inBacklog,
     );
-    const order =
-      dayTasks.reduce((max, t) => Math.max(max, t.order), -1) + 1;
+    const prioritize = dto.overflowMode === 'reprioritize';
+    if (prioritize) {
+      for (const t of dayTasks) t.order += 1;
+    }
+    const order = prioritize
+      ? 0
+      : dayTasks.reduce((max, t) => Math.max(max, t.order), -1) + 1;
     const scheduleLocked = Boolean(dto.scheduleLocked);
     const scheduledStart = dto.scheduledStart
       ? typeof dto.scheduledStart === 'string'
@@ -471,7 +477,21 @@ export class LocalDataStore {
     db.tasks.push(task);
     this.write(db);
     if (!opts?.skipReschedule) {
-      this.rescheduleDay(userId, dto.date);
+      if (dto.overflowMode === 'overtime') {
+        this.rescheduleDay(userId, dto.date, {
+          allowOvertime: true,
+          overtimeMinutes: (dto.estimatedMinutes ?? 30) + 60,
+          ignorePackingFloor: true,
+          repackUnlocked: true,
+        });
+      } else if (prioritize) {
+        this.rescheduleDay(userId, dto.date, {
+          repackUnlocked: true,
+          ignorePackingFloor: true,
+        });
+      } else {
+        this.rescheduleDay(userId, dto.date);
+      }
     }
     return this.toDto(
       this.read().tasks.find((t) => t.id === task.id)!,
@@ -596,6 +616,7 @@ export class LocalDataStore {
     this.rescheduleDay(userId, dateStr, {
       repackUnlocked: true,
       ignorePackingFloor: true,
+      allowOvertime: true,
     });
     return this.listTasks(userId, dateStr);
   }
@@ -982,7 +1003,12 @@ export class LocalDataStore {
   rescheduleDayPublic(
     userId: string,
     dateStr: string,
-    options?: { repackUnlocked?: boolean; ignorePackingFloor?: boolean },
+    options?: {
+      repackUnlocked?: boolean;
+      ignorePackingFloor?: boolean;
+      allowOvertime?: boolean;
+      overtimeMinutes?: number;
+    },
   ) {
     this.rescheduleDay(userId, dateStr, options);
   }
@@ -990,14 +1016,28 @@ export class LocalDataStore {
   private rescheduleDay(
     userId: string,
     dateStr: string,
-    options?: { repackUnlocked?: boolean; ignorePackingFloor?: boolean },
+    options?: {
+      repackUnlocked?: boolean;
+      ignorePackingFloor?: boolean;
+      allowOvertime?: boolean;
+      overtimeMinutes?: number;
+    },
   ) {
     const db = this.read();
     const { intervals } = this.getAvailable(userId, dateStr);
     let free = intervals;
     const todayLocal = formatDateOnly(new Date());
     let floor: number | null = null;
-    if (!options?.ignorePackingFloor && dateStr === todayLocal) {
+    if (options?.allowOvertime) {
+      const coverageEnd = free.reduce((m, i) => Math.max(m, i.end), 0);
+      const start = coverageEnd;
+      const end = Math.min(
+        24 * 60,
+        start + Math.max(60, options.overtimeMinutes ?? 8 * 60),
+      );
+      if (end > start) free = [...free, { start, end }];
+      floor = null;
+    } else if (!options?.ignorePackingFloor && dateStr === todayLocal) {
       const now = new Date();
       floor = now.getHours() * 60 + now.getMinutes();
       const coverageEnd = free.reduce((m, i) => Math.max(m, i.end), 0);

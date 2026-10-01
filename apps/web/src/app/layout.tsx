@@ -61,6 +61,9 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const clarityId =
+    process.env.NEXT_PUBLIC_CLARITY_ID?.trim() || 'yqt3qvgmfz';
+
   return (
     <html lang="en">
       <head>
@@ -73,6 +76,17 @@ export default function RootLayout({
         <link
           href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700;800&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap"
           rel="stylesheet"
+        />
+        <Script
+          id="microsoft-clarity"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{
+            __html: `(function(c,l,a,r,i,t,y){
+c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+})(window, document, "clarity", "script", "${clarityId}");`,
+          }}
         />
       </head>
       <body>

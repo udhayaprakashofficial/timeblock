@@ -112,7 +112,7 @@ export function TodayTasksPage({ timeZone }: { timeZone?: string | null }) {
       <header className="tw-header">
         <div>
           <p className="tw-kicker">Today</p>
-          <h1 className="page-title">Assigned work</h1>
+          <h1 className="page-title">Today&apos;s tasks</h1>
           <p className="page-sub" style={{ marginBottom: 0 }}>
             {dateLabel}
           </p>

@@ -93,7 +93,7 @@ export const HINTS: Record<HintId, HintCopy> = {
   'dash.backlog': {
     id: 'dash.backlog',
     title: 'Backlog',
-    body: 'Yesterday’s unfinished work (and anything you park today). Schedule it when you have room.',
+    body: 'Unscheduled tasks — Park from the plan, or anything that couldn’t fit. Schedule when you have room.',
   },
   'dash.pin': {
     id: 'dash.pin',

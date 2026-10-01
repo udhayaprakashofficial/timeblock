@@ -58,6 +58,15 @@ function formatHm(total: number) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+/** e.g. 600 → "10h", 130 → "2h 10m", 45 → "45m" */
+function formatDurationLabel(minutes: number): string {
+  const mins = Math.max(0, Math.round(minutes));
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
 function sortDay(list: TaskDto[]): TaskDto[] {
   return [...list].sort((a, b) => {
     if (a.order !== b.order) return a.order - b.order;
@@ -99,10 +108,15 @@ function optimisticRepackSchedule(
     if (e > s) fixedBusy.push({ start: s, end: e });
   }
 
-  // Full-day pack for queue reorder — do not clip to “now” or evening
-  // reorders wipe the plan (empty free window → no blocks on The plan).
+  // Pack unlocked tasks into free gaps; if the workday is full, stack them
+  // sequentially past workEnd (overtime) so nothing shares a start time.
   let free = subtractBusy(dayStart, dayEnd, fixedBusy);
   const nextTimes = new Map<string, { start: string; end: string }>();
+  let overtimeCursor = Math.max(
+    dayEnd,
+    ...fixedBusy.map((b) => b.end),
+    0,
+  );
 
   for (const t of ordered) {
     if (t.scheduleLocked || t.status === 'completed') continue;
@@ -115,8 +129,11 @@ function optimisticRepackSchedule(
       }
     }
     if (!placed) {
-      // Keep prior window rather than blanking The plan when the day is full.
-      continue;
+      const start = Math.min(overtimeCursor, 24 * 60 - duration);
+      placed = { start, end: start + duration };
+      overtimeCursor = placed.end;
+    } else if (placed.end > dayEnd) {
+      overtimeCursor = Math.max(overtimeCursor, placed.end);
     }
     nextTimes.set(t.id, {
       start: isoFromMinutes(opts.date, placed.start),
@@ -133,6 +150,9 @@ function optimisticRepackSchedule(
       }
       return parts;
     });
+    if (placed.end <= dayEnd) {
+      overtimeCursor = Math.max(overtimeCursor, placed.end);
+    }
   }
 
   return ordered.map((t) => {
@@ -141,6 +161,112 @@ function optimisticRepackSchedule(
       ? { ...t, scheduledStart: slot.start, scheduledEnd: slot.end }
       : t;
   });
+}
+
+/**
+ * Queue time labels: prefer real schedule fields; fill gaps with a
+ * non-overlapping pack. Overlaps are fixed in Redux by the plan packer.
+ */
+function resolveDisplaySchedule(
+  ordered: TaskDto[],
+  opts: {
+    date: string;
+    timeZone?: string | null;
+    workStart?: string;
+    workEnd?: string;
+    breaks?: { start: string; end: string }[];
+  },
+): Map<string, { start: string; end: string }> {
+  const packed = optimisticRepackSchedule(ordered, opts);
+  const packedById = new Map(
+    packed
+      .filter((t) => t.scheduledStart && t.scheduledEnd)
+      .map((t) => [
+        t.id,
+        { start: t.scheduledStart!, end: t.scheduledEnd! },
+      ]),
+  );
+
+  // Detect unlocked overlaps in the stored schedule.
+  const unlocked = ordered.filter(
+    (t) =>
+      !t.scheduleLocked &&
+      t.status !== 'completed' &&
+      t.scheduledStart &&
+      t.scheduledEnd,
+  );
+  let hasOverlap = false;
+  for (let i = 0; i < unlocked.length && !hasOverlap; i++) {
+    const a = unlocked[i]!;
+    const as = minutesOf(a.scheduledStart!, opts.timeZone);
+    const ae = minutesOf(a.scheduledEnd!, opts.timeZone);
+    for (let j = i + 1; j < unlocked.length; j++) {
+      const b = unlocked[j]!;
+      const bs = minutesOf(b.scheduledStart!, opts.timeZone);
+      const be = minutesOf(b.scheduledEnd!, opts.timeZone);
+      if (as < be && ae > bs) {
+        hasOverlap = true;
+        break;
+      }
+    }
+  }
+
+  const out = new Map<string, { start: string; end: string }>();
+  for (const t of ordered) {
+    if (hasOverlap) {
+      const slot = packedById.get(t.id);
+      if (slot) out.set(t.id, slot);
+      continue;
+    }
+    if (t.scheduledStart && t.scheduledEnd) {
+      out.set(t.id, { start: t.scheduledStart, end: t.scheduledEnd });
+    } else {
+      const slot = packedById.get(t.id);
+      if (slot) out.set(t.id, slot);
+    }
+  }
+  return out;
+}
+
+function NotesIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+      <path d="M8 13h8" />
+      <path d="M8 17h5" />
+    </svg>
+  );
+}
+
+function ParkIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M21 8v13H3V8" />
+      <path d="M23 3H1v5h22z" />
+      <path d="M10 12h4" />
+    </svg>
+  );
 }
 
 const DURATION_MIN = 5;
@@ -180,6 +306,20 @@ function isoFromMinutes(date: string, totalMin: number): string {
   const h = Math.floor(totalMin / 60) % 24;
   const m = totalMin % 60;
   return combineIso(date, `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+}
+
+/** Read-only wall-clock range from minute-of-day (updates live while dragging). */
+function formatScheduleRangeFromMinutes(
+  date: string,
+  startMin: number,
+  endMin: number,
+  timeZone?: string | null,
+): string {
+  return formatTimeRange(
+    isoFromMinutes(date, startMin),
+    isoFromMinutes(date, endMin),
+    timeZone,
+  );
 }
 
 /** Seconds of the open session from timerStartedAt (survives refresh). */
@@ -262,6 +402,8 @@ function nextOptimisticSlot(opts: {
   breaks?: { start: string; end: string }[];
   workStart?: string;
   workEnd?: string;
+  /** Allow placing past workEnd (overtime). */
+  allowOvertime?: boolean;
 }): { scheduledStart: string; scheduledEnd: string } | null {
   if (opts.pinStart && opts.pinEnd) {
     return {
@@ -269,10 +411,14 @@ function nextOptimisticSlot(opts: {
       scheduledEnd: combineIso(opts.date, opts.pinEnd),
     };
   }
+  // Working hours come from the user's schedule template — never invent defaults.
+  if (!opts.workStart || !opts.workEnd) return null;
+
   const duration = Math.max(5, opts.durationMin);
   const today = todayISO(opts.timeZone);
-  const dayStart = opts.workStart ? parseHm(opts.workStart) : 0;
-  const dayEnd = opts.workEnd ? parseHm(opts.workEnd) : 24 * 60;
+  const dayStart = parseHm(opts.workStart);
+  const dayEnd = parseHm(opts.workEnd);
+  if (!(dayEnd > dayStart)) return null;
   let cursor =
     opts.date === today
       ? Math.max(dayStart, Math.ceil((nowMinutes(opts.timeZone) + 1) / 5) * 5)
@@ -293,8 +439,10 @@ function nextOptimisticSlot(opts: {
   }
   busy.sort((a, b) => a.start - b.start);
 
-  // Only search inside work hours — never invent an overlapping fallback.
-  const free = subtractBusy(cursor, dayEnd, busy);
+  const searchEnd = opts.allowOvertime
+    ? Math.min(24 * 60, dayEnd + Math.max(duration, 4 * 60))
+    : dayEnd;
+  const free = subtractBusy(cursor, searchEnd, busy);
   for (const gap of free) {
     if (gap.end - gap.start >= duration) {
       const startMin = gap.start;
@@ -306,6 +454,43 @@ function nextOptimisticSlot(opts: {
     }
   }
   return null;
+}
+
+/** Free minutes inside the user's work hours (after now for today). */
+function availableWorkMinutes(opts: {
+  date: string;
+  tasks: TaskDto[];
+  timeZone?: string | null;
+  breaks?: { start: string; end: string }[];
+  workStart?: string;
+  workEnd?: string;
+}): number {
+  if (!opts.workStart || !opts.workEnd) return 0;
+  const dayStart = parseHm(opts.workStart);
+  const dayEnd = parseHm(opts.workEnd);
+  if (!(dayEnd > dayStart)) return 0;
+  const today = todayISO(opts.timeZone);
+  const cursor =
+    opts.date === today
+      ? Math.max(dayStart, Math.ceil((nowMinutes(opts.timeZone) + 1) / 5) * 5)
+      : dayStart;
+  const busy: { start: number; end: number }[] = [];
+  for (const t of opts.tasks) {
+    if (t.status === 'completed') continue;
+    if (!t.scheduledStart || !t.scheduledEnd) continue;
+    const s = minutesOf(t.scheduledStart, opts.timeZone);
+    const e = minutesOf(t.scheduledEnd, opts.timeZone);
+    if (e > s) busy.push({ start: s, end: e });
+  }
+  for (const b of opts.breaks ?? []) {
+    const s = parseHm(b.start);
+    const e = parseHm(b.end);
+    if (e > s) busy.push({ start: s, end: e });
+  }
+  return subtractBusy(cursor, dayEnd, busy).reduce(
+    (sum, g) => sum + (g.end - g.start),
+    0,
+  );
 }
 
 function minutesOf(iso: string, timeZone?: string | null) {
@@ -353,15 +538,26 @@ export function TodayPage({
   const [durationDraft, setDurationDraft] = useState(String(defaultTaskMinutes));
   const [formError, setFormError] = useState<string | null>(null);
   const [createHint, setCreateHint] = useState<string | null>(null);
+  const [overflowPrompt, setOverflowPrompt] = useState<{
+    name: string;
+    estimatedMinutes: number;
+    targetDate: string;
+    freeMinutes: number;
+    workStart: string;
+    workEnd: string;
+  } | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
-  const reduxTasks = useAppSelector((s) => s.tasks.byDate[date] ?? EMPTY_TASKS);
-  const scheduleDayTasks = useAppSelector(
-    (s) => s.tasks.byDate[scheduleDate] ?? EMPTY_TASKS,
-  );
-  const backlogTasks = useAppSelector((s) => s.tasks.backlog);
-  const createPending = useAppSelector((s) =>
-    s.tasks.pendingKeys.some((k) => k.startsWith('create:')),
+  const reduxTasks = useAppSelector((s) => {
+    const list = s.tasks.byDate[date];
+    return Array.isArray(list) ? list : EMPTY_TASKS;
+  });
+  const scheduleDayTasks = useAppSelector((s) => {
+    const list = s.tasks.byDate[scheduleDate];
+    return Array.isArray(list) ? list : EMPTY_TASKS;
+  });
+  const backlogTasks = useAppSelector((s) =>
+    Array.isArray(s.tasks.backlog) ? s.tasks.backlog : EMPTY_TASKS,
   );
   const createErrorRedux = useAppSelector((s) => s.tasks.createError);
 
@@ -434,10 +630,130 @@ export function TodayPage({
     });
   };
 
-  const refreshDay = () => {
-    void dispatch(fetchTasks(date));
-    void dispatch(fetchBacklog());
-    invalidateStats();
+  const commitNewTask = (opts: {
+    targetDate: string;
+    name: string;
+    estimatedMinutes: number;
+    overflowMode?: 'overtime' | 'reprioritize';
+    allowOvertimeSlot?: boolean;
+  }) => {
+    const { targetDate, name: trimmed, estimatedMinutes } = opts;
+    const weekdayNow = new Date(`${targetDate}T12:00:00Z`).getUTCDay();
+    const dayTemplate = scheduleQ.data?.find((t) => t.weekday === weekdayNow);
+    const packTasks =
+      targetDate === date ? reduxTasks : scheduleDayTasks;
+    const slot = nextOptimisticSlot({
+      date: targetDate,
+      durationMin: estimatedMinutes,
+      tasks: packTasks,
+      timeZone,
+      workStart: dayTemplate?.workStart,
+      workEnd: dayTemplate?.workEnd,
+      breaks: dayTemplate?.breaks?.map((b) => ({
+        start: b.start,
+        end: b.end,
+      })),
+      allowOvertime: Boolean(
+        opts.allowOvertimeSlot || opts.overflowMode === 'overtime',
+      ),
+    });
+
+    const tid = tasksActions.tempId();
+    setFormError(null);
+    setCreateHint(null);
+    setOverflowPrompt(null);
+    setName('');
+    dispatch(tasksActions.clearCreateError());
+    dispatch(
+      tasksActions.optimisticCreate({
+        tempId: tid,
+        date: targetDate,
+        name: trimmed,
+        estimatedMinutes,
+        scheduledStart: slot?.scheduledStart ?? null,
+        scheduledEnd: slot?.scheduledEnd ?? null,
+        scheduleLocked: false,
+      }),
+    );
+    nameInputRef.current?.focus();
+
+    if (targetDate !== date) setDate(targetDate);
+
+    const startTime =
+      slot?.scheduledStart != null
+        ? formatHm(minutesOf(slot.scheduledStart, timeZone))
+        : undefined;
+    const endTime =
+      slot?.scheduledEnd != null
+        ? formatHm(minutesOf(slot.scheduledEnd, timeZone))
+        : undefined;
+
+    void dispatch(
+      createTaskOptimistic({
+        date: targetDate,
+        name: trimmed,
+        estimatedMinutes,
+        tempId: tid,
+        overflowMode: opts.overflowMode,
+        ...(startTime && endTime ? { startTime, endTime } : {}),
+      }),
+    ).then((result) => {
+      if (createTaskOptimistic.fulfilled.match(result)) {
+        const task = result.payload.task;
+        if (task.inBacklog) {
+          setCreateHint(`Moved to Backlog — no free slot for ${task.name}.`);
+        } else if (opts.overflowMode === 'overtime') {
+          setCreateHint(`${task.name} added as overtime.`);
+        } else if (opts.overflowMode === 'reprioritize') {
+          setCreateHint(`${task.name} scheduled — plan reshuffled.`);
+        } else if (targetDate > today) {
+          setCreateHint(
+            `Scheduled on ${formatBacklogDay(targetDate, timeZone)}.`,
+          );
+        }
+        // Optimistic state already matches — only refresh stats in background.
+        void qc.invalidateQueries({ queryKey: ['stats', targetDate] });
+        void qc.invalidateQueries({ queryKey: ['eod', targetDate] });
+        void qc.invalidateQueries({ queryKey: ['weekly'] });
+        void dispatch(fetchStats(targetDate)).then((action) => {
+          if (fetchStats.fulfilled.match(action)) {
+            qc.setQueryData(['stats', targetDate], action.payload.stats);
+          }
+        });
+      }
+    });
+  };
+
+  const findNextWorkingDay = async (
+    fromDate: string,
+    estimatedMinutes: number,
+  ): Promise<string | null> => {
+    const templates = scheduleQ.data ?? [];
+    for (let i = 1; i <= 14; i++) {
+      const d = shiftDateISO(fromDate, i);
+      const weekday = new Date(`${d}T12:00:00Z`).getUTCDay();
+      const dayTemplate = templates.find((t) => t.weekday === weekday);
+      if (!dayTemplate?.workStart || !dayTemplate?.workEnd) continue;
+      let dayTasks: TaskDto[] = [];
+      try {
+        dayTasks = await api.get<TaskDto[]>(`/api/tasks?date=${d}`);
+      } catch {
+        dayTasks = [];
+      }
+      const free = availableWorkMinutes({
+        date: d,
+        tasks: dayTasks,
+        timeZone,
+        workStart: dayTemplate.workStart,
+        workEnd: dayTemplate.workEnd,
+        breaks: dayTemplate.breaks?.map((b) => ({
+          start: b.start,
+          end: b.end,
+        })),
+      });
+      if (free >= estimatedMinutes) return d;
+    }
+    return null;
   };
 
   const submitNewTask = (e: FormEvent) => {
@@ -460,73 +776,54 @@ export function TodayPage({
       return;
     }
 
-    const tid = tasksActions.tempId();
     const weekdayNow = new Date(`${targetDate}T12:00:00Z`).getUTCDay();
     const dayTemplate = scheduleQ.data?.find((t) => t.weekday === weekdayNow);
+    if (!dayTemplate?.workStart || !dayTemplate?.workEnd) {
+      setFormError(
+        'Set your working hours in Settings before scheduling tasks.',
+      );
+      return;
+    }
+
     const packTasks =
       targetDate === date ? reduxTasks : scheduleDayTasks;
+    const freeMinutes = availableWorkMinutes({
+      date: targetDate,
+      tasks: packTasks,
+      timeZone,
+      workStart: dayTemplate.workStart,
+      workEnd: dayTemplate.workEnd,
+      breaks: dayTemplate.breaks?.map((b) => ({
+        start: b.start,
+        end: b.end,
+      })),
+    });
     const slot = nextOptimisticSlot({
       date: targetDate,
       durationMin: estimatedMinutes,
       tasks: packTasks,
       timeZone,
-      workStart: dayTemplate?.workStart,
-      workEnd: dayTemplate?.workEnd,
-      breaks: dayTemplate?.breaks?.map((b) => ({
+      workStart: dayTemplate.workStart,
+      workEnd: dayTemplate.workEnd,
+      breaks: dayTemplate.breaks?.map((b) => ({
         start: b.start,
         end: b.end,
       })),
     });
 
-    setFormError(null);
-    setCreateHint(null);
-    setName('');
-    dispatch(tasksActions.clearCreateError());
-    dispatch(
-      tasksActions.optimisticCreate({
-        tempId: tid,
-        date: targetDate,
+    if (!slot || freeMinutes < estimatedMinutes) {
+      setOverflowPrompt({
         name: trimmed,
         estimatedMinutes,
-        scheduledStart: slot?.scheduledStart ?? null,
-        scheduledEnd: slot?.scheduledEnd ?? null,
-        scheduleLocked: false,
-      }),
-    );
-    nameInputRef.current?.focus();
+        targetDate,
+        freeMinutes,
+        workStart: dayTemplate.workStart,
+        workEnd: dayTemplate.workEnd,
+      });
+      return;
+    }
 
-    if (targetDate !== date) setDate(targetDate);
-
-    void dispatch(
-      createTaskOptimistic({
-        date: targetDate,
-        name: trimmed,
-        estimatedMinutes,
-        tempId: tid,
-      }),
-    ).then((result) => {
-      if (createTaskOptimistic.fulfilled.match(result)) {
-        const task = result.payload.task;
-        if (task.inBacklog) {
-          setCreateHint(
-            `"${task.name}" had no free work-hour slot large enough for ${estimatedMinutes}m — check Backlog.`,
-          );
-        } else if (targetDate > today) {
-          setCreateHint(`Scheduled on ${formatBacklogDay(targetDate, timeZone)}.`);
-        }
-        void dispatch(fetchTasks(targetDate));
-        void dispatch(fetchBacklog());
-        void qc.invalidateQueries({ queryKey: ['stats', targetDate] });
-        void qc.invalidateQueries({ queryKey: ['eod', targetDate] });
-        void qc.invalidateQueries({ queryKey: ['weekly'] });
-        void qc.invalidateQueries({ queryKey: ['events', targetDate] });
-        void dispatch(fetchStats(targetDate)).then((action) => {
-          if (fetchStats.fulfilled.match(action)) {
-            qc.setQueryData(['stats', targetDate], action.payload.stats);
-          }
-        });
-      }
-    });
+    commitNewTask({ targetDate, name: trimmed, estimatedMinutes });
   };
 
   const sensors = useSensors(
@@ -536,6 +833,29 @@ export function TodayPage({
   const tasks = useMemo(() => sortDay(reduxTasks), [reduxTasks]);
   const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
   const template = scheduleQ.data?.find((t) => t.weekday === weekday);
+
+  const scheduleLabels = useMemo(() => {
+    const slots = resolveDisplaySchedule(tasks, {
+      date,
+      timeZone,
+      workStart: template?.workStart,
+      workEnd: template?.workEnd,
+      breaks: template?.breaks?.map((b) => ({
+        start: b.start,
+        end: b.end,
+      })),
+    });
+    const labels = new Map<string, string>();
+    for (const t of tasks) {
+      const slot = slots.get(t.id);
+      if (!slot) continue;
+      labels.set(
+        t.id,
+        formatTimeRange(slot.start, slot.end, timeZone),
+      );
+    }
+    return labels;
+  }, [tasks, date, timeZone, template?.workStart, template?.workEnd, template?.breaks]);
 
   const dayStartMin = template ? parseHm(template.workStart) : null;
   const dayEndMin = template ? parseHm(template.workEnd) : null;
@@ -748,11 +1068,12 @@ export function TodayPage({
     }));
   }, [tasks, template?.breaks, timeZone]);
 
-  // One-shot: if unlocked tasks overlap each other or a break, nudge a
-  // reorder so the server re-packs into non-overlapping slots.
+  // One-shot: if unlocked tasks overlap each other or a break, pack locally
+  // (including overtime stack) then persist — never leave side-by-side cards.
   const overlapRepackKey = useRef<string | null>(null);
   useEffect(() => {
     if (!tasks.length) return;
+    if (!template?.workStart || !template?.workEnd) return;
     const breakBusy = (template?.breaks ?? [])
       .map((b) => ({ start: parseHm(b.start), end: parseHm(b.end) }))
       .filter((b) => b.end > b.start);
@@ -772,33 +1093,53 @@ export function TodayPage({
       .filter((t) => t.end > t.start);
     let conflict = false;
     for (let i = 0; i < placed.length && !conflict; i++) {
-      const a = placed[i];
+      const a = placed[i]!;
       if (breakBusy.some((b) => a.start < b.end && a.end > b.start)) {
         conflict = true;
         break;
       }
       for (let j = i + 1; j < placed.length; j++) {
-        const b = placed[j];
+        const b = placed[j]!;
         if (a.start < b.end && a.end > b.start) {
           conflict = true;
           break;
         }
       }
     }
+    // Also treat identical start times as conflict even if durations differ.
+    if (!conflict) {
+      const starts = new Set<number>();
+      for (const p of placed) {
+        if (starts.has(p.start)) {
+          conflict = true;
+          break;
+        }
+        starts.add(p.start);
+      }
+    }
     if (!conflict) return;
     const key = `${date}:${placed.map((t) => `${t.id}:${t.start}-${t.end}`).join('|')}`;
     if (overlapRepackKey.current === key) return;
     overlapRepackKey.current = key;
-    // Persist current order so the server re-packs times — do not refetch
-    // and overwrite the Redux queue (fulfilled merges schedule fields).
+    const packed = optimisticRepackSchedule(tasks, {
+      date,
+      timeZone,
+      workStart: template.workStart,
+      workEnd: template.workEnd,
+      breaks: template.breaks?.map((b) => ({
+        start: b.start,
+        end: b.end,
+      })),
+    });
+    dispatch(tasksActions.optimisticReorder({ date, tasks: packed }));
     void dispatch(
       reorderTasksOptimistic({
         date,
-        taskIds: tasks.map((t) => t.id),
+        taskIds: packed.map((t) => t.id),
         previous: tasks,
       }),
     );
-  }, [tasks, template?.breaks, timeZone, date, dispatch]);
+  }, [tasks, template?.breaks, template?.workStart, template?.workEnd, timeZone, date, dispatch]);
 
   const timelineH = span * pxPerMin;
   const planDragRef = useRef<{
@@ -1049,7 +1390,7 @@ export function TodayPage({
           task={heroTask.task}
           mode={heroTask.mode}
           timeZone={timeZone}
-          onChanged={refreshDay}
+          onChanged={invalidateStats}
         />
       )}
 
@@ -1113,6 +1454,36 @@ export function TodayPage({
                   </div>
                   <div className="day-timeline-track">
                     <div className="plan-rail" aria-hidden />
+                    {dayStartMin != null &&
+                      dayEndMin != null &&
+                      viewStartMin != null && (
+                        <>
+                          <div
+                            className="day-work-band"
+                            style={{
+                              top: (dayStartMin - viewStartMin) * pxPerMin,
+                              height: Math.max(
+                                0,
+                                (dayEndMin - dayStartMin) * pxPerMin,
+                              ),
+                            }}
+                            aria-hidden
+                          />
+                          {viewEndMin != null && viewEndMin > dayEndMin ? (
+                            <div
+                              className="day-overtime-band"
+                              style={{
+                                top: (dayEndMin - viewStartMin) * pxPerMin,
+                                height: Math.max(
+                                  0,
+                                  (viewEndMin - dayEndMin) * pxPerMin,
+                                ),
+                              }}
+                              aria-hidden
+                            />
+                          ) : null}
+                        </>
+                      )}
 
                     {hourMarks.map((m) => (
                       <div
@@ -1240,6 +1611,30 @@ export function TodayPage({
                               52,
                             )
                           : Math.max((e - s) * pxPerMin, 52);
+                      const rangeStartMin =
+                        planDragPreview?.taskId === t.id
+                          ? planDragPreview.startMin
+                          : block.rawS;
+                      const rangeEndMin =
+                        planDragPreview?.taskId === t.id
+                          ? planDragPreview.startMin +
+                            Math.max(5, t.estimatedMinutes)
+                          : block.rawE;
+                      const scheduleRange = formatScheduleRangeFromMinutes(
+                        date,
+                        rangeStartMin,
+                        rangeEndMin,
+                        timeZone,
+                      );
+                      const isOvertime =
+                        !meet &&
+                        dayEndMin != null &&
+                        block.start >= dayEndMin;
+                      const crossesOvertime =
+                        !meet &&
+                        dayEndMin != null &&
+                        block.start < dayEndMin &&
+                        block.end > dayEndMin;
                       return (
                         <div
                           key={block.key}
@@ -1251,6 +1646,8 @@ export function TodayPage({
                             !meet && !done ? ' is-draggable' : ''
                           }${
                             planDragPreview?.taskId === t.id ? ' is-dragging-plan' : ''
+                          }${
+                            isOvertime || crossesOvertime ? ' is-overtime' : ''
                           }`}
                           style={{
                             top:
@@ -1297,6 +1694,11 @@ export function TodayPage({
                                 m
                               </span>
                             )}
+                            {(isOvertime || crossesOvertime) && (
+                              <span className="cal-kicker cal-overtime-tag">
+                                Overtime
+                              </span>
+                            )}
                             <strong>
                               {t.name}
                               {done ? ' ✓' : ''}
@@ -1306,10 +1708,20 @@ export function TodayPage({
                                 </span>
                               ) : null}
                             </strong>
+                            <span className="cal-schedule" title="Scheduled time">
+                              {scheduleRange}
+                            </span>
                             {!meet && (
                               <span className="cal-meta">
                                 {!t.scheduleLocked ? 'Deep work' : ''}
+                                {spanMin ? ` · ${spanMin}m` : ''}
+                                {crossesOvertime && dayEndMin != null
+                                  ? ` · after ${formatHm(dayEndMin)} overtime`
+                                  : ''}
                               </span>
+                            )}
+                            {meet && (
+                              <span className="cal-meta">Meeting</span>
                             )}
                             {isLive && (
                               <div className="cal-progress">
@@ -1317,8 +1729,8 @@ export function TodayPage({
                               </div>
                             )}
                           </div>
-                          <span className="cal-time-end">
-                            {meet ? formatHm(block.rawS) : `${spanMin}m`}
+                          <span className="cal-time-end" title="Duration">
+                            {spanMin}m
                           </span>
                         </div>
                       );
@@ -1569,9 +1981,9 @@ export function TodayPage({
               <button
                 className="btn btn-primary btn-pill add-task-submit"
                 type="submit"
-                disabled={createPending || !name.trim()}
+                disabled={!name.trim()}
               >
-                {createPending ? 'Adding' : scheduleDate > today ? 'Schedule' : 'Add'}
+                {scheduleDate > today ? 'Schedule' : 'Add'}
               </button>
             </div>
           </form>
@@ -1601,7 +2013,7 @@ export function TodayPage({
                       task={task}
                       rank={i + 1}
                       timeZone={timeZone}
-                      onChanged={refreshDay}
+                      scheduleLabel={scheduleLabels.get(task.id) ?? null}
                       onStatsRefresh={invalidateStats}
                     />
                   ))}
@@ -1647,11 +2059,103 @@ export function TodayPage({
                 start: b.start,
                 end: b.end,
               }))}
-              onChanged={refreshDay}
+              onStatsRefresh={invalidateStats}
             />
           </div>
         </section>
       </div>
+
+      {overflowPrompt ? (
+        <div
+          className="overflow-modal-backdrop"
+          role="presentation"
+          onClick={() => setOverflowPrompt(null)}
+        >
+          <div
+            className="overflow-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="overflow-modal-title"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <h2 id="overflow-modal-title">
+              You have exceeded your working hours for today.
+            </h2>
+            <p className="overflow-modal-body">
+              {overflowPrompt.name} needs{' '}
+              {formatDurationLabel(overflowPrompt.estimatedMinutes)}. Only{' '}
+              {formatDurationLabel(overflowPrompt.freeMinutes)} is free.
+            </p>
+            <div className="overflow-modal-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  const prompt = overflowPrompt;
+                  void (async () => {
+                    const next = await findNextWorkingDay(
+                      prompt.targetDate,
+                      prompt.estimatedMinutes,
+                    );
+                    if (!next) {
+                      setOverflowPrompt(null);
+                      setFormError(
+                        'No free working day found in the next two weeks.',
+                      );
+                      return;
+                    }
+                    commitNewTask({
+                      targetDate: next,
+                      name: prompt.name,
+                      estimatedMinutes: prompt.estimatedMinutes,
+                    });
+                  })();
+                }}
+              >
+                Move to next day
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => {
+                  const prompt = overflowPrompt;
+                  commitNewTask({
+                    targetDate: prompt.targetDate,
+                    name: prompt.name,
+                    estimatedMinutes: prompt.estimatedMinutes,
+                    overflowMode: 'reprioritize',
+                  });
+                }}
+              >
+                Reprioritize tasks
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => {
+                  const prompt = overflowPrompt;
+                  commitNewTask({
+                    targetDate: prompt.targetDate,
+                    name: prompt.name,
+                    estimatedMinutes: prompt.estimatedMinutes,
+                    overflowMode: 'overtime',
+                    allowOvertimeSlot: true,
+                  });
+                }}
+              >
+                Add to end of the day
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setOverflowPrompt(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1681,10 +2185,10 @@ function SessionBanner({
   const liveSessionSec =
     mode === 'live' ? liveSessionSeconds(task.timerStartedAt, nowMs) : 0;
 
-  const elapsedSec =
-    mode === 'live'
-      ? Math.max(0, (task.actualMinutes || 0) * 60 + liveSessionSec)
-      : Math.max(0, (task.actualMinutes || 0) * 60);
+  const elapsedSec = Math.max(
+    0,
+    Math.floor((task.actualMinutes || 0) * 60 + liveSessionSec),
+  );
   const totalSec = Math.max(5, task.estimatedMinutes) * 60;
   const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
   const ss = String(elapsedSec % 60).padStart(2, '0');
@@ -1814,7 +2318,7 @@ function BacklogSection({
   workStart,
   workEnd,
   breaks,
-  onChanged,
+  onStatsRefresh,
 }: {
   tasks: TaskDto[];
   dayTasks: TaskDto[];
@@ -1824,7 +2328,7 @@ function BacklogSection({
   workStart?: string;
   workEnd?: string;
   breaks?: { start: string; end: string }[];
-  onChanged: () => void;
+  onStatsRefresh: () => void;
 }) {
   const dispatch = useAppDispatch();
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -1832,8 +2336,19 @@ function BacklogSection({
   const run = async (taskId: string, fn: () => Promise<unknown>) => {
     setBusyId(taskId);
     try {
-      await fn();
-      onChanged();
+      const result = await fn();
+      if (
+        result &&
+        typeof result === 'object' &&
+        'type' in result &&
+        String((result as { type: string }).type).endsWith('/rejected')
+      ) {
+        // Soft recovery only on failure — don't thrash the list on success.
+        void dispatch(fetchBacklog());
+        void dispatch(fetchTasks(today));
+      } else {
+        onStatsRefresh();
+      }
     } finally {
       setBusyId(null);
     }
@@ -1847,7 +2362,7 @@ function BacklogSection({
             Backlog <HintMark id="dash.backlog" placement="top" />
           </h3>
           <p className="priority-sub">
-            Yesterday’s unfinished work — schedule it when you have room.
+            Unscheduled tasks — park from the plan, or overflow that couldn’t fit.
           </p>
         </div>
         {tasks.length > 0 && (
@@ -1956,13 +2471,13 @@ function BacklogSection({
 function SortableTask({
   task,
   timeZone,
-  onChanged,
+  scheduleLabel,
   onStatsRefresh,
 }: {
   task: TaskDto;
   rank?: number;
   timeZone?: string | null;
-  onChanged: () => void;
+  scheduleLabel?: string | null;
   onStatsRefresh?: () => void;
 }) {
   const locked = Boolean(task.scheduleLocked);
@@ -2025,9 +2540,11 @@ function SortableTask({
         const payload = (result as { payload?: { message?: string } }).payload;
         throw new Error(payload?.message || 'Action failed');
       }
-      onChanged();
+      onStatsRefresh?.();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Action failed');
+      void dispatch(fetchTasks(task.date));
+      void dispatch(fetchBacklog());
     } finally {
       setActionBusy(false);
     }
@@ -2220,6 +2737,19 @@ function SortableTask({
           )}
         </div>
         <div className="priority-meta">
+          {scheduleLabel ? (
+            <span className="queue-schedule" title="Scheduled time">
+              {scheduleLabel}
+            </span>
+          ) : task.scheduledStart && task.scheduledEnd ? (
+            <span className="queue-schedule" title="Scheduled time">
+              {formatTimeRange(
+                task.scheduledStart,
+                task.scheduledEnd,
+                timeZone,
+              )}
+            </span>
+          ) : null}
           <span className="queue-cat">
             {locked || task.meetLink ? 'Meeting' : 'Deep work'}
           </span>
@@ -2285,7 +2815,7 @@ function SortableTask({
               {task.estimatedMinutes}m
             </button>
           )}
-          {task.actualMinutes > 0 ? ` · ${task.actualMinutes}m actual` : ''}
+          {task.actualMinutes > 0 ? ` · ${Math.round(task.actualMinutes)}m actual` : ''}
           {editing && !locked && (
             <span className="priority-edit-actions">
               <button
@@ -2392,9 +2922,10 @@ function SortableTask({
 
       <div className="priority-actions">
         <button
-          className={`btn btn-ghost btn-pill btn-sm${commentsOpen ? ' is-active' : ''}`}
+          className={`btn btn-ghost btn-pill btn-sm priority-icon-btn${commentsOpen ? ' is-active' : ''}`}
           type="button"
           title={commentsOpen ? 'Hide notes' : 'Notes'}
+          aria-label={commentsOpen ? 'Hide notes' : 'Notes'}
           aria-expanded={commentsOpen}
           onMouseDown={(e) => e.preventDefault()}
           onClick={(e) => {
@@ -2403,7 +2934,10 @@ function SortableTask({
             setCommentsOpen((o) => !o);
           }}
         >
-          {commentsOpen ? 'Hide notes' : 'Notes'}
+          <NotesIcon />
+          {hasNotes && !commentsOpen ? (
+            <i className="priority-icon-dot" aria-hidden />
+          ) : null}
         </button>
         {task.meetLink && (
           <a
@@ -2417,10 +2951,11 @@ function SortableTask({
         )}
         {!locked && !done && (
           <button
-            className="btn btn-ghost btn-pill btn-sm"
+            className="btn btn-ghost btn-pill btn-sm priority-icon-btn"
             type="button"
             disabled={busy}
-            title="Move to backlog"
+            title="Park in Backlog (unscheduled)"
+            aria-label="Park in Backlog"
             onClick={() =>
               void runAction(async () => {
                 dispatch(tasksActions.optimisticToBacklog({ taskId: task.id }));
@@ -2433,7 +2968,7 @@ function SortableTask({
               })
             }
           >
-            Backlog
+            <ParkIcon />
           </button>
         )}
         {running ? (

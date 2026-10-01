@@ -100,6 +100,12 @@ export interface CreateTaskDto {
   startTime?: string;
   /** Optional HH:MM preferred end — must pair with startTime */
   endTime?: string;
+  /**
+   * When the task cannot fit in work hours:
+   * - overtime: pack past workEnd (overtime)
+   * - reprioritize: place this task first; lower-priority tasks may move later / backlog
+   */
+  overflowMode?: 'overtime' | 'reprioritize';
 }
 
 /** Recurring task that materializes onto matching weekdays */

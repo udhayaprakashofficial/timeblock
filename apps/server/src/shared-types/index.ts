@@ -100,6 +100,12 @@ export interface CreateTaskDto {
   startTime?: string;
   /** HH:MM wall clock in the user's timezone — locks the task to this slot */
   endTime?: string;
+  /**
+   * When the task cannot fit in work hours:
+   * - overtime: pack past workEnd (overtime)
+   * - reprioritize: place this task first; lower-priority tasks may move later / backlog
+   */
+  overflowMode?: 'overtime' | 'reprioritize';
 }
 
 /** Recurring task that materializes onto matching weekdays */
