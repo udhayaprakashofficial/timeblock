@@ -3,6 +3,7 @@ import { SessionAuthGuard } from '../auth/session.guard';
 import { AdminGuard, ADMIN_EMAIL } from './admin.guard';
 import { BillingService } from '../billing/billing.service';
 import { BrevoMailService } from '../mail/brevo-mail.service';
+import { UsersService } from '../users/users.service';
 
 @Controller('admin')
 @UseGuards(SessionAuthGuard, AdminGuard)
@@ -10,11 +11,19 @@ export class AdminController {
   constructor(
     private readonly billing: BillingService,
     private readonly mail: BrevoMailService,
+    private readonly users: UsersService,
   ) {}
 
   @Get('me')
   me() {
     return { ok: true, adminEmail: ADMIN_EMAIL };
+  }
+
+  /** Retry pending founder welcome emails (Brevo outbox drain). */
+  @Post('retry-welcome-emails')
+  async retryWelcomeEmails() {
+    const result = await this.users.drainPendingWelcomeEmails(50);
+    return { ok: true, ...result };
   }
 
   /** Everyone who paid for Pro. */

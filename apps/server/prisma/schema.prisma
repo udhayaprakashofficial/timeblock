@@ -50,6 +50,12 @@ model User {
   proActivatedAt      DateTime?
   /// Set after the founder welcome email is successfully sent (Brevo).
   welcomeEmailSentAt  DateTime?
+  /// Outbox: how many times we attempted to send the welcome email.
+  welcomeEmailAttempts Int @default(0)
+  /// Outbox: last attempt timestamp (success or failure).
+  welcomeEmailLastAttemptAt DateTime?
+  /// Outbox: last Brevo / send error (cleared on success).
+  welcomeEmailLastError String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

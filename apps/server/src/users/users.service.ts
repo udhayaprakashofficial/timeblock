@@ -26,6 +26,13 @@ import { TasksService } from '../tasks/tasks.service';
 import { ScheduleTemplatesService } from '../schedule/schedule.service';
 import { BrevoMailService } from '../mail/brevo-mail.service';
 
+/** Cap outbox retries so a bad address / permanent Brevo error doesn't loop forever. */
+const WELCOME_MAX_ATTEMPTS = 20;
+/** Min gap between retries for the same user (cron + /me + sign-in). */
+const WELCOME_RETRY_COOLDOWN_MS = 3 * 60 * 1000;
+/** Only drain welcomes for accounts created in this window. */
+const WELCOME_PENDING_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
 @Injectable()
 export class UsersService {
   constructor(
@@ -741,11 +748,83 @@ export class UsersService {
     return me;
   }
 
+  /**
+   * Opportunistic retry for users who stayed logged in after a failed signup
+   * send (sign-in retry never runs). Throttled so /me stays fast.
+   */
+  async ensureWelcomeEmail(me: UserDto): Promise<void> {
+    if (!me?.id || me.id.startsWith('local_') || !me.email) return;
+    try {
+      if (await this.welcomeAlreadySent(me.id)) return;
+      const meta = await this.welcomeOutboxMeta(me.id);
+      if (meta.attempts >= WELCOME_MAX_ATTEMPTS) return;
+      if (
+        meta.lastAttemptAt &&
+        Date.now() - meta.lastAttemptAt.getTime() < WELCOME_RETRY_COOLDOWN_MS
+      ) {
+        return;
+      }
+      await this.deliverWelcomeEmail(me.id, me.email, me.name, {
+        signInRetry: true,
+        maxAttempts: 2,
+      });
+    } catch (err) {
+      console.warn(
+        '[mail] ensureWelcomeEmail',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
+   * Drain pending welcome emails (cron / admin). Safe to call repeatedly.
+   */
+  async drainPendingWelcomeEmails(limit = 25): Promise<{
+    scanned: number;
+    sent: number;
+    failed: number;
+    skipped: number;
+  }> {
+    const rows = await this.listPendingWelcomeUsers(limit);
+    let sent = 0;
+    let failed = 0;
+    let skipped = 0;
+    for (const row of rows) {
+      if (!row.email) {
+        skipped += 1;
+        continue;
+      }
+      if ((row.attempts ?? 0) >= WELCOME_MAX_ATTEMPTS) {
+        skipped += 1;
+        continue;
+      }
+      if (
+        row.lastAttemptAt &&
+        Date.now() - row.lastAttemptAt.getTime() < WELCOME_RETRY_COOLDOWN_MS
+      ) {
+        skipped += 1;
+        continue;
+      }
+      const ok = await this.deliverWelcomeEmail(row.id, row.email, row.name, {
+        force: true,
+        maxAttempts: 3,
+      });
+      if (ok) sent += 1;
+      else failed += 1;
+    }
+    return { scanned: rows.length, sent, failed, skipped };
+  }
+
   async deliverWelcomeEmail(
     userId: string,
     email: string,
     name?: string,
-    opts?: { firstSignup?: boolean; signInRetry?: boolean; force?: boolean },
+    opts?: {
+      firstSignup?: boolean;
+      signInRetry?: boolean;
+      force?: boolean;
+      maxAttempts?: number;
+    },
   ): Promise<boolean> {
     try {
       const skipSentCheck = opts?.firstSignup || opts?.force;
@@ -756,12 +835,24 @@ export class UsersService {
       ) {
         return true;
       }
+
+      if (!userId.startsWith('local_')) {
+        await this.bumpWelcomeAttempt(userId);
+      }
+
       const ok = await this.mail.sendWelcomeEmail({
         toEmail: email,
         toName: name,
+        userId,
+        maxAttempts: opts?.maxAttempts ?? (opts?.firstSignup ? 3 : 2),
       });
       if (!ok) {
+        const err =
+          'Brevo did not accept welcome email — will retry via cron / next sign-in';
         console.warn('[mail] welcome email did not send for', email);
+        if (!userId.startsWith('local_')) {
+          await this.setWelcomeLastError(userId, err);
+        }
         return false;
       }
       if (!userId.startsWith('local_')) {
@@ -769,10 +860,11 @@ export class UsersService {
       }
       return true;
     } catch (err) {
-      console.warn(
-        '[mail] welcome email error',
-        err instanceof Error ? err.message : err,
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn('[mail] welcome email error', message);
+      if (!userId.startsWith('local_')) {
+        await this.setWelcomeLastError(userId, message).catch(() => undefined);
+      }
       return false;
     }
   }
@@ -802,6 +894,196 @@ export class UsersService {
     return false;
   }
 
+  private async welcomeOutboxMeta(userId: string): Promise<{
+    attempts: number;
+    lastAttemptAt: Date | null;
+  }> {
+    if (this.supabase.isConfigured()) {
+      try {
+        const rows = await this.supabase.select<{
+          welcomeEmailAttempts?: number;
+          welcomeEmailLastAttemptAt?: string | null;
+        }>(
+          'User',
+          'welcomeEmailAttempts,welcomeEmailLastAttemptAt',
+          { filter: `id=eq.${userId}`, limit: 1 },
+        );
+        const row = rows[0];
+        if (row) {
+          return {
+            attempts: Number(row.welcomeEmailAttempts) || 0,
+            lastAttemptAt: row.welcomeEmailLastAttemptAt
+              ? new Date(row.welcomeEmailLastAttemptAt)
+              : null,
+          };
+        }
+      } catch {
+        /* columns may be missing until migration */
+      }
+    }
+    try {
+      const row = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          welcomeEmailAttempts: true,
+          welcomeEmailLastAttemptAt: true,
+        },
+      });
+      return {
+        attempts: row?.welcomeEmailAttempts ?? 0,
+        lastAttemptAt: row?.welcomeEmailLastAttemptAt ?? null,
+      };
+    } catch {
+      return { attempts: 0, lastAttemptAt: null };
+    }
+  }
+
+  private async listPendingWelcomeUsers(limit: number): Promise<
+    Array<{
+      id: string;
+      email: string;
+      name?: string;
+      attempts: number;
+      lastAttemptAt: Date | null;
+    }>
+  > {
+    const since = new Date(Date.now() - WELCOME_PENDING_WINDOW_MS).toISOString();
+    if (this.supabase.isConfigured()) {
+      try {
+        // Prefer full outbox columns; fall back if migration not applied yet.
+        let rows: Array<{
+          id: string;
+          email: string;
+          name?: string;
+          welcomeEmailAttempts?: number;
+          welcomeEmailLastAttemptAt?: string | null;
+        }> = [];
+        try {
+          rows = await this.supabase.select(
+            'User',
+            'id,email,name,welcomeEmailAttempts,welcomeEmailLastAttemptAt',
+            {
+              filter: `welcomeEmailSentAt=is.null&createdAt=gte.${encodeURIComponent(since)}`,
+              order: 'createdAt.asc',
+              limit: Math.max(1, Math.min(100, limit)),
+            },
+          );
+        } catch {
+          rows = await this.supabase.select(
+            'User',
+            'id,email,name',
+            {
+              filter: `welcomeEmailSentAt=is.null&createdAt=gte.${encodeURIComponent(since)}`,
+              order: 'createdAt.asc',
+              limit: Math.max(1, Math.min(100, limit)),
+            },
+          );
+        }
+        return rows.map((r) => ({
+          id: r.id,
+          email: r.email,
+          name: r.name,
+          attempts: Number(r.welcomeEmailAttempts) || 0,
+          lastAttemptAt: r.welcomeEmailLastAttemptAt
+            ? new Date(r.welcomeEmailLastAttemptAt)
+            : null,
+        }));
+      } catch (err) {
+        console.warn(
+          '[mail] listPendingWelcomeUsers REST failed',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    try {
+      const rows = await this.prisma.user.findMany({
+        where: {
+          welcomeEmailSentAt: null,
+          createdAt: { gte: new Date(Date.now() - WELCOME_PENDING_WINDOW_MS) },
+        },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          welcomeEmailAttempts: true,
+          welcomeEmailLastAttemptAt: true,
+        },
+        orderBy: { createdAt: 'asc' },
+        take: Math.max(1, Math.min(100, limit)),
+      });
+      return rows.map((r) => ({
+        id: r.id,
+        email: r.email,
+        name: r.name,
+        attempts: r.welcomeEmailAttempts ?? 0,
+        lastAttemptAt: r.welcomeEmailLastAttemptAt,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  private async bumpWelcomeAttempt(userId: string): Promise<void> {
+    const now = new Date();
+    const iso = now.toISOString();
+    if (this.supabase.isConfigured()) {
+      try {
+        const meta = await this.welcomeOutboxMeta(userId);
+        await this.supabase.patch('User', `id=eq.${userId}`, {
+          welcomeEmailAttempts: meta.attempts + 1,
+          welcomeEmailLastAttemptAt: iso,
+          updatedAt: iso,
+        });
+        return;
+      } catch {
+        /* columns may be missing */
+      }
+    }
+    try {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          welcomeEmailAttempts: { increment: 1 },
+          welcomeEmailLastAttemptAt: now,
+        },
+      });
+    } catch {
+      /* ignore — send still proceeds */
+    }
+  }
+
+  private async setWelcomeLastError(
+    userId: string,
+    error: string,
+  ): Promise<void> {
+    const now = new Date();
+    const iso = now.toISOString();
+    const err = error.slice(0, 500);
+    if (this.supabase.isConfigured()) {
+      try {
+        await this.supabase.patch('User', `id=eq.${userId}`, {
+          welcomeEmailLastError: err,
+          welcomeEmailLastAttemptAt: iso,
+          updatedAt: iso,
+        });
+        return;
+      } catch {
+        /* columns may be missing */
+      }
+    }
+    try {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          welcomeEmailLastError: err,
+          welcomeEmailLastAttemptAt: now,
+        },
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
   private async markWelcomeSent(userId: string): Promise<void> {
     const now = new Date();
     const iso = now.toISOString();
@@ -810,6 +1092,8 @@ export class UsersService {
         try {
           await this.supabase.patch('User', `id=eq.${userId}`, {
             welcomeEmailSentAt: iso,
+            welcomeEmailLastAttemptAt: iso,
+            welcomeEmailLastError: null,
             updatedAt: iso,
           });
           if (await this.welcomeAlreadySent(userId)) return;
@@ -820,7 +1104,11 @@ export class UsersService {
       try {
         await this.prisma.user.update({
           where: { id: userId },
-          data: { welcomeEmailSentAt: now },
+          data: {
+            welcomeEmailSentAt: now,
+            welcomeEmailLastAttemptAt: now,
+            welcomeEmailLastError: null,
+          },
         });
         return;
       } catch {

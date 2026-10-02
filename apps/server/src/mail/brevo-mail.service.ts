@@ -61,6 +61,10 @@ export class BrevoMailService implements OnModuleInit {
   async sendWelcomeEmail(input: {
     toEmail: string;
     toName?: string;
+    /** Stable id for Brevo tagging / log correlation */
+    userId?: string;
+    /** Fewer attempts when called from a hot request path */
+    maxAttempts?: number;
   }): Promise<boolean> {
     if (!this.isConfigured()) {
       this.logger.warn(
@@ -151,9 +155,11 @@ Open your dashboard: ${dashboardUrl}
 </body>
 </html>`;
 
-    // Retries — Vercel cold starts, Brevo blips, and temp-mail testing are common.
+    // Retries only for transient failures (timeouts / 5xx / IP blips).
+    // Permanent 4xx (bad key / sender) abort immediately so auth stays fast.
+    const maxAttempts = Math.max(1, Math.min(5, input.maxAttempts ?? 3));
+    const delays = [0, 700, 1800, 3200, 5000].slice(0, maxAttempts);
     let result: BrevoSendResult = { ok: false, error: 'not attempted' };
-    const delays = [0, 500, 1200, 2500];
     for (let i = 0; i < delays.length; i++) {
       if (delays[i] > 0) await sleep(delays[i]);
       result = await this.sendTransactional({
@@ -163,11 +169,14 @@ Open your dashboard: ${dashboardUrl}
         htmlContent,
         textContent,
         replyToSender: true,
+        tags: ['cupkey-welcome', input.userId ? `user:${input.userId}` : 'user:unknown'],
+        timeoutMs: i === 0 ? 10_000 : 14_000,
       });
       if (result.ok) break;
       this.logger.warn(
-        `Welcome email attempt ${i + 1} failed for ${input.toEmail}: ${result.error}`,
+        `Welcome email attempt ${i + 1}/${delays.length} failed for ${input.toEmail}: ${result.error}`,
       );
+      if (!isTransientBrevoFailure(result.error)) break;
     }
     if (result.ok) {
       this.logger.log(`Welcome email sent to ${input.toEmail}`);
@@ -461,6 +470,8 @@ This link works for 30 days.
     textContent: string;
     replyToSender?: boolean;
     replyTo?: { name: string; email: string };
+    tags?: string[];
+    timeoutMs?: number;
   }): Promise<BrevoSendResult> {
     const apiKey = process.env.BREVO_API_KEY!.trim();
     const senderEmail = process.env.BREVO_SENDER_EMAIL!.trim();
@@ -482,6 +493,7 @@ This link works for 30 days.
       subject: input.subject,
       htmlContent: input.htmlContent,
       textContent: input.textContent,
+      ...(input.tags?.length ? { tags: input.tags.slice(0, 8) } : {}),
     });
 
     try {
@@ -491,7 +503,7 @@ This link works for 30 days.
         path: '/v3/smtp/email',
         apiKey,
         payload,
-        timeoutMs: 12_000,
+        timeoutMs: input.timeoutMs ?? 12_000,
       });
 
       if (status < 200 || status >= 300) {
@@ -573,9 +585,30 @@ function formatBrevoError(status: number, body: string): string {
       'Sender email is not verified in Brevo. Check BREVO_SENDER_EMAIL.'
     );
   }
+  if (status >= 500) {
+    return message || `Brevo temporary failure (${status}).`;
+  }
   return (
     message ||
     `Brevo request failed (${status}). Check configuration and try again.`
+  );
+}
+
+/** Retry only when another attempt might succeed. */
+function isTransientBrevoFailure(error: string): boolean {
+  const e = error.toLowerCase();
+  return (
+    e.includes('timed out') ||
+    e.includes('could not reach') ||
+    e.includes('temporary failure') ||
+    e.includes('blocked this server ip') ||
+    e.includes('unrecognised ip') ||
+    e.includes('rate limit') ||
+    e.includes('too many') ||
+    e.includes('503') ||
+    e.includes('502') ||
+    e.includes('504') ||
+    e.includes('429')
   );
 }
 

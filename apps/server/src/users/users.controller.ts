@@ -29,6 +29,9 @@ export class UsersController {
       return res.status(200).json(null);
     }
     const me = await this.usersService.getMe(userId);
+    // Best-effort: if signup mail failed and user stayed logged in, retry
+    // (throttled). Fire-and-forget — cron also drains the outbox.
+    void this.usersService.ensureWelcomeEmail(me);
     return res.status(200).json(me);
   }
 

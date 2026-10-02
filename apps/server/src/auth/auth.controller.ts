@@ -231,20 +231,13 @@ export class AuthController {
         password: body.password ?? '',
         name: body.name,
       });
-      let welcomeSent = await this.usersService.deliverWelcomeEmail(
+      // One awaited send (internal Brevo retries). Outbox + cron + /me cover misses.
+      await this.usersService.deliverWelcomeEmail(
         me.id,
         me.email,
         me.name,
-        { firstSignup: true },
+        { firstSignup: true, maxAttempts: 3 },
       );
-      if (!welcomeSent) {
-        welcomeSent = await this.usersService.deliverWelcomeEmail(
-          me.id,
-          me.email,
-          me.name,
-          { firstSignup: true, force: true },
-        );
-      }
       setSessionUser(req, res, me.id, (err) => {
         if (err) {
           return res.status(500).json({ error: 'Failed to save session' });
