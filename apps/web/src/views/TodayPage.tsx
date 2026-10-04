@@ -30,6 +30,7 @@ import {
   removeTaskOptimistic,
   reorderTasksOptimistic,
   scheduleFromBacklogOptimistic,
+  selectTasksLoading,
   startTimerOptimistic,
   stopTimerOptimistic,
   tasksActions,
@@ -44,8 +45,9 @@ import type {
 } from '@timeblock/shared-types';
 
 const EMPTY_TASKS: TaskDto[] = [];
-const MIN_PX_PER_MIN = 1.35;
-const MAX_PX_PER_MIN = 2.8;
+/** 30m block ≈ 66px so title + time fit without overlapping the next slot */
+const MIN_PX_PER_MIN = 2.2;
+const MAX_PX_PER_MIN = 3.2;
 
 function parseHm(hm: string) {
   const [h, m] = hm.split(':').map(Number);
@@ -577,6 +579,9 @@ export function TodayPage({
     Array.isArray(s.tasks.backlog) ? s.tasks.backlog : EMPTY_TASKS,
   );
   const createErrorRedux = useAppSelector((s) => s.tasks.createError);
+  const dayLoaded = useAppSelector((s) => Boolean(s.tasks.loadedDates[date]));
+  const tasksLoading = useAppSelector(selectTasksLoading(date));
+  const queueLoading = !dayLoaded || tasksLoading;
 
   // Keep "today" in sync when the civil day rolls over while viewing today
   useEffect(() => {
@@ -1165,12 +1170,27 @@ export function TodayPage({
     duration: number;
     originY: number;
     originStart: number;
+    originScrollTop: number;
+    lastClientY: number;
   } | null>(null);
+  const planDragRafRef = useRef<number | null>(null);
   const [planDragPreview, setPlanDragPreview] = useState<{
     taskId: string;
     startMin: number;
+    valid: boolean;
   } | null>(null);
   const [planDragError, setPlanDragError] = useState<string | null>(null);
+
+  useEffect(
+    () => () => {
+      if (planDragRafRef.current != null) {
+        cancelAnimationFrame(planDragRafRef.current);
+        planDragRafRef.current = null;
+      }
+      document.body.classList.remove('is-plan-dragging');
+    },
+    [],
+  );
 
   const canPlaceAt = (taskId: string, startMin: number, duration: number) => {
     const endMin = startMin + duration;
@@ -1192,6 +1212,124 @@ export function TodayPage({
     return true;
   };
 
+  /**
+   * 5-min snap often misses irregular gaps (e.g. 15:24–15:54). Search 1-min
+   * steps around the desired start so a task that fits can still land.
+   */
+  const findNearestValidStart = (
+    taskId: string,
+    desired: number,
+    duration: number,
+    searchRadius: number,
+  ): number | null => {
+    if (dayStartMin == null || dayEndMin == null) return null;
+    const maxStart = dayEndMin - duration;
+    if (maxStart < dayStartMin) return null;
+    const clamped = Math.max(dayStartMin, Math.min(desired, maxStart));
+    if (canPlaceAt(taskId, clamped, duration)) return clamped;
+    for (let d = 1; d <= searchRadius; d++) {
+      const lo = clamped - d;
+      if (lo >= dayStartMin && canPlaceAt(taskId, lo, duration)) return lo;
+      const hi = clamped + d;
+      if (hi <= maxStart && canPlaceAt(taskId, hi, duration)) return hi;
+    }
+    return null;
+  };
+
+  const resolvePlanDragStart = (
+    taskId: string,
+    desired: number,
+    duration: number,
+    forDrop: boolean,
+  ): { startMin: number; valid: boolean } => {
+    const snapped = Math.round(desired / 5) * 5;
+    if (canPlaceAt(taskId, snapped, duration)) {
+      return { startMin: snapped, valid: true };
+    }
+    // Preview: pull into nearby gaps (half-duration covers mid-gap aim);
+    // drop: wider search so exact fits still win after a slightly off release.
+    const radius = forDrop
+      ? Math.max(90, duration)
+      : Math.max(28, Math.floor(duration / 2) + 8);
+    const nearest = findNearestValidStart(taskId, desired, duration, radius);
+    if (nearest != null) return { startMin: nearest, valid: true };
+    // Mid-gap aim often snaps to :00/:05 and misses :24 boundaries — retry from snap.
+    const fromSnap = findNearestValidStart(taskId, snapped, duration, radius);
+    if (fromSnap != null) return { startMin: fromSnap, valid: true };
+    return { startMin: snapped, valid: false };
+  };
+
+  const stopPlanDragScrollLoop = () => {
+    if (planDragRafRef.current != null) {
+      cancelAnimationFrame(planDragRafRef.current);
+      planDragRafRef.current = null;
+    }
+  };
+
+  const updatePlanDragFromPointer = (clientY: number) => {
+    const drag = planDragRef.current;
+    const viewport = viewportRef.current;
+    if (!drag || !viewport || viewStartMin == null) return;
+
+    const rect = viewport.getBoundingClientRect();
+    const edge = 64;
+    let scrollDelta = 0;
+    if (clientY < rect.top + edge) {
+      const t = 1 - Math.max(0, clientY - rect.top) / edge;
+      scrollDelta = -Math.ceil(6 + t * 18);
+    } else if (clientY > rect.bottom - edge) {
+      const t = 1 - Math.max(0, rect.bottom - clientY) / edge;
+      scrollDelta = Math.ceil(6 + t * 18);
+    }
+    if (scrollDelta !== 0) {
+      viewport.scrollTop = Math.max(
+        0,
+        Math.min(
+          viewport.scrollHeight - viewport.clientHeight,
+          viewport.scrollTop + scrollDelta,
+        ),
+      );
+    }
+
+    const scrollComp =
+      viewport.scrollTop - drag.originScrollTop;
+    const deltaMin = Math.round(
+      (clientY - drag.originY + scrollComp) / pxPerMin,
+    );
+    const raw = drag.originStart + deltaMin;
+    const resolved = resolvePlanDragStart(
+      drag.taskId,
+      raw,
+      drag.duration,
+      false,
+    );
+    setPlanDragPreview({
+      taskId: drag.taskId,
+      startMin: resolved.startMin,
+      valid: resolved.valid,
+    });
+  };
+
+  const ensurePlanDragScrollLoop = () => {
+    if (planDragRafRef.current != null) return;
+    const tick = () => {
+      const drag = planDragRef.current;
+      if (!drag) {
+        planDragRafRef.current = null;
+        return;
+      }
+      updatePlanDragFromPointer(drag.lastClientY);
+      planDragRafRef.current = requestAnimationFrame(tick);
+    };
+    planDragRafRef.current = requestAnimationFrame(tick);
+  };
+
+  const endPlanDrag = () => {
+    stopPlanDragScrollLoop();
+    document.body.classList.remove('is-plan-dragging');
+    planDragRef.current = null;
+  };
+
   const onPlanBlockPointerDown = (
     e: PointerEvent<HTMLDivElement>,
     task: TaskDto,
@@ -1201,42 +1339,69 @@ export function TodayPage({
       return;
     if (e.button !== 0) return;
     e.currentTarget.setPointerCapture(e.pointerId);
+    const scrollTop = viewportRef.current?.scrollTop ?? 0;
     planDragRef.current = {
       taskId: task.id,
       duration: Math.max(5, task.estimatedMinutes),
       originY: e.clientY,
       originStart: startMin,
+      originScrollTop: scrollTop,
+      lastClientY: e.clientY,
     };
-    setPlanDragPreview({ taskId: task.id, startMin });
+    document.body.classList.add('is-plan-dragging');
+    setPlanDragPreview({ taskId: task.id, startMin, valid: true });
     setPlanDragError(null);
   };
 
   const onPlanBlockPointerMove = (e: PointerEvent<HTMLDivElement>) => {
     const drag = planDragRef.current;
     if (!drag || viewStartMin == null) return;
-    const deltaMin = Math.round((e.clientY - drag.originY) / pxPerMin);
-    const raw = drag.originStart + deltaMin;
-    const snapped = Math.round(raw / 5) * 5;
-    setPlanDragPreview({ taskId: drag.taskId, startMin: snapped });
+    drag.lastClientY = e.clientY;
+    updatePlanDragFromPointer(e.clientY);
+    const viewport = viewportRef.current;
+    if (viewport) {
+      const rect = viewport.getBoundingClientRect();
+      const nearEdge =
+        e.clientY < rect.top + 64 || e.clientY > rect.bottom - 64;
+      if (nearEdge) ensurePlanDragScrollLoop();
+      else stopPlanDragScrollLoop();
+    }
   };
 
   const onPlanBlockPointerUp = (e: PointerEvent<HTMLDivElement>) => {
     const drag = planDragRef.current;
-    planDragRef.current = null;
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {
       /* ignore */
     }
-    if (!drag || !planDragPreview) {
+    if (!drag) {
+      endPlanDrag();
       setPlanDragPreview(null);
       return;
     }
-    const startMin = planDragPreview.startMin;
+
+    // Final resolve from pointer (includes scroll) so drop matches what user aimed for.
+    const viewport = viewportRef.current;
+    const scrollComp = viewport
+      ? viewport.scrollTop - drag.originScrollTop
+      : 0;
+    const deltaMin = Math.round(
+      (e.clientY - drag.originY + scrollComp) / pxPerMin,
+    );
+    const raw = drag.originStart + deltaMin;
+    const resolved = resolvePlanDragStart(
+      drag.taskId,
+      raw,
+      drag.duration,
+      true,
+    );
+    const startMin = resolved.startMin;
     const endMin = startMin + drag.duration;
+    endPlanDrag();
     setPlanDragPreview(null);
     if (startMin === drag.originStart) return;
-    if (!canPlaceAt(drag.taskId, startMin, drag.duration)) {
+    if (!resolved.valid || !canPlaceAt(drag.taskId, startMin, drag.duration)) {
       setPlanDragError(
         'That drop overlaps another task or sits outside work hours.',
       );
@@ -1458,7 +1623,9 @@ export function TodayPage({
           </div>
 
           <div className="schedule-board schedule-board--fill plan-board">
-            {!hasSchedule ? (
+            {scheduleQ.isLoading && !hasSchedule ? (
+              <div className="priority-empty">Loading your plan…</div>
+            ) : !hasSchedule ? (
               <div className="card" style={{ padding: 16 }}>
                 No work hours for today. Open Settings and save a daily schedule
                 profile for this weekday.
@@ -1629,13 +1796,15 @@ export function TodayPage({
                         planDragPreview?.taskId === t.id
                           ? planDragPreview.startMin
                           : s;
+                      const slotH = Math.max((e - s) * pxPerMin, 18);
                       const dragHeight =
                         planDragPreview?.taskId === t.id
                           ? Math.max(
                               Math.max(5, t.estimatedMinutes) * pxPerMin,
-                              52,
+                              18,
                             )
-                          : Math.max((e - s) * pxPerMin, 52);
+                          : slotH;
+                      const compact = dragHeight < 70;
                       const rangeStartMin =
                         planDragPreview?.taskId === t.id
                           ? planDragPreview.startMin
@@ -1670,14 +1839,20 @@ export function TodayPage({
                           }${
                             !meet && !done && !isLive ? ' is-draggable' : ''
                           }${
-                            planDragPreview?.taskId === t.id ? ' is-dragging-plan' : ''
+                            planDragPreview?.taskId === t.id
+                              ? ` is-dragging-plan${
+                                  planDragPreview.valid
+                                    ? ' is-drop-valid'
+                                    : ' is-drop-invalid'
+                                }`
+                              : ''
                           }${
                             isOvertime || crossesOvertime ? ' is-overtime' : ''
-                          }`}
+                          }${compact ? ' is-compact' : ''}`}
                           style={{
                             top:
-                              (dragStart - viewStartMin!) * pxPerMin,
-                            height: dragHeight,
+                              (dragStart - viewStartMin!) * pxPerMin + 2,
+                            height: Math.max(16, dragHeight - 4),
                             left: `calc(${lane * widthPct}% + 4px)`,
                             width: `calc(${widthPct}% - 8px)`,
                             right: 'auto',
@@ -1687,7 +1862,7 @@ export function TodayPage({
                           onPointerDown={
                             meet || done || isLive
                               ? undefined
-                              : (ev) => onPlanBlockPointerDown(ev, t, block.start)
+                              : (ev) => onPlanBlockPointerDown(ev, t, block.rawS)
                           }
                           onPointerMove={
                             meet || done || isLive
@@ -1703,7 +1878,7 @@ export function TodayPage({
                             meet || done || isLive
                               ? undefined
                               : () => {
-                                  planDragRef.current = null;
+                                  endPlanDrag();
                                   setPlanDragPreview(null);
                                 }
                           }
@@ -1712,7 +1887,7 @@ export function TodayPage({
                               ? 'Pause the timer to move this task'
                               : meet || done
                                 ? undefined
-                                : 'Drag to move — must fit without overlapping'
+                                : 'Drag to move — snaps into free gaps'
                           }
                         >
                           <div className="cal-block-main">
@@ -1743,7 +1918,7 @@ export function TodayPage({
                             <span className="cal-schedule" title="Scheduled time">
                               {scheduleRange}
                             </span>
-                            {!meet && (
+                            {!meet && !compact && (
                               <span className="cal-meta">
                                 {!t.scheduleLocked ? 'Deep work' : ''}
                                 {spanMin ? ` · ${spanMin}m` : ''}
@@ -2039,20 +2214,26 @@ export function TodayPage({
                 strategy={verticalListSortingStrategy}
               >
                 <div className="priority-list queue-list">
-                  {tasks.map((task, i) => (
-                    <SortableTask
-                      key={task.id}
-                      task={task}
-                      rank={i + 1}
-                      timeZone={timeZone}
-                      scheduleLabel={scheduleLabels.get(task.id) ?? null}
-                      onStatsRefresh={invalidateStats}
-                    />
-                  ))}
-                  {tasks.length === 0 && (
-                    <div className="priority-empty">
-                      No tasks yet — add one above.
-                    </div>
+                  {queueLoading ? (
+                    <div className="priority-empty">Loading today’s tasks…</div>
+                  ) : (
+                    <>
+                      {tasks.map((task, i) => (
+                        <SortableTask
+                          key={task.id}
+                          task={task}
+                          rank={i + 1}
+                          timeZone={timeZone}
+                          scheduleLabel={scheduleLabels.get(task.id) ?? null}
+                          onStatsRefresh={invalidateStats}
+                        />
+                      ))}
+                      {tasks.length === 0 && (
+                        <div className="priority-empty">
+                          No tasks yet — add one above.
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </SortableContext>

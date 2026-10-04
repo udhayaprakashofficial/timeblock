@@ -381,13 +381,15 @@ function DashboardReadyGate({
 }) {
   const bootstrappedFor = useAppSelector((s) => s.stats.bootstrappedFor);
   const date = todayISO(timeZone);
+  const dayLoaded = useAppSelector((s) => Boolean(s.tasks.loadedDates[date]));
   const key = `${userId}:${date}`;
-  const ready = bootstrappedFor === key;
+  // Require both bootstrap + day tasks so post-onboarding never flashes empty.
+  const ready = bootstrappedFor === key && dayLoaded;
   const [timedOut, setTimedOut] = useState(false);
 
   useEffect(() => {
     if (ready) return;
-    const t = window.setTimeout(() => setTimedOut(true), 8_000);
+    const t = window.setTimeout(() => setTimedOut(true), 12_000);
     return () => window.clearTimeout(t);
   }, [ready]);
 

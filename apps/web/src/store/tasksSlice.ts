@@ -470,6 +470,17 @@ const tasksSlice = createSlice({
     clearCreateError(state) {
       state.createError = null;
     },
+    /** Seed a day from finish-onboarding (or similar) before the dashboard mounts. */
+    hydrateDay(
+      state,
+      action: PayloadAction<{ date: string; tasks: TaskDto[] }>,
+    ) {
+      const date = action.payload.date;
+      state.byDate[date] = sortDayTasks(asTaskList(action.payload.tasks));
+      state.loadedDates[date] = true;
+      if (state.loadingDate === date) state.loadingDate = null;
+      state.error = null;
+    },
     optimisticCreate(
       state,
       action: PayloadAction<{

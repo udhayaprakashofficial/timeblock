@@ -3,24 +3,28 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type {
+  DailyScheduleTemplateDto,
+  TaskDto,
   UserDto,
   Weekday,
 } from '@timeblock/shared-types';
-import { api, detectBrowserTimeZone } from '../api';
+import { api, detectBrowserTimeZone, todayISO } from '../api';
 import { CupkeyLogo } from '../components/CupkeyLogo';
 import { BootProgressScreen } from '../components/BootProgressScreen';
 import { useAppDispatch } from '../store/hooks';
-import { clearStats } from '../store/statsSlice';
+import { clearStats, fetchStats } from '../store/statsSlice';
+import { fetchTasks, tasksActions } from '../store/tasksSlice';
 import { useTheme } from '../theme';
 import './onboarding.css';
 
 type BreakDraft = { name: string; start: string; end: string };
+type RepeatKind = 'off' | 'daily' | 'weekly';
 type PlanDraft = {
   id: string;
   name: string;
   minutes: number;
-  /** Repeat on selected workdays every week */
-  recurring: boolean;
+  /** off = today only; daily = every selected workday; weekly = one weekday */
+  repeat: RepeatKind;
 };
 
 const WEEKDAYS: Array<{ value: Weekday; label: string }> = [
@@ -34,11 +38,29 @@ const WEEKDAYS: Array<{ value: Weekday; label: string }> = [
 ];
 
 const SAMPLE_PLANS: PlanDraft[] = [
-  { id: 'sample-1', name: 'Plan the Day', minutes: 60, recurring: false },
-  { id: 'sample-2', name: 'Reply to emails', minutes: 60, recurring: false },
-  { id: 'sample-3', name: 'Finish Project Report', minutes: 60, recurring: false },
-  { id: 'sample-4', name: 'Deep work session', minutes: 80, recurring: false },
+  { id: 'sample-1', name: 'Plan the day', minutes: 15, repeat: 'daily' },
+  { id: 'sample-2', name: 'Reply to emails', minutes: 15, repeat: 'daily' },
+  { id: 'sample-3', name: 'Deep Work', minutes: 120, repeat: 'daily' },
+  { id: 'sample-4', name: 'Weekly reporting', minutes: 60, repeat: 'weekly' },
 ];
+
+function cycleRepeat(kind: RepeatKind): RepeatKind {
+  if (kind === 'off') return 'daily';
+  if (kind === 'daily') return 'weekly';
+  return 'off';
+}
+
+function repeatLabel(kind: RepeatKind): string {
+  if (kind === 'daily') return 'Repeat · Daily';
+  if (kind === 'weekly') return 'Repeat · Weekly';
+  return 'Repeat';
+}
+
+/** Weekly cadence lands on Friday when that’s a workday, else the last selected day. */
+function weeklyWeekday(workdays: Weekday[]): Weekday {
+  if (workdays.includes(5)) return 5;
+  return workdays[workdays.length - 1] ?? 5;
+}
 
 const PLAN_MINS_MIN = 5;
 const PLAN_MINS_MAX = 480;
@@ -362,8 +384,10 @@ export function OnboardingFlow({
         name: string;
         estimatedMinutes: number;
         recurring: boolean;
+        weekdays?: Weekday[];
       }>;
     }) => {
+      const tz = detectBrowserTimeZone();
       const body = {
         createTasks: payload.createTasks,
         weekdays: payload.weekdays,
@@ -377,15 +401,39 @@ export function OnboardingFlow({
             end: toHm(b.end, '13:00'),
           })),
         tasks: payload.tasks,
-        timezone: detectBrowserTimeZone(),
+        timezone: tz,
       };
 
+      const scheduleSeed: DailyScheduleTemplateDto[] = payload.weekdays.map(
+        (weekday) => ({
+          id: `onboard-${weekday}`,
+          weekday,
+          workStart: payload.workStart,
+          workEnd: payload.workEnd,
+          breaks: body.breaks.map((b, i) => ({
+            id: `onboard-break-${weekday}-${i}`,
+            name: b.name,
+            start: b.start,
+            end: b.end,
+          })),
+        }),
+      );
+
       try {
-        const result = await api.post<{ user: UserDto; tasks: unknown[] }>(
+        const result = await api.post<{ user: UserDto; tasks?: TaskDto[] }>(
           '/api/users/me/finish-onboarding',
           body,
         );
-        return { ...result.user, onboardingCompleted: true as const };
+        return {
+          user: {
+            ...result.user,
+            onboardingCompleted: true as const,
+            theme: 'dark' as const,
+          },
+          tasks: Array.isArray(result.tasks) ? result.tasks : [],
+          scheduleSeed,
+          date: todayISO(tz),
+        };
       } catch (primaryErr) {
         // Never trap the user on onboarding if the one-shot call drops
         // (proxy timeout / Failed to fetch). Mark complete via PATCH, then
@@ -397,7 +445,7 @@ export function OnboardingFlow({
         const next = await api.patch<UserDto>('/api/users/me', {
           onboardingCompleted: true,
           theme: 'dark',
-          timezone: detectBrowserTimeZone(),
+          timezone: tz,
         });
 
         try {
@@ -415,32 +463,45 @@ export function OnboardingFlow({
           /* schedule can be set later in Settings */
         }
 
+        let seededTasks: TaskDto[] = [];
         if (payload.createTasks && payload.tasks.length) {
-          const today = new Intl.DateTimeFormat('en-CA', {
-            timeZone: detectBrowserTimeZone(),
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-          }).format(new Date());
-          await Promise.all(
+          const today = todayISO(tz);
+          const created = await Promise.all(
             payload.tasks.map(async (t) => {
               try {
-                await api.post('/api/tasks', {
+                return await api.post<TaskDto>('/api/tasks', {
                   date: today,
                   name: t.name,
                   estimatedMinutes: t.estimatedMinutes,
                 });
               } catch {
-                /* keep going */
+                return null;
               }
             }),
           );
+          seededTasks = created.filter((t): t is TaskDto => Boolean(t));
+          if (!seededTasks.length) {
+            try {
+              seededTasks = await api.get<TaskDto[]>(`/api/tasks?date=${today}`);
+            } catch {
+              seededTasks = [];
+            }
+          }
         }
 
-        return { ...next, onboardingCompleted: true as const, theme: 'dark' as const };
+        return {
+          user: {
+            ...next,
+            onboardingCompleted: true as const,
+            theme: 'dark' as const,
+          },
+          tasks: seededTasks,
+          scheduleSeed,
+          date: todayISO(tz),
+        };
       }
     },
-    onSuccess: (next) => {
+    onSuccess: (result) => {
       try {
         localStorage.setItem(`tb.onboardingDone.${user.id}`, '1');
         sessionStorage.setItem(`tb.onboardingDone.${user.id}`, '1');
@@ -449,11 +510,27 @@ export function OnboardingFlow({
       }
       // Dashboard defaults to dark after onboarding (onboarding UI stays light).
       setTheme('dark');
+      // Seed Plan/Queue before navigation so the shell never flashes empty.
+      // clearStats resets bootstrappedFor so DataBootstrap still reconciles,
+      // but hydrateDay keeps tasks visible the moment the gate opens.
       dispatch(clearStats());
-      qc.setQueryData(['me'], { ...next, theme: 'dark' as const });
+      dispatch(
+        tasksActions.hydrateDay({
+          date: result.date,
+          tasks: result.tasks,
+        }),
+      );
+      qc.setQueryData(['schedule'], result.scheduleSeed);
+      qc.setQueryData(['me'], result.user);
+      // Warm stats/tasks in parallel with navigation (gate stays up until ready).
+      void dispatch(fetchTasks(result.date));
+      void dispatch(fetchStats(result.date)).then((action) => {
+        if (fetchStats.fulfilled.match(action)) {
+          qc.setQueryData(['stats', result.date], action.payload.stats);
+        }
+      });
       void qc.invalidateQueries({ queryKey: ['schedule'] });
-      void qc.invalidateQueries({ queryKey: ['tasks'] });
-      onFinished({ ...next, theme: 'dark' });
+      onFinished(result.user);
     },
   });
 
@@ -487,11 +564,21 @@ export function OnboardingFlow({
         workEnd: toHm(workEnd),
         breaks,
         tasks: resolvedPlans
-          .map((p) => ({
-            name: p.name.trim(),
-            estimatedMinutes: p.minutes,
-            recurring: Boolean(p.recurring),
-          }))
+          .map((p) => {
+            const name = p.name.trim();
+            const recurring = p.repeat !== 'off';
+            return {
+              name,
+              estimatedMinutes: p.minutes,
+              recurring,
+              weekdays:
+                p.repeat === 'weekly'
+                  ? [weeklyWeekday(weekdays)]
+                  : p.repeat === 'daily'
+                    ? weekdays
+                    : undefined,
+            };
+          })
           .filter((p) => p.name),
       });
     } catch (err) {
@@ -698,15 +785,15 @@ export function OnboardingFlow({
               the room.
             </h1>
             <p className="onboard-sub is-light">
-              Starter tasks for your weekdays — edit or remove any. Turn on
-              Repeat to create them every selected workday from now on.
+              Starter tasks for your weekdays — edit or remove any. Repeat
+              Daily creates them every selected workday; Weekly once a week.
             </p>
 
             <div className="onboard-plan-list">
               {plans.map((p, index) => (
                 <div
                   key={p.id}
-                  className={`onboard-plan-row${p.recurring ? ' is-recurring' : ''}${
+                  className={`onboard-plan-row${p.repeat !== 'off' ? ' is-recurring' : ''}${
                     !p.name.trim() ? ' is-blank' : ''
                   }`}
                 >
@@ -868,26 +955,30 @@ export function OnboardingFlow({
                           </button>
                         </div>
                       </div>
-                      <label
-                        className={`onboard-plan-recur${p.recurring ? ' is-on' : ''}`}
-                        title="Repeat on your workdays"
+                      <button
+                        type="button"
+                        className={`onboard-plan-recur is-${p.repeat}`}
+                        title={
+                          p.repeat === 'off'
+                            ? 'Repeat is off — tap for Daily, then Weekly'
+                            : p.repeat === 'daily'
+                              ? 'Repeats every selected workday — tap for Weekly'
+                              : 'Repeats one day each week — tap to turn off'
+                        }
+                        aria-label={`${repeatLabel(p.repeat)} for task ${index + 1}`}
+                        onClick={() => {
+                          setPlans((prev) =>
+                            prev.map((row) =>
+                              row.id === p.id
+                                ? { ...row, repeat: cycleRepeat(row.repeat) }
+                                : row,
+                            ),
+                          );
+                        }}
                       >
-                        <input
-                          type="checkbox"
-                          checked={p.recurring}
-                          onChange={(e) => {
-                            setPlans((prev) =>
-                              prev.map((row) =>
-                                row.id === p.id
-                                  ? { ...row, recurring: e.target.checked }
-                                  : row,
-                              ),
-                            );
-                          }}
-                        />
-                        <span className="onboard-plan-recur-mark" aria-hidden />
-                        <span>Weekly</span>
-                      </label>
+                        <span className="onboard-plan-recur-dot" aria-hidden />
+                        <span>{repeatLabel(p.repeat)}</span>
+                      </button>
                     </div>
                   </div>
                   <button
@@ -914,7 +1005,7 @@ export function OnboardingFlow({
                         id: `custom-${Date.now()}`,
                         name: '',
                         minutes: 30,
-                        recurring: false,
+                        repeat: 'off',
                       },
                     ])
                   }

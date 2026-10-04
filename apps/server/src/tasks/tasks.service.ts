@@ -976,25 +976,33 @@ export class TasksService {
       name: string;
       estimatedMinutes: number;
       recurring?: boolean;
+      weekdays?: number[];
     }>,
     weekdays: Weekday[],
   ): Promise<TaskDto[]> {
     const tz = await this.resolveTimeZone(userId);
     const today = todayInTimeZone(tz);
+    const days = [...new Set(weekdays)].filter((d) => d >= 0 && d <= 6) as Weekday[];
     const cleaned = plans
-      .map((p) => ({
-        name: (p.name ?? '').trim(),
-        estimatedMinutes: Math.max(
-          5,
-          Math.min(480, Math.round(Number(p.estimatedMinutes) || 30)),
-        ),
-        recurring: Boolean(p.recurring),
-      }))
+      .map((p) => {
+        const ownDays = Array.isArray(p.weekdays)
+          ? ([...new Set(p.weekdays)]
+              .map((d) => Number(d))
+              .filter((d) => d >= 0 && d <= 6) as Weekday[])
+          : [];
+        return {
+          name: (p.name ?? '').trim(),
+          estimatedMinutes: Math.max(
+            5,
+            Math.min(480, Math.round(Number(p.estimatedMinutes) || 30)),
+          ),
+          recurring: Boolean(p.recurring),
+          weekdays: ownDays.length ? ownDays : days,
+        };
+      })
       .filter((p) => p.name);
 
     if (!cleaned.length) return this.list(userId, today);
-
-    const days = [...new Set(weekdays)].filter((d) => d >= 0 && d <= 6) as Weekday[];
     const seedNames = new Set(cleaned.map((p) => p.name.toLowerCase()));
 
     const fromDb = await this.viaDb(userId, async (id) => {
@@ -1056,13 +1064,13 @@ export class TasksService {
       // Recurring templates — only when user opted in; fire in parallel
       await Promise.all(
         cleaned
-          .filter((p) => p.recurring && days.length)
+          .filter((p) => p.recurring && p.weekdays.length)
           .map((p) =>
             this.supabase
               .createRecurringTemplate(id, {
                 name: p.name,
                 estimatedMinutes: p.estimatedMinutes,
-                weekdays: days,
+                weekdays: p.weekdays,
                 active: true,
               })
               .catch(() => null),
@@ -1090,11 +1098,11 @@ export class TasksService {
         { skipReschedule: true },
       );
       existingLocalNames.add(p.name.toLowerCase());
-      if (p.recurring && days.length) {
+      if (p.recurring && p.weekdays.length) {
         this.local.createRecurring(userId, {
           name: p.name,
           estimatedMinutes: p.estimatedMinutes,
-          weekdays: days,
+          weekdays: p.weekdays,
           active: true,
         });
       }

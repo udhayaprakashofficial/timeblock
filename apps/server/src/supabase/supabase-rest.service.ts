@@ -1326,6 +1326,24 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  async deleteScheduleDay(userId: string, weekday: number) {
+    const existing = await this.select<{ id: string }>(
+      'DailyScheduleTemplate',
+      'id',
+      {
+        filter: `userId=eq.${userId}&weekday=eq.${weekday}`,
+        limit: 1,
+      },
+    );
+    if (!existing[0]) return;
+    try {
+      await this.delete('Break', `templateId=eq.${existing[0].id}`);
+    } catch {
+      /* cascade may already drop breaks */
+    }
+    await this.delete('DailyScheduleTemplate', `id=eq.${existing[0].id}`);
+  }
+
   /** Seed Mon–Fri 09–18 + lunch when the user has no templates yet. */
   async ensureDefaultSchedule(userId: string) {
     const existing = await this.select<{ id: string }>(

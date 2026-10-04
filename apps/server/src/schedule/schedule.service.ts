@@ -116,7 +116,7 @@ export class ScheduleTemplatesService {
       userId,
       async (id) => {
         const row = await this.supabase.upsertSchedule(id, dto);
-        await this.rescheduleAfter(id);
+        void this.rescheduleAfter(id);
         return row as DailyScheduleTemplateDto;
       },
     );
@@ -159,8 +159,10 @@ export class ScheduleTemplatesService {
           rows.push(row as DailyScheduleTemplateDto);
         }),
       );
-      // Onboarding must stay under proxy timeouts — skip 7-day pack here.
+      // Don't block the HTTP response on a full-week pack — that's what made
+      // "apply to 7 days" look like it failed (timeouts before Sat/Sun).
       if (!defer) await this.rescheduleAfter(id);
+      else void this.rescheduleAfter(id);
       return rows;
     });
     if (fromDb !== null) return fromDb;
@@ -184,33 +186,59 @@ export class ScheduleTemplatesService {
     }
   }
 
-  async applyToAllDays(
-    userId: string,
-    dto: Omit<UpsertScheduleTemplateDto, 'weekday'>,
-  ): Promise<DailyScheduleTemplateDto[]> {
+  async removeDay(userId: string, weekday: Weekday): Promise<{ ok: true }> {
+    if (![0, 1, 2, 3, 4, 5, 6].includes(weekday)) {
+      return { ok: true };
+    }
     const fromDb = await this.viaDb(userId, async (id) => {
-      const weekdays: Weekday[] = [0, 1, 2, 3, 4, 5, 6];
-      for (const weekday of weekdays) {
-        await this.supabase.upsertSchedule(id, { ...dto, weekday });
-      }
+      await this.supabase.deleteScheduleDay(id, weekday);
       await this.rescheduleAfter(id);
-      return this.supabase.listSchedule(id) as Promise<DailyScheduleTemplateDto[]>;
+      return { ok: true as const };
     });
     if (fromDb !== null) return fromDb;
 
     if (userId.startsWith('local_')) {
-      return this.local.applyScheduleToAll(userId, dto);
+      this.local.deleteScheduleDay(userId, weekday);
+      return { ok: true };
     }
     try {
-      const weekdays: Weekday[] = [0, 1, 2, 3, 4, 5, 6];
-      for (const weekday of weekdays) {
-        await this.writeTemplate(userId, { ...dto, weekday });
-      }
+      await this.prisma.dailyScheduleTemplate.deleteMany({
+        where: { userId, weekday },
+      });
       await this.rescheduleUpcoming(userId);
-      return this.list(userId);
     } catch {
-      return this.local.applyScheduleToAll(userId, dto);
+      this.local.deleteScheduleDay(userId, weekday);
     }
+    return { ok: true };
+  }
+
+  async applyToAllDays(
+    userId: string,
+    dto: Omit<UpsertScheduleTemplateDto, 'weekday'>,
+  ): Promise<DailyScheduleTemplateDto[]> {
+    return this.applyToDays(userId, {
+      ...dto,
+      weekdays: [0, 1, 2, 3, 4, 5, 6],
+    });
+  }
+
+  async applyToDays(
+    userId: string,
+    dto: Omit<UpsertScheduleTemplateDto, 'weekday'> & { weekdays: Weekday[] },
+  ): Promise<DailyScheduleTemplateDto[]> {
+    const hours = {
+      workStart: dto.workStart,
+      workEnd: dto.workEnd,
+      breaks: dto.breaks ?? [],
+    };
+    const days = [...new Set(dto.weekdays)].filter(
+      (d) => d >= 0 && d <= 6,
+    ) as Weekday[];
+    if (!days.length) return this.list(userId);
+
+    return this.upsertSelectedDays(userId, days, hours, {
+      deferReschedule: true,
+    });
   }
 
   private async writeTemplate(

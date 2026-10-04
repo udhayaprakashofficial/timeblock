@@ -221,17 +221,23 @@ export function SettingsPage({ user }: { user: UserDto }) {
 
   const byWeekday = useMemo(() => {
     const map = new Map<number, DailyScheduleTemplateDto>();
-    for (const t of scheduleQ.data ?? []) map.set(t.weekday, t);
+    for (const t of scheduleQ.data ?? []) {
+      const weekday = Number(t.weekday) as Weekday;
+      if (!Number.isFinite(weekday) || weekday < 0 || weekday > 6) continue;
+      map.set(weekday, { ...t, weekday });
+    }
     return map;
   }, [scheduleQ.data]);
 
   const patchScheduleCache = (saved: DailyScheduleTemplateDto) => {
+    const weekday = Number(saved.weekday) as Weekday;
+    const row = { ...saved, weekday };
     qc.setQueryData<DailyScheduleTemplateDto[]>(['schedule'], (old) => {
       const list = Array.isArray(old) ? [...old] : [];
-      const idx = list.findIndex((t) => t.weekday === saved.weekday);
-      if (idx >= 0) list[idx] = saved;
-      else list.push(saved);
-      return list.sort((a, b) => a.weekday - b.weekday);
+      const idx = list.findIndex((t) => Number(t.weekday) === weekday);
+      if (idx >= 0) list[idx] = row;
+      else list.push(row);
+      return list.sort((a, b) => Number(a.weekday) - Number(b.weekday));
     });
   };
 
@@ -443,7 +449,8 @@ export function SettingsPage({ user }: { user: UserDto }) {
                     <p className="settings-kicker">Schedule</p>
                     <h2 className="settings-panel-title">Your week</h2>
                     <p className="page-sub">
-                      One column of days. Edit a day, or copy it to every weekday.
+                      Edit any day — including Saturday and Sunday — or copy
+                      hours across the week.
                     </p>
                   </div>
                 </div>
@@ -476,12 +483,32 @@ export function SettingsPage({ user }: { user: UserDto }) {
                         ['schedule'],
                         (old) => {
                           const map = new Map<number, DailyScheduleTemplateDto>();
-                          for (const row of old ?? []) map.set(row.weekday, row);
-                          for (const row of list) map.set(row.weekday, row);
+                          for (const row of old ?? []) {
+                            map.set(Number(row.weekday), {
+                              ...row,
+                              weekday: Number(row.weekday) as Weekday,
+                            });
+                          }
+                          for (const row of list) {
+                            map.set(Number(row.weekday), {
+                              ...row,
+                              weekday: Number(row.weekday) as Weekday,
+                            });
+                          }
                           return [...map.values()].sort(
-                            (a, b) => a.weekday - b.weekday,
+                            (a, b) => Number(a.weekday) - Number(b.weekday),
                           );
                         },
+                      );
+                      void qc.invalidateQueries({ queryKey: ['schedule'] });
+                      void qc.invalidateQueries({ queryKey: ['tasks'] });
+                      void qc.invalidateQueries({ queryKey: ['stats'] });
+                    }}
+                    onDayCleared={(weekday) => {
+                      qc.setQueryData<DailyScheduleTemplateDto[]>(
+                        ['schedule'],
+                        (old) =>
+                          (old ?? []).filter((t) => t.weekday !== weekday),
                       );
                       void qc.invalidateQueries({ queryKey: ['tasks'] });
                       void qc.invalidateQueries({ queryKey: ['stats'] });
@@ -699,10 +726,12 @@ function ScheduleEditor({
   byWeekday,
   onDaySaved,
   onAllSaved,
+  onDayCleared,
 }: {
   byWeekday: Map<number, DailyScheduleTemplateDto>;
   onDaySaved: (saved: DailyScheduleTemplateDto) => void;
   onAllSaved: (list: DailyScheduleTemplateDto[]) => void;
+  onDayCleared: (weekday: Weekday) => void;
 }) {
   const todayWeekday = new Date().getDay() as Weekday;
   const [active, setActive] = useState<Weekday>(
@@ -733,7 +762,7 @@ function ScheduleEditor({
               >
                 <span className="week-day-name">{d.label.slice(0, 3)}</span>
                 {off ? (
-                  <span className="week-day-off">Off — and it stays off</span>
+                  <span className="week-day-off">Off — tap to set hours</span>
                 ) : (
                   <>
                     <span className="week-day-hours">
@@ -772,6 +801,7 @@ function ScheduleEditor({
         template={template}
         onDaySaved={onDaySaved}
         onAllSaved={onAllSaved}
+        onDayCleared={onDayCleared}
       />
     </div>
   );
@@ -783,12 +813,14 @@ function DayEditor({
   template,
   onDaySaved,
   onAllSaved,
+  onDayCleared,
 }: {
   label: string;
   weekday: Weekday;
   template?: DailyScheduleTemplateDto;
   onDaySaved: (saved: DailyScheduleTemplateDto) => void;
   onAllSaved: (list: DailyScheduleTemplateDto[]) => void;
+  onDayCleared: (weekday: Weekday) => void;
 }) {
   const [workStart, setWorkStart] = useState(() =>
     toHm(template?.workStart, '09:00'),
@@ -862,31 +894,44 @@ function DayEditor({
   });
 
   const applyAll = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (includeWeekends: boolean) => {
       if (!hoursValid) {
         throw new Error('End time must be after start time');
       }
-      const body = buildBody();
-      const weekdays: Weekday[] = [1, 2, 3, 4, 5];
-      const saved: DailyScheduleTemplateDto[] = [];
-      for (const day of weekdays) {
-        saved.push(
-          await api.put<DailyScheduleTemplateDto>('/api/schedule', {
-            ...body,
-            weekday: day,
-          }),
-        );
-      }
-      return saved;
+      const hours = buildBody();
+      const weekdays: Weekday[] = includeWeekends
+        ? [0, 1, 2, 3, 4, 5, 6]
+        : [1, 2, 3, 4, 5];
+      const saved = await api.put<DailyScheduleTemplateDto[]>(
+        '/api/schedule/apply-all',
+        {
+          workStart: hours.workStart,
+          workEnd: hours.workEnd,
+          breaks: hours.breaks,
+          weekdays,
+        },
+      );
+      const rows = (Array.isArray(saved) ? saved : []).map((row) => ({
+        ...row,
+        weekday: Number(row.weekday) as Weekday,
+      }));
+      return { saved: rows, includeWeekends };
     },
-    onSuccess: (list) => {
-      const mine = list.find((t) => t.weekday === weekday);
+    onSuccess: ({ saved }) => {
+      const mine = saved.find((t) => Number(t.weekday) === Number(weekday));
       if (mine) setHydratedFp(templateFingerprint(mine));
-      onAllSaved(list);
+      onAllSaved(saved);
     },
   });
 
-  const busy = save.isPending || applyAll.isPending;
+  const turnOff = useMutation({
+    mutationFn: () => api.delete<{ ok: true }>(`/api/schedule/${weekday}`),
+    onSuccess: () => {
+      onDayCleared(weekday);
+    },
+  });
+
+  const busy = save.isPending || applyAll.isPending || turnOff.isPending;
   const lastAttempt = useRef('');
   const saveRef = useRef(save.mutate);
   saveRef.current = save.mutate;
@@ -894,6 +939,7 @@ function DayEditor({
   const edited = localFp !== initialFp.current;
 
   useEffect(() => {
+    if (!template) return;
     if (!edited || !dirty || !hoursValid || busy) return;
     if (lastAttempt.current === localFp) return;
     const timer = window.setTimeout(() => {
@@ -901,7 +947,7 @@ function DayEditor({
       saveRef.current();
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [edited, dirty, hoursValid, busy, localFp]);
+  }, [template, edited, dirty, hoursValid, busy, localFp]);
 
   return (
     <div className="schedule-editor">
@@ -921,23 +967,60 @@ function DayEditor({
               )
             ) : template ? (
               <span className="schedule-dirty"> · Saved</span>
-            ) : null}
+            ) : (
+              <span className="schedule-dirty"> · Off</span>
+            )}
           </p>
         </div>
         <div className="schedule-editor-actions">
+          {template ? (
+            <button
+              className="btn btn-ghost"
+              type="button"
+              onClick={() => turnOff.mutate()}
+              disabled={busy}
+            >
+              {turnOff.isPending ? 'Turning off…' : 'Keep this day off'}
+            </button>
+          ) : null}
+          <button
+            className="btn btn-outline"
+            type="button"
+            onClick={() => applyAll.mutate(false)}
+            disabled={busy || !hoursValid}
+            title="Copy these hours onto Monday through Friday"
+          >
+            {applyAll.isPending ? 'Applying…' : 'Apply Mon–Fri'}
+          </button>
           <button
             className="btn btn-primary"
             type="button"
-            onClick={() => applyAll.mutate()}
+            onClick={() => applyAll.mutate(true)}
             disabled={busy || !hoursValid}
-            title="Copy these hours and breaks onto Monday through Friday"
+            title="Copy these hours onto every day, including Saturday and Sunday"
           >
-            {applyAll.isPending ? 'Applying…' : 'Apply to every weekday'}
+            {applyAll.isPending ? 'Applying…' : 'Apply to all 7 days'}
           </button>
         </div>
       </header>
 
       <div className="schedule-editor-body">
+        {!template ? (
+          <div className="schedule-off-banner">
+            <p>
+              {label} is off, so Cupkey will not pack tasks on this day.
+            </p>
+            <button
+              className="btn btn-primary"
+              type="button"
+              disabled={busy || !hoursValid}
+              onClick={() => save.mutate()}
+            >
+              {save.isPending ? 'Enabling…' : `Work on ${label}`}
+            </button>
+          </div>
+        ) : null}
+
         <div className="schedule-hours">
           <p className="settings-kicker">Work hours</p>
           <div className="settings-day-times">
@@ -1041,7 +1124,9 @@ function DayEditor({
       )}
       {applyAll.isSuccess && !dirty && (
         <p className="settings-toast is-ok">
-          Applied to every weekday. Weekends stay as they are.
+          {applyAll.data?.includeWeekends
+            ? 'Applied to all 7 days, including Saturday and Sunday.'
+            : 'Applied to Monday–Friday. Weekends stay as they are.'}
         </p>
       )}
     </div>

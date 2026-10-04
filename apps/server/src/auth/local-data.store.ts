@@ -190,6 +190,15 @@ export class LocalDataStore {
     };
   }
 
+  deleteScheduleDay(userId: string, weekday: number) {
+    const db = this.read();
+    db.schedules = db.schedules.filter(
+      (s) => !(s.userId === userId && s.weekday === weekday),
+    );
+    this.write(db);
+    this.rescheduleUpcoming(userId);
+  }
+
   applyScheduleToAll(
     userId: string,
     dto: Omit<UpsertScheduleTemplateDto, 'weekday'>,

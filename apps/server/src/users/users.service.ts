@@ -66,6 +66,7 @@ export class UsersService {
         name: string;
         estimatedMinutes: number;
         recurring?: boolean;
+        weekdays?: number[];
       }>;
       createTasks?: boolean;
       /** Browser IANA zone — must be set before seeding so tasks land on the user's civil today */

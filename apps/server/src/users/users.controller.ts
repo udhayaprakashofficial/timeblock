@@ -72,6 +72,7 @@ export class UsersController {
         name: string;
         estimatedMinutes: number;
         recurring?: boolean;
+        weekdays?: number[];
       }>;
       createTasks?: boolean;
       timezone?: string;

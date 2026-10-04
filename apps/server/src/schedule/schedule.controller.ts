@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Put, UseGuards } from '@nestjs/common';
-import type { UpsertScheduleTemplateDto } from '@timeblock/shared-types';
+import { Body, Controller, Delete, Get, Param, Put, UseGuards } from '@nestjs/common';
+import type { UpsertScheduleTemplateDto, Weekday } from '@timeblock/shared-types';
 import { SessionAuthGuard } from '../auth/session.guard';
 import { CurrentUserId } from '../auth/current-user.decorator';
 import { ScheduleTemplatesService } from './schedule.service';
@@ -30,8 +30,26 @@ export class ScheduleTemplatesController {
       workStart: string;
       workEnd: string;
       breaks: Array<{ name: string; start: string; end: string }>;
+      weekdays?: number[];
     },
   ) {
-    return this.service.applyToAllDays(userId, body);
+    const weekdays = (Array.isArray(body.weekdays) ? body.weekdays : [])
+      .map((d) => Number(d))
+      .filter((d) => d >= 0 && d <= 6) as Weekday[];
+    return this.service.applyToDays(userId, {
+      workStart: body.workStart,
+      workEnd: body.workEnd,
+      breaks: body.breaks ?? [],
+      weekdays: weekdays.length ? weekdays : [0, 1, 2, 3, 4, 5, 6],
+    });
+  }
+
+  @Delete(':weekday')
+  remove(
+    @CurrentUserId() userId: string,
+    @Param('weekday') weekdayRaw: string,
+  ) {
+    const weekday = Number(weekdayRaw) as Weekday;
+    return this.service.removeDay(userId, weekday);
   }
 }
