@@ -20,13 +20,10 @@ export const DODO_ANNUAL_WELCOME_PRODUCT_ID =
 
 /**
  * TEMPORARY — ₹1 live payment smoke test.
- * Remove when told: LIVE_TESTING_PAYMENT + DODO_LIVE_TESTING_PRODUCT_ID
- * and the LiveTestingPaymentBanner UI.
+ * Force-ON until you say remove (then delete banner + these env hooks).
+ * Set DODO_LIVE_TESTING_PRODUCT_ID on the server for a working Pay ₹1 link.
  */
-export const LIVE_TESTING_PAYMENT =
-  /^(1|true|yes|on)$/i.test(
-    process.env.LIVE_TESTING_PAYMENT?.trim() || '',
-  );
+export const LIVE_TESTING_PAYMENT = true;
 
 export const DODO_LIVE_TESTING_PRODUCT_ID =
   process.env.DODO_LIVE_TESTING_PRODUCT_ID?.trim() || '';

@@ -140,7 +140,8 @@ export function buildLiveTestingCheckoutUrl(
   redirectUrl?: string,
 ): string {
   const productId = catalog.liveTestingProductId?.trim();
-  if (!catalog.liveTestingPayment || !productId) return '';
+  if (!productId) return '';
+  // Allow checkout whenever a product id is present (UI may force-show).
   return buildDodoCheckoutUrl(catalog, productId, customer, redirectUrl);
 }
 

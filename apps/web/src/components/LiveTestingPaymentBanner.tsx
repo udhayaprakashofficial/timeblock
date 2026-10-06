@@ -3,7 +3,7 @@
 /**
  * TEMPORARY — ₹1 live Dodo payment smoke test.
  * Remove this file + CSS + AppRoot/Subscription mounts when told.
- * Gated by server env LIVE_TESTING_PAYMENT (+ DODO_LIVE_TESTING_PRODUCT_ID for checkout).
+ * UI is force-shown until removal; Pay ₹1 needs DODO_LIVE_TESTING_PRODUCT_ID on server.
  */
 
 import { useMemo } from 'react';
@@ -14,6 +14,9 @@ import {
   buildLiveTestingCheckoutUrl,
   catalogFromApi,
 } from '../lib/billing';
+
+/** TEMPORARY — keep UI visible even if server config is stale. */
+const FORCE_SHOW_LIVE_TEST_UI = true;
 
 export function LiveTestingPaymentBanner({
   user,
@@ -51,8 +54,10 @@ export function LiveTestingPaymentBanner({
     [catalog, user.id, user.email, user.name],
   );
 
-  if (!configQ.isSuccess) return null;
-  if (!catalog.liveTestingPayment) return null;
+  const enabled =
+    FORCE_SHOW_LIVE_TEST_UI || catalog.liveTestingPayment === true;
+
+  if (!enabled) return null;
 
   const ready = Boolean(href);
 
@@ -79,8 +84,8 @@ export function LiveTestingPaymentBanner({
           </a>
         ) : (
           <p className="live-test-pay-missing">
-            Set <code>DODO_LIVE_TESTING_PRODUCT_ID</code> on the server, then
-            redeploy.
+            Set <code>DODO_LIVE_TESTING_PRODUCT_ID</code> on the API server
+            (Vercel), then redeploy.
           </p>
         )}
       </article>
@@ -95,7 +100,7 @@ export function LiveTestingPaymentBanner({
         <span className="live-test-pay-banner-note">
           {ready
             ? 'Temporary — verifies live Dodo checkout only. Does not unlock Pro.'
-            : 'LIVE_TESTING_PAYMENT is on, but DODO_LIVE_TESTING_PRODUCT_ID is missing on the server.'}
+            : 'Set DODO_LIVE_TESTING_PRODUCT_ID on the API server, then redeploy.'}
         </span>
       </div>
       {ready ? (
