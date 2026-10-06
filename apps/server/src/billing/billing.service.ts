@@ -65,13 +65,11 @@ export class BillingService {
 
   /** TEMPORARY — ₹1 live checkout smoke test (does not grant Pro). */
   liveTestingPaymentEnabled() {
-    return LIVE_TESTING_PAYMENT && Boolean(DODO_LIVE_TESTING_PRODUCT_ID);
+    return LIVE_TESTING_PAYMENT;
   }
 
   liveTestingProductId() {
-    return this.liveTestingPaymentEnabled()
-      ? DODO_LIVE_TESTING_PRODUCT_ID
-      : '';
+    return DODO_LIVE_TESTING_PRODUCT_ID;
   }
 
   /** Pro monthly or Annual welcome one-time — both unlock paid Pro in Cupkey. */

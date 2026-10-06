@@ -10537,6 +10537,28 @@ body.is-plan-dragging .plan-timeline .cal-block.busy {
   color: #fff;
 }
 
+.live-test-pay-banner-cta.is-disabled {
+  opacity: 0.45;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
+.live-test-pay-card {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.live-test-pay-missing {
+  margin: 12px 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.live-test-pay-missing code {
+  font-size: 0.7rem;
+}
+
 @media (max-width: 560px) {
   .live-test-pay-banner {
     flex-direction: column;
