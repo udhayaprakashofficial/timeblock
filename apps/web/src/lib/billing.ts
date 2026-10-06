@@ -140,6 +140,9 @@ export function buildAnnualWelcomeCheckoutUrl(
 }
 
 /** TEMPORARY — ₹1 live payment smoke test. Remove when told. */
+const LIVE_TESTING_CHECKOUT_BASE =
+  'https://checkout.dodopayments.com/buy';
+
 export function buildLiveTestingCheckoutUrl(
   catalog: BillingCatalog = DEFAULT_BILLING_CATALOG,
   customer?: ProCheckoutCustomer | null,
@@ -147,8 +150,13 @@ export function buildLiveTestingCheckoutUrl(
 ): string {
   const productId = catalog.liveTestingProductId?.trim();
   if (!productId) return '';
-  // Allow checkout whenever a product id is present (UI may force-show).
-  return buildDodoCheckoutUrl(catalog, productId, customer, redirectUrl);
+  // ₹1 product is Live-mode in Dodo — never open test.checkout (404 not-found).
+  return buildDodoCheckoutUrl(
+    { ...catalog, checkoutBase: LIVE_TESTING_CHECKOUT_BASE },
+    productId,
+    customer,
+    redirectUrl,
+  );
 }
 
 /** Send guests to login first; returnTo resumes checkout on /pricing?buy=… */
