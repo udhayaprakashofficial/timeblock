@@ -84,8 +84,7 @@ export function LiveTestingPaymentBanner({
           </a>
         ) : (
           <p className="live-test-pay-missing">
-            Set <code>DODO_LIVE_TESTING_PRODUCT_ID</code> on the API server
-            (Vercel), then redeploy.
+            Checkout link unavailable — refresh and try again.
           </p>
         )}
       </article>
@@ -100,7 +99,7 @@ export function LiveTestingPaymentBanner({
         <span className="live-test-pay-banner-note">
           {ready
             ? 'Temporary — verifies live Dodo checkout only. Does not unlock Pro.'
-            : 'Set DODO_LIVE_TESTING_PRODUCT_ID on the API server, then redeploy.'}
+            : 'Checkout link unavailable — refresh and try again.'}
         </span>
       </div>
       {ready ? (

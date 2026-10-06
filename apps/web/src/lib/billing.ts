@@ -10,6 +10,10 @@ export const FALLBACK_PRO_PRODUCT_ID = 'pdt_0NoD66xtWburRIUH8s6AY';
 export const FALLBACK_ANNUAL_WELCOME_PRODUCT_ID =
   'pdt_0NoLjZzkv1ZVWMngsqIuU';
 
+/** TEMPORARY — ₹1 live smoke test. Remove when told. */
+export const FALLBACK_LIVE_TESTING_PRODUCT_ID =
+  'pdt_0NpAOr1ey195dTkMgmjik';
+
 const FALLBACK_CHECKOUT_BASE =
   'https://test.checkout.dodopayments.com/buy';
 
@@ -26,8 +30,8 @@ export const DEFAULT_BILLING_CATALOG: BillingCatalog = {
   proProductId: FALLBACK_PRO_PRODUCT_ID,
   annualWelcomeProductId: FALLBACK_ANNUAL_WELCOME_PRODUCT_ID,
   checkoutBase: FALLBACK_CHECKOUT_BASE,
-  liveTestingPayment: false,
-  liveTestingProductId: '',
+  liveTestingPayment: true,
+  liveTestingProductId: FALLBACK_LIVE_TESTING_PRODUCT_ID,
 };
 
 /** Map public /api/billing/config into checkout link builders. */
@@ -47,8 +51,10 @@ export function catalogFromApi(data?: {
     checkoutBase: (
       data.checkoutBase?.trim() || FALLBACK_CHECKOUT_BASE
     ).replace(/\/$/, ''),
-    liveTestingPayment: Boolean(data.liveTestingPayment),
-    liveTestingProductId: data.liveTestingProductId?.trim() || '',
+    // TEMPORARY — always expose ₹1 test product until removed
+    liveTestingPayment: true,
+    liveTestingProductId:
+      data.liveTestingProductId?.trim() || FALLBACK_LIVE_TESTING_PRODUCT_ID,
   };
 }
 

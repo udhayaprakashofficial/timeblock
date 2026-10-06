@@ -20,13 +20,14 @@ export const DODO_ANNUAL_WELCOME_PRODUCT_ID =
 
 /**
  * TEMPORARY — ₹1 live payment smoke test.
- * Force-ON until you say remove (then delete banner + these env hooks).
- * Set DODO_LIVE_TESTING_PRODUCT_ID on the server for a working Pay ₹1 link.
+ * Force-ON until you say remove (then delete banner + these hooks).
+ * Product: pdt_0NpAOr1ey195dTkMgmjik (₹1 live test).
  */
 export const LIVE_TESTING_PAYMENT = true;
 
 export const DODO_LIVE_TESTING_PRODUCT_ID =
-  process.env.DODO_LIVE_TESTING_PRODUCT_ID?.trim() || '';
+  process.env.DODO_LIVE_TESTING_PRODUCT_ID?.trim() ||
+  'pdt_0NpAOr1ey195dTkMgmjik';
 
 const DEFAULT_CHECKOUT_BASE = 'https://test.checkout.dodopayments.com/buy';
 
