@@ -1,4 +1,5 @@
 import type { CoachSlotContent, CoachSlotContext } from './types';
+import { formatMinutesLabel, roundMinutes } from '../share/shareFormat';
 
 /**
  * v1 provider — contextual nudges from plan / timer / load.
@@ -9,6 +10,10 @@ export function buildNudgeContent(
 ): CoachSlotContent | null {
   const { current, liveRemainingMins, loadPct, focusScore } = ctx;
   const { deepLogged, meetLogged, openTasks, doneTasks, muteMins } = ctx;
+  const deepLabel = formatMinutesLabel(deepLogged);
+  const leftLabel = liveRemainingMins
+    ? formatMinutesLabel(liveRemainingMins)
+    : null;
 
   if (current.mode === 'live' && current.taskName) {
     return {
@@ -17,8 +22,8 @@ export function buildNudgeContent(
       priority: 80,
       muteable: true,
       title: `Protect “${current.taskName}”.`,
-      body: liveRemainingMins
-        ? `Timer is live — about ${liveRemainingMins}m left in this block. Stay with it.`
+      body: leftLabel
+        ? `Timer is live — about ${leftLabel} left in this block. Stay with it.`
         : 'Timer is live. Finish this block before you context-switch.',
       action: {
         type: 'mute',
@@ -115,8 +120,8 @@ export function buildNudgeContent(
     muteable: true,
     title: 'Keep one block uninterrupted.',
     body:
-      deepLogged > 0
-        ? `${deepLogged}m deep work logged. Mute coach nudges if you’re in flow.`
+      roundMinutes(deepLogged) > 0
+        ? `${deepLabel} deep work logged. Mute coach nudges if you’re in flow.`
         : 'Strong plan. Start the next block and stay with it.',
     action: {
       type: 'mute',

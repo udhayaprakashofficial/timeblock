@@ -23,6 +23,8 @@ import { TopbarSearch } from './components/TopbarSearch';
 import { CupkeyLogo } from './components/CupkeyLogo';
 import { BootProgressScreen } from './components/BootProgressScreen';
 import { HINTS } from './components/ui-hints/hints';
+import { PinTabNudge } from './components/ui-hints/PinTabNudge';
+import { LiveTestingPaymentBanner } from './components/LiveTestingPaymentBanner';
 import { UiTooltip } from './components/ui-hints/UiTooltip';
 import { onAvatarChange, readAvatar } from './components/user-avatar';
 import { LoginScreen } from './auth/SignInCard';
@@ -686,6 +688,9 @@ function Shell({
 
       <div className="main">
         <div className="content">
+          {/* TEMPORARY — remove LiveTestingPaymentBanner when told */}
+          <LiveTestingPaymentBanner user={displayUser} />
+          <PinTabNudge />
           {offline && (
             <div
               className="card"

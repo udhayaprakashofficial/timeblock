@@ -12,6 +12,7 @@ import type { ShareWeekPayload } from '../components/share/shareFormat';
 import {
   formatDrift,
   formatHm,
+  formatMinutesLabel,
   formatWeekSpan,
   isoWeekNumber,
   weekdayShort,
@@ -110,9 +111,9 @@ export function ReportPage({ timeZone }: { timeZone?: string | null }) {
       ...data.byTask.map((t) => [
         t.name,
         weekdayShort(t.date),
-        String(t.estimatedMinutes),
-        String(t.actualMinutes),
-        String(t.varianceMinutes),
+        String(Math.round(t.estimatedMinutes)),
+        String(Math.round(t.actualMinutes)),
+        String(Math.round(t.varianceMinutes)),
         t.status,
       ]),
     ];
@@ -257,8 +258,8 @@ export function ReportPage({ timeZone }: { timeZone?: string | null }) {
                       <strong>{t.name}</strong>
                     </td>
                     <td>{weekdayShort(t.date).slice(0, 3)}</td>
-                    <td>{t.estimatedMinutes}m</td>
-                    <td>{t.actualMinutes}m</td>
+                    <td>{formatMinutesLabel(t.estimatedMinutes)}</td>
+                    <td>{formatMinutesLabel(t.actualMinutes)}</td>
                     <td
                       className={
                         t.varianceMinutes < 0

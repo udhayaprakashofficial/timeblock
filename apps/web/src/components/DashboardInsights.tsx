@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { StatsOverviewDto, TaskDto, UserDto } from '@timeblock/shared-types';
 import { api, todayISO } from '../api';
+import { formatMinutesLabel } from './share/shareFormat';
 
 /** Right-column analytics/coach for the schedule dashboard (matches mock). */
 export function DashboardInsights({
@@ -100,15 +101,15 @@ export function DashboardInsights({
           <ul className="time-went-legend">
             <li>
               <span className="swatch deep" /> Deep work{' '}
-              <strong>{deep}m</strong>
+              <strong>{formatMinutesLabel(deep)}</strong>
             </li>
             <li>
               <span className="swatch meet" /> Buffer{' '}
-              <strong>{Math.round((meetShare / 100) * available)}m</strong>
+              <strong>{formatMinutesLabel((meetShare / 100) * available)}</strong>
             </li>
             <li>
               <span className="swatch admin" /> Open{' '}
-              <strong>{Math.max(0, available - deep)}m</strong>
+              <strong>{formatMinutesLabel(Math.max(0, available - deep))}</strong>
             </li>
           </ul>
         </div>

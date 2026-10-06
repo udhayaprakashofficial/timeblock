@@ -3,6 +3,7 @@
 import type { EodSheetDto } from '@timeblock/shared-types';
 import { detectBrowserTimeZone, formatTimeRange, parseInstant } from '../api';
 import { MeetSourceBadge } from './MeetSourceBadge';
+import { formatDrift, formatMinutesLabel } from './share/shareFormat';
 
 export function EodSheet({
   data,
@@ -77,7 +78,8 @@ export function EodSheet({
         <div>
           <span className="label">Est / Act</span>
           <strong>
-            {summary?.estimatedMinutes ?? 0}m / {summary?.actualMinutes ?? 0}m
+            {formatMinutesLabel(summary?.estimatedMinutes ?? 0)} /{' '}
+            {formatMinutesLabel(summary?.actualMinutes ?? 0)}
           </strong>
         </div>
       </div>
@@ -148,8 +150,8 @@ export function EodSheet({
                     timeZone,
                   )}
                 </td>
-                <td>{t.estimatedMinutes}m</td>
-                <td>{t.actualMinutes}m</td>
+                <td>{formatMinutesLabel(t.estimatedMinutes)}</td>
+                <td>{formatMinutesLabel(t.actualMinutes)}</td>
                 <td
                   className={
                     t.varianceMinutes > 0
@@ -160,7 +162,7 @@ export function EodSheet({
                   }
                 >
                   {t.varianceMinutes > 0 ? '+' : ''}
-                  {t.varianceMinutes}m
+                <td>{formatDrift(t.varianceMinutes)}</td>
                 </td>
               </tr>
             ))}

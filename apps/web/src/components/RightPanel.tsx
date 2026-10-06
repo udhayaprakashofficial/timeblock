@@ -14,6 +14,7 @@ import { CoachSlot, resolveCoachSlot } from './coach';
 import { ShareStudio } from './share/ShareStudio';
 import type { ShareWeekPayload } from './share/shareFormat';
 import {
+  formatMinutesLabel,
   formatWeekSpan,
   isoWeekNumber,
   weekdayShort,
@@ -399,19 +400,19 @@ export function RightPanel({ user }: { user: UserDto }) {
         <ul className="time-went-legend">
           <li>
             <span className="swatch deep" /> Deep work{' '}
-            <strong>{deepLogged}m</strong>
+            <strong>{formatMinutesLabel(deepLogged)}</strong>
           </li>
           <li>
             <span className="swatch meet" /> Meetings{' '}
-            <strong>{meetLogged}m</strong>
+            <strong>{formatMinutesLabel(meetLogged)}</strong>
           </li>
           <li>
             <span className="swatch planned" /> Still planned{' '}
-            <strong>{deepPlanned + meetPlanned}m</strong>
+            <strong>{formatMinutesLabel(deepPlanned + meetPlanned)}</strong>
           </li>
           <li>
             <span className="swatch open" /> Open{' '}
-            <strong>{openMins}m</strong>
+            <strong>{formatMinutesLabel(openMins)}</strong>
           </li>
         </ul>
       </div>

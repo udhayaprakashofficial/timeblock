@@ -708,8 +708,9 @@ function workableMinutes(t: DailyScheduleTemplateDto) {
 }
 
 function formatDuration(mins: number) {
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
+  const n = Math.max(0, Math.round(mins));
+  const h = Math.floor(n / 60);
+  const m = n % 60;
   return `${h}h ${String(m).padStart(2, '0')}m`;
 }
 

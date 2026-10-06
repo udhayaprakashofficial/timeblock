@@ -1,7 +1,22 @@
 /** Cupkey share / report formatting helpers */
 
+export function roundMinutes(mins: number): number {
+  const n = Number(mins);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.round(n);
+}
+
+/** e.g. 2.03 → "2m", 130 → "2h 10m", 120 → "2h" */
+export function formatMinutesLabel(minutes: number): string {
+  const mins = roundMinutes(minutes);
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
 export function formatHm(mins: number): string {
-  const n = Math.max(0, Math.round(mins));
+  const n = roundMinutes(mins);
   const h = Math.floor(n / 60);
   const m = n % 60;
   return `${h}h ${String(m).padStart(2, '0')}m`;

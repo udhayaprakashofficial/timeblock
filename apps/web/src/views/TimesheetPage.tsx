@@ -359,8 +359,8 @@ export function TimesheetPage({
         t.name,
         clock(t.scheduledStart, timeZone),
         clock(t.scheduledEnd, timeZone),
-        (t.actualMinutes / 60).toFixed(2),
-        (t.estimatedMinutes / 60).toFixed(2),
+        (Math.round(t.actualMinutes) / 60).toFixed(2),
+        (Math.round(t.estimatedMinutes) / 60).toFixed(2),
         statusLabel(t.status),
         (t.notes ?? '').replace(/\n/g, ' | '),
       ]
@@ -373,8 +373,8 @@ export function TimesheetPage({
       'TOTAL HOURS',
       '',
       '',
-      (totalActual / 60).toFixed(2),
-      (totalEst / 60).toFixed(2),
+      (Math.round(totalActual) / 60).toFixed(2),
+      (Math.round(totalEst) / 60).toFixed(2),
       '',
       '',
     ]

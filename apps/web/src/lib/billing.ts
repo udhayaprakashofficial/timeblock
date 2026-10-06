@@ -17,12 +17,17 @@ export type BillingCatalog = {
   proProductId: string;
   annualWelcomeProductId: string;
   checkoutBase: string;
+  /** TEMPORARY ₹1 live smoke test — remove when told */
+  liveTestingPayment?: boolean;
+  liveTestingProductId?: string;
 };
 
 export const DEFAULT_BILLING_CATALOG: BillingCatalog = {
   proProductId: FALLBACK_PRO_PRODUCT_ID,
   annualWelcomeProductId: FALLBACK_ANNUAL_WELCOME_PRODUCT_ID,
   checkoutBase: FALLBACK_CHECKOUT_BASE,
+  liveTestingPayment: false,
+  liveTestingProductId: '',
 };
 
 /** Map public /api/billing/config into checkout link builders. */
@@ -30,6 +35,8 @@ export function catalogFromApi(data?: {
   proProductId?: string;
   annualWelcomeProductId?: string;
   checkoutBase?: string;
+  liveTestingPayment?: boolean;
+  liveTestingProductId?: string;
 } | null): BillingCatalog {
   if (!data) return DEFAULT_BILLING_CATALOG;
   return {
@@ -40,6 +47,8 @@ export function catalogFromApi(data?: {
     checkoutBase: (
       data.checkoutBase?.trim() || FALLBACK_CHECKOUT_BASE
     ).replace(/\/$/, ''),
+    liveTestingPayment: Boolean(data.liveTestingPayment),
+    liveTestingProductId: data.liveTestingProductId?.trim() || '',
   };
 }
 
@@ -122,6 +131,17 @@ export function buildAnnualWelcomeCheckoutUrl(
     customer,
     redirectUrl,
   );
+}
+
+/** TEMPORARY — ₹1 live payment smoke test. Remove when told. */
+export function buildLiveTestingCheckoutUrl(
+  catalog: BillingCatalog = DEFAULT_BILLING_CATALOG,
+  customer?: ProCheckoutCustomer | null,
+  redirectUrl?: string,
+): string {
+  const productId = catalog.liveTestingProductId?.trim();
+  if (!catalog.liveTestingPayment || !productId) return '';
+  return buildDodoCheckoutUrl(catalog, productId, customer, redirectUrl);
 }
 
 /** Send guests to login first; returnTo resumes checkout on /pricing?buy=… */

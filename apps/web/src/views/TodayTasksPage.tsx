@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { StatsOverviewDto, TaskDto } from '@timeblock/shared-types';
 import { api, parseInstant, todayISO } from '../api';
 import { MeetSourceBadge } from '../components/MeetSourceBadge';
+import { formatMinutesLabel } from '../components/share/shareFormat';
 
 type Filter = 'all' | 'open' | 'done';
 
@@ -133,7 +134,7 @@ export function TodayTasksPage({ timeZone }: { timeZone?: string | null }) {
           </div>
           <p className="tw-metric-sub">
             {util
-              ? `${util.scheduledMinutes} of ${util.availableMinutes} min booked`
+              ? `${Math.round(util.scheduledMinutes)} of ${Math.round(util.availableMinutes)} min booked`
               : 'No schedule hours set'}
           </p>
         </div>
@@ -207,12 +208,12 @@ export function TodayTasksPage({ timeZone }: { timeZone?: string | null }) {
                   >
                     <div className="tw-task-copy">
                       <span className="tw-task-time">
-                        {task.estimatedMinutes}m
+                        {formatMinutesLabel(task.estimatedMinutes)}
                       </span>
                       <strong>{task.name}</strong>
                       <span className="tw-task-meta">
                         {task.actualMinutes > 0
-                          ? `${task.actualMinutes}m actual`
+                          ? `${formatMinutesLabel(task.actualMinutes)} actual`
                           : task.scheduledStart
                             ? 'Scheduled'
                             : 'Unscheduled'}
@@ -385,7 +386,7 @@ function TaskDetail({
       <div className="tw-detail-head">
         <div>
           <p className="tw-detail-time">
-            {task.estimatedMinutes}m
+            {formatMinutesLabel(task.estimatedMinutes)}
             {task.scheduledStart ? '' : ' · Unscheduled'}
           </p>
           <h3>{task.name}</h3>

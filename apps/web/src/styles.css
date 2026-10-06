@@ -10477,6 +10477,168 @@ body.is-plan-dragging .plan-timeline .cal-block.busy {
   white-space: nowrap;
 }
 
+/* TEMPORARY — ₹1 live payment test. Delete with LiveTestingPaymentBanner. */
+.live-test-pay-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elevated));
+}
+
+.live-test-pay-banner-copy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.live-test-pay-banner-tag {
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.live-test-pay-banner-copy strong {
+  font-size: 0.9rem;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+
+.live-test-pay-banner-note {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  width: 100%;
+}
+
+.live-test-pay-banner-cta {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 750;
+  text-decoration: none;
+  color: #fff;
+  background: var(--accent);
+}
+
+.live-test-pay-banner-cta:hover {
+  background: var(--accent-hover);
+  color: #fff;
+}
+
+@media (max-width: 560px) {
+  .live-test-pay-banner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .live-test-pay-banner-cta {
+    width: 100%;
+  }
+}
+
+.pin-tab-toast {
+  position: fixed;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(320px, calc(100vw - 24px));
+  padding: 10px 10px 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  box-shadow: var(--card-shadow-sm);
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(10px);
+  animation: pin-tab-toast-in 0.32s ease forwards;
+}
+
+.pin-tab-toast.is-leaving {
+  animation: pin-tab-toast-out 0.2s ease forwards;
+}
+
+.pin-tab-toast-msg {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 0.82rem;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.pin-tab-toast-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.pin-tab-toast-gotit {
+  white-space: nowrap;
+}
+
+.pin-tab-toast-close {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.pin-tab-toast-close:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+@keyframes pin-tab-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pin-tab-toast-out {
+  to {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@media (max-width: 560px) {
+  .pin-tab-toast {
+    left: max(12px, env(safe-area-inset-left));
+    right: max(12px, env(safe-area-inset-right));
+    width: auto;
+  }
+}
+
 .demo-video-frame {
   position: relative;
   width: 100%;

@@ -1566,12 +1566,7 @@ export function TodayPage({
     return formatHm(Math.max(...allEnds));
   }, [tasks, timeZone]);
 
-  const formatDur = (mins: number) => {
-    const h = Math.floor(mins / 60);
-    const m = mins % 60;
-    if (h <= 0) return `${m}m`;
-    return `${h}h ${String(m).padStart(2, '0')}m`;
-  };
+  const formatDur = (mins: number) => formatDurationLabel(mins);
 
   return (
     <div className="today-page dash-page">
@@ -1894,11 +1889,10 @@ export function TodayPage({
                             {isLive && (
                               <span className="cal-live-tag">
                                 ● In session ·{' '}
-                                {(t.actualMinutes || 0) +
-                                  Math.floor(
+                                {formatDurationLabel(
+                                  (t.actualMinutes || 0) +
                                     liveSessionSeconds(t.timerStartedAt) / 60,
-                                  )}
-                                m
+                                )}
                               </span>
                             )}
                             {(isOvertime || crossesOvertime) && (
@@ -1988,7 +1982,7 @@ export function TodayPage({
                 <strong>
                   {sessionCount}
                   {longestSession ? (
-                    <em>longest {longestSession}m</em>
+                    <em>longest {Math.round(longestSession)}m</em>
                   ) : null}
                 </strong>
               </div>
@@ -2251,9 +2245,9 @@ export function TodayPage({
                       <span className="captured-dot" aria-hidden />
                       <div>
                         <strong>{t.name}</strong>
-                        <span>{t.actualMinutes}m captured</span>
+                        <span>{Math.round(t.actualMinutes)}m captured</span>
                       </div>
-                      <em>{t.actualMinutes}m</em>
+                      <em>{Math.round(t.actualMinutes)}m</em>
                     </li>
                   ))}
                 </ul>

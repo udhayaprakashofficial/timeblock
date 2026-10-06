@@ -18,6 +18,19 @@ export const DODO_ANNUAL_WELCOME_PRODUCT_ID =
   process.env.DODO_ANNUAL_WELCOME_PRODUCT_ID?.trim() ||
   'pdt_0NoLjZzkv1ZVWMngsqIuU';
 
+/**
+ * TEMPORARY — ₹1 live payment smoke test.
+ * Remove when told: LIVE_TESTING_PAYMENT + DODO_LIVE_TESTING_PRODUCT_ID
+ * and the LiveTestingPaymentBanner UI.
+ */
+export const LIVE_TESTING_PAYMENT =
+  /^(1|true|yes|on)$/i.test(
+    process.env.LIVE_TESTING_PAYMENT?.trim() || '',
+  );
+
+export const DODO_LIVE_TESTING_PRODUCT_ID =
+  process.env.DODO_LIVE_TESTING_PRODUCT_ID?.trim() || '';
+
 const DEFAULT_CHECKOUT_BASE = 'https://test.checkout.dodopayments.com/buy';
 
 type PlanPatch = {
@@ -48,6 +61,17 @@ export class BillingService {
 
   annualWelcomeProductId() {
     return DODO_ANNUAL_WELCOME_PRODUCT_ID;
+  }
+
+  /** TEMPORARY — ₹1 live checkout smoke test (does not grant Pro). */
+  liveTestingPaymentEnabled() {
+    return LIVE_TESTING_PAYMENT && Boolean(DODO_LIVE_TESTING_PRODUCT_ID);
+  }
+
+  liveTestingProductId() {
+    return this.liveTestingPaymentEnabled()
+      ? DODO_LIVE_TESTING_PRODUCT_ID
+      : '';
   }
 
   /** Pro monthly or Annual welcome one-time — both unlock paid Pro in Cupkey. */

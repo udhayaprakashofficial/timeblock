@@ -7,6 +7,7 @@ import {
   parseInstant,
 } from '../api';
 import { MeetSourceBadge } from './MeetSourceBadge';
+import { formatMinutesLabel } from './share/shareFormat';
 
 function statusLabel(status: string) {
   if (status === 'completed') return 'Done';
@@ -15,15 +16,11 @@ function statusLabel(status: string) {
 }
 
 function hoursLabel(minutes: number) {
-  const h = Math.floor(minutes / 60);
-  const m = Math.round(minutes % 60);
-  if (h <= 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
+  return formatMinutesLabel(minutes);
 }
 
 function hoursDecimal(minutes: number) {
-  return (Math.max(0, minutes) / 60).toFixed(2);
+  return (Math.max(0, Math.round(minutes)) / 60).toFixed(2);
 }
 
 function clock(iso: string | null | undefined, timeZone?: string | null) {

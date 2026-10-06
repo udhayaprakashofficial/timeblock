@@ -21,6 +21,7 @@ import {
 } from '../api';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { fetchBacklog, fetchTasks } from '../store/tasksSlice';
+import { formatMinutesLabel } from './share/shareFormat';
 
 type SearchHit = {
   id: string;
@@ -41,7 +42,7 @@ function taskMeta(task: TaskDto, timeZone?: string | null) {
   if (task.scheduledStart && task.scheduledEnd) {
     bits.push(formatTimeRange(task.scheduledStart, task.scheduledEnd, timeZone));
   } else if (task.estimatedMinutes) {
-    bits.push(`${task.estimatedMinutes}m`);
+    bits.push(formatMinutesLabel(task.estimatedMinutes));
   }
   if (task.status === 'completed') bits.push('Done');
   else if (task.activeEntryId) bits.push('Live');

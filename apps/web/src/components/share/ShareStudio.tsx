@@ -324,7 +324,7 @@ function StoryCard({
   week: ShareWeekPayload;
   person: SharePerson | null;
 }) {
-  const hours = (week.actualMinutes / 60).toFixed(1).replace(/\.0$/, '');
+  const hours = (Math.round(week.actualMinutes) / 60).toFixed(1).replace(/\.0$/, '');
   const weekNo = (() => {
     const m = week.weekLabel.match(/Week\s+(\d+)/i);
     return m ? m[1] : '';

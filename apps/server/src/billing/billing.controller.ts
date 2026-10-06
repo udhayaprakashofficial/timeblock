@@ -33,6 +33,9 @@ export class BillingController {
       apiKeyConfigured: this.billing.apiKeyConfigured(),
       webhookConfigured: this.billing.webhookConfigured(),
       mailConfigured: this.billing.mailConfigured(),
+      // TEMPORARY — remove with LiveTestingPaymentBanner
+      liveTestingPayment: this.billing.liveTestingPaymentEnabled(),
+      liveTestingProductId: this.billing.liveTestingProductId(),
     };
   }
 
