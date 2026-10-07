@@ -75,8 +75,19 @@ export class BillingService {
   ) {}
 
   paymentsEnvironment(): 'test_mode' | 'live_mode' {
-    const env = (process.env.DODO_PAYMENTS_ENVIRONMENT || 'test_mode').trim();
-    return env === 'live_mode' ? 'live_mode' : 'test_mode';
+    const raw = (process.env.DODO_PAYMENTS_ENVIRONMENT || '').trim();
+    if (raw === 'live_mode' || raw === 'live') return 'live_mode';
+    if (raw === 'test_mode' || raw === 'test') return 'test_mode';
+    // Cupkey production must not silently use Dodo test checkout.
+    const appUrl = (process.env.APP_PUBLIC_URL || '').toLowerCase();
+    if (
+      process.env.VERCEL_ENV === 'production' ||
+      appUrl.includes('app.cupkey.io') ||
+      appUrl.includes('cupkey.io')
+    ) {
+      return 'live_mode';
+    }
+    return 'test_mode';
   }
 
   proProductId() {
@@ -388,23 +399,22 @@ export class BillingService {
     const fromEnv = process.env.DODO_CHECKOUT_BASE?.trim() || '';
     const mode = this.paymentsEnvironment();
     if (mode === 'live_mode') {
-      if (
+      // Never allow a stale test.checkout URL in live mode — that is the
+      // exact cause of https://test.checkout.dodopayments.com/error/not-found
+      if (fromEnv.includes('test.checkout')) {
+        this.logger.warn(
+          `Ignoring DODO_CHECKOUT_BASE=${fromEnv} because payments are live_mode`,
+        );
+      } else if (
         fromEnv &&
-        !fromEnv.includes('test.checkout.dodopayments.com')
+        (fromEnv.includes('checkout.dodopayments.com') ||
+          fromEnv.includes('live.checkout'))
       ) {
         return fromEnv.replace(/\/$/, '');
       }
       return LIVE_CHECKOUT_BASE;
     }
     if (fromEnv.includes('test.checkout.dodopayments.com')) {
-      return fromEnv.replace(/\/$/, '');
-    }
-    // Ignore live checkout base while API is in test_mode
-    if (
-      fromEnv &&
-      !fromEnv.includes('checkout.dodopayments.com/buy') &&
-      !fromEnv.includes('live.checkout')
-    ) {
       return fromEnv.replace(/\/$/, '');
     }
     return DEFAULT_CHECKOUT_BASE;

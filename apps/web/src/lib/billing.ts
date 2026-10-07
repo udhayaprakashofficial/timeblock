@@ -10,8 +10,24 @@ export const FALLBACK_PRO_PRODUCT_ID = 'pdt_0NoD66xtWburRIUH8s6AY';
 export const FALLBACK_ANNUAL_WELCOME_PRODUCT_ID =
   'pdt_0NoLjZzkv1ZVWMngsqIuU';
 
-const FALLBACK_CHECKOUT_BASE =
-  'https://test.checkout.dodopayments.com/buy';
+const TEST_CHECKOUT_BASE = 'https://test.checkout.dodopayments.com/buy';
+const LIVE_CHECKOUT_BASE = 'https://checkout.dodopayments.com/buy';
+
+function isCupkeyProductionHost(): boolean {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname;
+  return host === 'app.cupkey.io' || host.endsWith('.cupkey.io');
+}
+
+/** Prefer live checkout on Cupkey production — never send buyers to test.checkout. */
+function resolveCheckoutBase(fromApi?: string | null): string {
+  const raw = (fromApi || '').trim().replace(/\/$/, '');
+  if (isCupkeyProductionHost()) {
+    if (!raw || raw.includes('test.checkout')) return LIVE_CHECKOUT_BASE;
+    return raw;
+  }
+  return raw || TEST_CHECKOUT_BASE;
+}
 
 export type BillingCatalog = {
   proProductId: string;
@@ -22,7 +38,7 @@ export type BillingCatalog = {
 export const DEFAULT_BILLING_CATALOG: BillingCatalog = {
   proProductId: FALLBACK_PRO_PRODUCT_ID,
   annualWelcomeProductId: FALLBACK_ANNUAL_WELCOME_PRODUCT_ID,
-  checkoutBase: FALLBACK_CHECKOUT_BASE,
+  checkoutBase: TEST_CHECKOUT_BASE,
 };
 
 /** Map public /api/billing/config into checkout link builders. */
@@ -31,15 +47,18 @@ export function catalogFromApi(data?: {
   annualWelcomeProductId?: string;
   checkoutBase?: string;
 } | null): BillingCatalog {
-  if (!data) return DEFAULT_BILLING_CATALOG;
+  if (!data) {
+    return {
+      ...DEFAULT_BILLING_CATALOG,
+      checkoutBase: resolveCheckoutBase(null),
+    };
+  }
   return {
     proProductId: data.proProductId?.trim() || FALLBACK_PRO_PRODUCT_ID,
     annualWelcomeProductId:
       data.annualWelcomeProductId?.trim() ||
       FALLBACK_ANNUAL_WELCOME_PRODUCT_ID,
-    checkoutBase: (
-      data.checkoutBase?.trim() || FALLBACK_CHECKOUT_BASE
-    ).replace(/\/$/, ''),
+    checkoutBase: resolveCheckoutBase(data.checkoutBase),
   };
 }
 
