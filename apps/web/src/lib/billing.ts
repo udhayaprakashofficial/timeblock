@@ -19,14 +19,26 @@ function isCupkeyProductionHost(): boolean {
   return host === 'app.cupkey.io' || host.endsWith('.cupkey.io');
 }
 
-/** Prefer live checkout on Cupkey production — never send buyers to test.checkout. */
+/**
+ * Prefer live checkout on Cupkey production.
+ * Never use API hosts (live.dodopayments.com / test.dodopayments.com) — those
+ * return ERROR 403 when used as /{productId} payment links.
+ */
 function resolveCheckoutBase(fromApi?: string | null): string {
   const raw = (fromApi || '').trim().replace(/\/$/, '');
+  const isApiHost =
+    !raw ||
+    /^https?:\/\/(live|test)\.dodopayments\.com\/?$/i.test(raw) ||
+    raw === 'https://live.dodopayments.com' ||
+    raw === 'https://test.dodopayments.com';
+
   if (isCupkeyProductionHost()) {
-    if (!raw || raw.includes('test.checkout')) return LIVE_CHECKOUT_BASE;
-    return raw;
+    if (isApiHost || raw.includes('test.checkout')) return LIVE_CHECKOUT_BASE;
+    return raw.endsWith('/buy') ? raw : `${raw}/buy`;
   }
-  return raw || TEST_CHECKOUT_BASE;
+  if (isApiHost) return TEST_CHECKOUT_BASE;
+  if (!raw) return TEST_CHECKOUT_BASE;
+  return raw.endsWith('/buy') ? raw : `${raw}/buy`;
 }
 
 export type BillingCatalog = {

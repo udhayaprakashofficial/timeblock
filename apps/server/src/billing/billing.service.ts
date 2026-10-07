@@ -392,32 +392,64 @@ export class BillingService {
   }
 
   /**
-   * Static payment-link host must match DODO_PAYMENTS_ENVIRONMENT.
-   * A live product on test.checkout (or the reverse) shows Dodo "link isn't available".
+   * Static payment-link host (…/buy), NOT the API host.
+   * Wrong: https://live.dodopayments.com  → 403 "not part of the API schema"
+   * Right: https://checkout.dodopayments.com/buy
    */
   checkoutBaseUrl() {
-    const fromEnv = process.env.DODO_CHECKOUT_BASE?.trim() || '';
     const mode = this.paymentsEnvironment();
-    if (mode === 'live_mode') {
-      // Never allow a stale test.checkout URL in live mode — that is the
-      // exact cause of https://test.checkout.dodopayments.com/error/not-found
-      if (fromEnv.includes('test.checkout')) {
+    const normalized = this.normalizeCheckoutBase(
+      process.env.DODO_CHECKOUT_BASE?.trim() || '',
+      mode,
+    );
+    return normalized;
+  }
+
+  /** Coerce API hosts / missing /buy into a valid static payment-link base. */
+  private normalizeCheckoutBase(
+    raw: string,
+    mode: 'test_mode' | 'live_mode',
+  ): string {
+    const value = raw.replace(/\/$/, '');
+    // People often paste the API root by mistake.
+    if (
+      !value ||
+      value === 'https://live.dodopayments.com' ||
+      value === 'http://live.dodopayments.com' ||
+      value === 'https://test.dodopayments.com' ||
+      value === 'http://test.dodopayments.com' ||
+      /^https?:\/\/(live|test)\.dodopayments\.com\/?$/i.test(value)
+    ) {
+      if (value) {
         this.logger.warn(
-          `Ignoring DODO_CHECKOUT_BASE=${fromEnv} because payments are live_mode`,
+          `DODO_CHECKOUT_BASE=${raw} is the API host, not a buy link. Using ${
+            mode === 'live_mode' ? LIVE_CHECKOUT_BASE : TEST_CHECKOUT_BASE
+          }`,
         );
-      } else if (
-        fromEnv &&
-        (fromEnv.includes('checkout.dodopayments.com') ||
-          fromEnv.includes('live.checkout'))
+      }
+      return mode === 'live_mode' ? LIVE_CHECKOUT_BASE : TEST_CHECKOUT_BASE;
+    }
+
+    if (mode === 'live_mode') {
+      if (value.includes('test.checkout')) {
+        this.logger.warn(
+          `Ignoring DODO_CHECKOUT_BASE=${raw} because payments are live_mode`,
+        );
+        return LIVE_CHECKOUT_BASE;
+      }
+      if (
+        value.includes('checkout.dodopayments.com') ||
+        value.includes('live.checkout')
       ) {
-        return fromEnv.replace(/\/$/, '');
+        return value.endsWith('/buy') ? value : `${value}/buy`;
       }
       return LIVE_CHECKOUT_BASE;
     }
-    if (fromEnv.includes('test.checkout.dodopayments.com')) {
-      return fromEnv.replace(/\/$/, '');
+
+    if (value.includes('test.checkout.dodopayments.com')) {
+      return value.endsWith('/buy') ? value : `${value}/buy`;
     }
-    return DEFAULT_CHECKOUT_BASE;
+    return TEST_CHECKOUT_BASE;
   }
 
   private checkoutBase() {
