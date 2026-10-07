@@ -383,9 +383,11 @@ function DashboardReadyGate({
   const bootstrappedFor = useAppSelector((s) => s.stats.bootstrappedFor);
   const date = todayISO(timeZone);
   const dayLoaded = useAppSelector((s) => Boolean(s.tasks.loadedDates[date]));
+  const dayLoadFailed = useAppSelector((s) => Boolean(s.tasks.loadErrors[date]));
   const key = `${userId}:${date}`;
   // Require both bootstrap + day tasks so post-onboarding never flashes empty.
-  const ready = bootstrappedFor === key && dayLoaded;
+  // A failed day fetch should not pin the boot screen forever.
+  const ready = bootstrappedFor === key && (dayLoaded || dayLoadFailed);
   const [timedOut, setTimedOut] = useState(false);
 
   useEffect(() => {

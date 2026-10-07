@@ -47,24 +47,41 @@ function notifyAuthLost() {
   }
 }
 
+async function fetchOnce(
+  path: string,
+  init: RequestInit | undefined,
+  timeoutMs: number,
+): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(apiUrl(path), {
+      credentials: 'include',
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
+  const timeoutMs = path.includes('finish-onboarding') ? 55_000 : 30_000;
+  const method = (init?.method ?? 'GET').toUpperCase();
+  const canRetry = method === 'GET' || method === 'HEAD';
   try {
-    const ctrl = new AbortController();
-    const timeoutMs = path.includes('finish-onboarding') ? 55_000 : 30_000;
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      res = await fetch(apiUrl(path), {
-        credentials: 'include',
-        ...init,
-        headers: {
-          'Content-Type': 'application/json',
-          ...(init?.headers ?? {}),
-        },
-        signal: ctrl.signal,
-      });
-    } finally {
-      clearTimeout(timer);
+      res = await fetchOnce(path, init, timeoutMs);
+    } catch (first) {
+      // Brief Nest/Next proxy blips during hot-reload; retry safe GETs once.
+      if (!canRetry) throw first;
+      await new Promise((r) => setTimeout(r, 400));
+      res = await fetchOnce(path, init, timeoutMs);
     }
   } catch (err) {
     const raw = err instanceof Error ? err.message : '';

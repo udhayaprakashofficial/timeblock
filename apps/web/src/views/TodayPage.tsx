@@ -30,6 +30,7 @@ import {
   removeTaskOptimistic,
   reorderTasksOptimistic,
   scheduleFromBacklogOptimistic,
+  selectTasksLoadError,
   selectTasksLoading,
   startTimerOptimistic,
   stopTimerOptimistic,
@@ -581,7 +582,9 @@ export function TodayPage({
   const createErrorRedux = useAppSelector((s) => s.tasks.createError);
   const dayLoaded = useAppSelector((s) => Boolean(s.tasks.loadedDates[date]));
   const tasksLoading = useAppSelector(selectTasksLoading(date));
-  const queueLoading = !dayLoaded || tasksLoading;
+  const tasksLoadError = useAppSelector(selectTasksLoadError(date));
+  // Only spin while a fetch is in flight — a failed load must not stick forever.
+  const queueLoading = !dayLoaded && tasksLoading;
 
   // Keep "today" in sync when the civil day rolls over while viewing today
   useEffect(() => {
@@ -2210,6 +2213,23 @@ export function TodayPage({
                 <div className="priority-list queue-list">
                   {queueLoading ? (
                     <div className="priority-empty">Loading today’s tasks…</div>
+                  ) : tasksLoadError && !dayLoaded ? (
+                    <div className="priority-empty">
+                      <p className="composer-hint is-error" style={{ margin: 0 }}>
+                        {tasksLoadError}
+                      </p>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-pill"
+                        style={{ marginTop: 10 }}
+                        onClick={() => {
+                          dispatch(tasksActions.clearLoadError(date));
+                          void dispatch(fetchTasks(date));
+                        }}
+                      >
+                        Try again
+                      </button>
+                    </div>
                   ) : (
                     <>
                       {tasks.map((task, i) => (

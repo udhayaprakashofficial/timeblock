@@ -12,8 +12,11 @@ export type TasksState = {
   byDate: Record<string, TaskDto[]>;
   backlog: TaskDto[];
   loadedDates: Record<string, boolean>;
+  /** Per-date in-flight fetch counts (supports concurrent day prefetches). */
+  loadingDates: Record<string, number>;
+  /** Last load failure per date — cleared on next successful fetch. */
+  loadErrors: Record<string, string>;
   backlogLoaded: boolean;
-  loadingDate: string | null;
   pendingKeys: string[];
   error: string | null;
   createError: string | null;
@@ -23,12 +26,24 @@ const initialState: TasksState = {
   byDate: {},
   backlog: [],
   loadedDates: {},
+  loadingDates: {},
+  loadErrors: {},
   backlogLoaded: false,
-  loadingDate: null,
   pendingKeys: [],
   error: null,
   createError: null,
 };
+
+function beginDateLoad(state: TasksState, date: string) {
+  state.loadingDates[date] = (state.loadingDates[date] ?? 0) + 1;
+  delete state.loadErrors[date];
+}
+
+function endDateLoad(state: TasksState, date: string) {
+  const next = (state.loadingDates[date] ?? 1) - 1;
+  if (next <= 0) delete state.loadingDates[date];
+  else state.loadingDates[date] = next;
+}
 
 /** Day queue order is explicit priority (`order`), not wall-clock time. */
 function sortDayTasks(list: TaskDto[] | null | undefined): TaskDto[] {
@@ -193,9 +208,16 @@ function mergeDayPreservingPendingCompletes(
 /** Fetch day tasks — fills Redux cache. */
 export const fetchTasks = createAsyncThunk(
   'tasks/fetchTasks',
-  async (date: string) => {
-    const tasks = await api.get<TaskDto[]>(`/api/tasks?date=${date}`);
-    return { date, tasks: asTaskList(tasks) };
+  async (date: string, { rejectWithValue }) => {
+    try {
+      const tasks = await api.get<TaskDto[]>(`/api/tasks?date=${date}`);
+      return { date, tasks: asTaskList(tasks) };
+    } catch (err) {
+      return rejectWithValue({
+        date,
+        message: err instanceof Error ? err.message : 'Failed to load tasks',
+      });
+    }
   },
 );
 
@@ -478,8 +500,13 @@ const tasksSlice = createSlice({
       const date = action.payload.date;
       state.byDate[date] = sortDayTasks(asTaskList(action.payload.tasks));
       state.loadedDates[date] = true;
-      if (state.loadingDate === date) state.loadingDate = null;
+      delete state.loadingDates[date];
+      delete state.loadErrors[date];
       state.error = null;
+    },
+    clearLoadError(state, action: PayloadAction<string | undefined>) {
+      if (action.payload) delete state.loadErrors[action.payload];
+      else state.loadErrors = {};
     },
     optimisticCreate(
       state,
@@ -724,20 +751,18 @@ const tasksSlice = createSlice({
   extraReducers: (builder) => {
     builder
       .addCase(fetchTasks.pending, (state, action) => {
-        state.loadingDate = action.meta.arg;
+        beginDateLoad(state, action.meta.arg);
         state.error = null;
       })
       .addCase(fetchTasks.fulfilled, (state, action) => {
         const incoming = asTaskList(action.payload?.tasks);
         const date = action.payload?.date;
-        if (!date) {
-          state.loadingDate = null;
-          return;
-        }
+        if (!date) return;
+        endDateLoad(state, date);
+        delete state.loadErrors[date];
         // While a drag-reorder is in flight, don't let a parallel fetch
         // snap the queue back — UI stays on optimistic order.
         if (state.pendingKeys.includes(`reorder:${date}`)) {
-          state.loadingDate = null;
           state.loadedDates[date] = true;
           return;
         }
@@ -745,7 +770,6 @@ const tasksSlice = createSlice({
         if (state.pendingKeys.some((k) => k.startsWith('complete:'))) {
           mergeDayPreservingPendingCompletes(state, date, incoming);
           state.loadedDates[date] = true;
-          state.loadingDate = null;
           return;
         }
 
@@ -779,11 +803,19 @@ const tasksSlice = createSlice({
 
         state.byDate[date] = next;
         state.loadedDates[date] = true;
-        state.loadingDate = null;
       })
       .addCase(fetchTasks.rejected, (state, action) => {
-        state.loadingDate = null;
-        state.error = action.error.message ?? 'Failed to load tasks';
+        const payload = action.payload as
+          | { date?: string; message?: string }
+          | undefined;
+        const date = payload?.date ?? action.meta.arg;
+        endDateLoad(state, date);
+        const message =
+          payload?.message ?? action.error.message ?? 'Failed to load tasks';
+        state.loadErrors[date] = message;
+        state.error = message;
+        // Ensure the queue can leave the spinner and show retry UI.
+        if (!Array.isArray(state.byDate[date])) state.byDate[date] = [];
       })
       .addCase(fetchBacklog.fulfilled, (state, action) => {
         let next = asTaskList(action.payload);
@@ -1115,7 +1147,11 @@ export const selectTasksForDate = (date: string) => (state: { tasks: TasksState 
 export const selectBacklog = (state: { tasks: TasksState }) => state.tasks.backlog;
 
 export const selectTasksLoading = (date: string) => (state: { tasks: TasksState }) =>
-  state.tasks.loadingDate === date && !state.tasks.loadedDates[date];
+  (state.tasks.loadingDates[date] ?? 0) > 0 && !state.tasks.loadedDates[date];
+
+export const selectTasksLoadError = (date: string) => (state: {
+  tasks: TasksState;
+}) => state.tasks.loadErrors[date] ?? null;
 
 export const selectCreatePending = (state: { tasks: TasksState }) =>
   state.tasks.pendingKeys.some((k) => k.startsWith('create:'));
