@@ -13,6 +13,7 @@ import { CalendarModule } from './calendar/calendar.module';
 import { UsersModule } from './users/users.module';
 import { BillingModule } from './billing/billing.module';
 import { AdminModule } from './admin/admin.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { AdminModule } from './admin/admin.module';
     CalendarModule,
     BillingModule,
     AdminModule,
+    HealthModule,
   ],
 })
 export class AppModule {}
