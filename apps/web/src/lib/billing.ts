@@ -6,7 +6,7 @@
 
 export const FALLBACK_PRO_PRODUCT_ID = 'pdt_0NoD66xtWburRIUH8s6AY';
 
-/** Annual welcome — one-time $12/yr (limited seats). */
+/** Annual welcome — founding $29/yr (limited to first 10). */
 export const FALLBACK_ANNUAL_WELCOME_PRODUCT_ID =
   'pdt_0NoLjZzkv1ZVWMngsqIuU';
 

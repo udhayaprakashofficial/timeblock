@@ -65,6 +65,23 @@ model User {
   calendarEvents CalendarEvent[]
   sessions       Session[]
   recurringTasks RecurringTaskTemplate[]
+  annualWelcomeClaim AnnualWelcomeClaim?
+}
+
+/// Soft seat hold for the first-10 Annual Welcome founding offer.
+/// Pending claims expire; converted claims mirror successful paid seats.
+model AnnualWelcomeClaim {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  /// pending | converted | released
+  status    String   @default("pending")
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, expiresAt])
 }
 
 model Session {

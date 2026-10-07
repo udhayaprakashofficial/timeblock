@@ -233,11 +233,34 @@
   letter-spacing: 0;
 }
 
+.sub-plan-price-was {
+  margin: 0 0 2px;
+  font-size: 0.95rem;
+  font-weight: 550;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  color: var(--muted, #9a9a9e);
+  text-decoration: line-through;
+}
+
+.sub-plan-price-was span {
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
 .sub-plan-blurb {
-  margin: 0 0 12px;
+  margin: 0 0 8px;
   font-size: 0.82rem;
   line-height: 1.4;
   color: var(--muted, #9a9a9e);
+}
+
+.sub-plan-seats {
+  margin: 0 0 12px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--coral, #ff5a24);
 }
 
 .sub-plan-card ul {
@@ -453,6 +476,15 @@
 [data-theme='light'] .sub-empty,
 [data-theme='light'] .sub-upgrade-head p,
 [data-theme='light'] .sub-plan-blurb,
+[data-theme='light'] .sub-plan-price-was,
+[data-theme='light'] .sub-plan-price-was span {
+  color: #78716c;
+}
+
+[data-theme='light'] .sub-plan-seats {
+  color: var(--coral, #ff5a24);
+}
+
 [data-theme='light'] .sub-plan-price span,
 [data-theme='light'] .sub-current-price span,
 [data-theme='light'] .sub-invoice-list span,

@@ -24,7 +24,8 @@ export class BillingController {
 
   /** Public status — what the frontend needs without secrets. */
   @Get('config')
-  config() {
+  async config() {
+    const annual = await this.billing.getAnnualWelcomeOfferStatus();
     return {
       proProductId: this.billing.proProductId(),
       annualWelcomeProductId: this.billing.annualWelcomeProductId(),
@@ -33,6 +34,13 @@ export class BillingController {
       apiKeyConfigured: this.billing.apiKeyConfigured(),
       webhookConfigured: this.billing.webhookConfigured(),
       mailConfigured: this.billing.mailConfigured(),
+      proPriceUsd: annual.proPriceUsd,
+      annualWelcomeOfferPriceUsd: annual.offerPriceUsd,
+      annualWelcomeRegularPriceUsd: annual.regularPriceUsd,
+      annualWelcomeLimit: annual.limit,
+      annualWelcomeTaken: annual.taken,
+      annualWelcomeRemaining: annual.remaining,
+      annualWelcomeSoldOut: annual.soldOut,
     };
   }
 
@@ -226,6 +234,40 @@ export class BillingController {
       email: me.email,
       name: me.name,
     });
+    return { ...result, alreadyPro: false };
+  }
+
+  /**
+   * Annual Welcome founding checkout — server-side seat check before Dodo.
+   * Soft-holds a seat, then returns the checkout URL (or soldOut).
+   */
+  @Post('checkout/annual')
+  @UseGuards(SessionAuthGuard)
+  async checkoutAnnual(@Req() req: Request) {
+    const userId = req.session!.userId!;
+    const me = await this.users.getMe(userId);
+    if (me.plan === 'pro') {
+      return {
+        checkoutUrl: null,
+        alreadyPro: true,
+        soldOut: false,
+        remaining: 0,
+      };
+    }
+    const result = await this.billing.createAnnualWelcomeCheckout({
+      userId: me.id,
+      email: me.email,
+      name: me.name,
+    });
+    if (result.soldOut || !result.checkoutUrl) {
+      return {
+        checkoutUrl: null,
+        alreadyPro: false,
+        soldOut: true,
+        remaining: 0,
+        error: 'Founding offer sold out',
+      };
+    }
     return { ...result, alreadyPro: false };
   }
 

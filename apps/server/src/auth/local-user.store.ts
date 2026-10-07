@@ -20,6 +20,7 @@ export type LocalUser = {
   dodoCustomerId?: string | null;
   dodoSubscriptionId?: string | null;
   dodoPaymentId?: string | null;
+  dodoProductId?: string | null;
   proPaidAt?: string | null;
   proActivatedAt?: string | null;
   connectedProviders: Array<'google' | 'microsoft'>;

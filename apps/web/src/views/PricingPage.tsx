@@ -1,13 +1,12 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UserDto } from '@timeblock/shared-types';
 import { CupkeyLogo } from '../components/CupkeyLogo';
 import { api } from '../api';
 import {
-  buildAnnualWelcomeCheckoutUrl,
   buildProCheckoutUrl,
   catalogFromApi,
   loginPathBeforeCheckout,
@@ -36,7 +35,7 @@ const PRO_FEATURES = [
 const ANNUAL_FEATURES = [
   'Everything in Pro, for a year',
   'Every AI feature the day it ships',
-  'Your $12 stays $12 while you stay subscribed',
+  'Lock in $29/year for founding members',
   'Your name in the founding list',
   'A say in what gets built next',
 ];
@@ -109,7 +108,7 @@ const COMPARE_ROWS: Array<{
     annual: true,
   },
   {
-    label: 'Price held for a year at the welcome rate',
+    label: 'Price held for a year at the $29 founding rate',
     free: false,
     pro: false,
     annual: true,
@@ -128,11 +127,11 @@ const FAQS = [
   },
   {
     q: 'Then why buy before it’s live?',
-    a: 'One reason only: the price. $10 a month, or $12 for a whole year if you are one of the next ten. If locking that in doesn’t feel worth it, stay on Free and upgrade the week it ships. We would genuinely rather you did that.',
+    a: 'One reason only: the price. $11 a month, or $29 for a whole year (usually $99) if you are one of the first ten. If locking that in doesn’t feel worth it, stay on Free and upgrade the week it ships. We would genuinely rather you did that.',
   },
   {
     q: 'What happens when the 10 seats go?',
-    a: 'The annual price moves to $16 and stays there. Anyone already on $12 keeps $12 for as long as they stay subscribed. When the seats run out this page will say so, rather than quietly resetting the counter.',
+    a: 'The $29 founding Annual Welcome offer closes. Anyone already on $29 keeps that rate. When the seats run out this page will say “Founding offer sold out,” rather than quietly resetting the counter.',
   },
   {
     q: 'Which calendars do you read?',
@@ -152,8 +151,17 @@ const FAQS = [
   },
 ];
 
-const WELCOME_TAKEN = 3;
 const WELCOME_TOTAL = 10;
+
+type BillingConfig = {
+  proProductId: string;
+  annualWelcomeProductId: string;
+  checkoutBase?: string;
+  annualWelcomeLimit?: number;
+  annualWelcomeTaken?: number;
+  annualWelcomeRemaining?: number;
+  annualWelcomeSoldOut?: boolean;
+};
 
 function ArrowMark({ className }: { className?: string }) {
   return (
@@ -212,13 +220,9 @@ export function PricingPage({
 
   const billingCatalogQuery = useQuery({
     queryKey: ['billing-config'],
-    queryFn: () =>
-      api.get<{
-        proProductId: string;
-        annualWelcomeProductId: string;
-        checkoutBase?: string;
-      }>('/api/billing/config'),
-    staleTime: 60_000,
+    queryFn: () => api.get<BillingConfig>('/api/billing/config'),
+    staleTime: 15_000,
+    refetchOnWindowFocus: true,
   });
   const billingCatalog = useMemo(
     () => catalogFromApi(billingCatalogQuery.data),
@@ -238,17 +242,47 @@ export function PricingPage({
     [billingCatalog, checkoutCustomer],
   );
 
-  const annualWelcomeCheckoutHref = useMemo(
-    () => buildAnnualWelcomeCheckoutUrl(billingCatalog, checkoutCustomer),
-    [billingCatalog, checkoutCustomer],
-  );
-
-  const welcomeSeatsLeft = WELCOME_TOTAL - WELCOME_TAKEN;
-  const welcomeSoldOut = welcomeSeatsLeft <= 0;
+  const welcomeTotal =
+    billingCatalogQuery.data?.annualWelcomeLimit ?? WELCOME_TOTAL;
+  const welcomeTaken = billingCatalogQuery.data?.annualWelcomeTaken ?? 0;
+  const welcomeSeatsLeft =
+    billingCatalogQuery.data?.annualWelcomeRemaining ??
+    Math.max(0, welcomeTotal - welcomeTaken);
+  const welcomeSoldOut =
+    billingCatalogQuery.data?.annualWelcomeSoldOut ?? welcomeSeatsLeft <= 0;
 
   const [checkoutBanner, setCheckoutBanner] = useState<
     'success' | 'failed' | null
   >(null);
+  const [annualStarting, setAnnualStarting] = useState(false);
+  const [annualErr, setAnnualErr] = useState<string | null>(null);
+  const autoBuyStarted = useRef(false);
+
+  const startAnnualCheckout = async () => {
+    setAnnualErr(null);
+    setAnnualStarting(true);
+    try {
+      const result = await api.post<{
+        checkoutUrl?: string | null;
+        soldOut?: boolean;
+        error?: string;
+      }>('/api/billing/checkout/annual');
+      if (result.soldOut || !result.checkoutUrl) {
+        setAnnualErr(result.error || 'Founding offer sold out');
+        await qc.invalidateQueries({ queryKey: ['billing-config'] });
+        return;
+      }
+      window.location.href = result.checkoutUrl;
+    } catch (e) {
+      setAnnualErr(
+        e instanceof Error
+          ? e.message
+          : 'Could not start Annual Welcome checkout',
+      );
+    } finally {
+      setAnnualStarting(false);
+    }
+  };
 
   useEffect(() => {
     if (typeof window === 'undefined' || !authReady) return;
@@ -274,6 +308,8 @@ export function PricingPage({
     }
 
     if (buy === 'pro' && signedIn && user && !isPro) {
+      if (autoBuyStarted.current) return;
+      autoBuyStarted.current = true;
       window.location.assign(
         buildProCheckoutUrl(billingCatalog, checkoutCustomer),
       );
@@ -285,11 +321,15 @@ export function PricingPage({
       signedIn &&
       user &&
       !isPro &&
+      billingCatalogQuery.isSuccess &&
       !welcomeSoldOut
     ) {
-      window.location.assign(
-        buildAnnualWelcomeCheckoutUrl(billingCatalog, checkoutCustomer),
-      );
+      if (autoBuyStarted.current) return;
+      autoBuyStarted.current = true;
+      const url = new URL(window.location.href);
+      url.searchParams.delete('buy');
+      window.history.replaceState({}, '', url.pathname + url.search);
+      void startAnnualCheckout();
       return;
     }
 
@@ -351,14 +391,13 @@ export function PricingPage({
     checkoutCustomer,
     welcomeSoldOut,
     billingCatalog,
+    billingCatalogQuery.isSuccess,
   ]);
 
   const proPlanHref = signedIn
     ? proCheckoutHref
     : loginPathBeforeCheckout('pro');
-  const annualPlanHref = signedIn
-    ? annualWelcomeCheckoutHref
-    : loginPathBeforeCheckout('annual');
+  const annualPlanHref = loginPathBeforeCheckout('annual');
 
   return (
     <div
@@ -461,7 +500,7 @@ export function PricingPage({
                 </span>
               </div>
               <p className="pricing-price">
-                $10<span> / month</span>
+                $11<span> / month</span>
               </p>
               <p className="pricing-price-note">
                 Lock the price now. Billing starts the day the AI features go
@@ -483,11 +522,11 @@ export function PricingPage({
                   className="pricing-btn is-fill"
                   rel="noopener noreferrer"
                 >
-                  Lock in $10 a month
+                  Lock in $11 a month
                 </a>
               ) : (
                 <Link href={proPlanHref} className="pricing-btn is-fill">
-                  Sign in to lock in $10/mo
+                  Sign in to lock in $11/mo
                 </Link>
               )}
             </article>
@@ -496,29 +535,37 @@ export function PricingPage({
               <div className="pricing-card-head">
                 <h2 className="is-accent">Annual welcome</h2>
                 <span className="pricing-pill is-solid">
-                  {WELCOME_TOTAL} seats
+                  {welcomeSoldOut ? 'Sold out' : 'Limited'}
                 </span>
               </div>
+              <p className="pricing-price-was is-light" aria-label="Regular price $99 per year">
+                $99<span> / year</span>
+              </p>
               <p className="pricing-price is-light">
-                $12<span> / year</span>
+                $29<span> / year</span>
               </p>
               <p className="pricing-price-note is-hot">
-                Only the next {WELCOME_TOTAL} people pay $12. Price hike once we
-                reach the limit
+                Founding rate for the first {welcomeTotal} members.
               </p>
               <div
                 className="pricing-seats"
-                aria-label={`${WELCOME_TAKEN} of ${WELCOME_TOTAL} seats taken`}
+                aria-label={
+                  welcomeSoldOut
+                    ? 'Founding offer sold out'
+                    : `${welcomeSeatsLeft} of ${welcomeTotal} founding spots left`
+                }
               >
-                {Array.from({ length: WELCOME_TOTAL }).map((_, i) => (
+                {Array.from({ length: welcomeTotal }).map((_, i) => (
                   <span
                     key={i}
-                    className={i < WELCOME_TAKEN ? 'is-taken' : undefined}
+                    className={i < welcomeTaken ? 'is-taken' : undefined}
                   />
                 ))}
               </div>
               <p className="pricing-seats-label">
-                [{WELCOME_TAKEN}] of {WELCOME_TOTAL} taken
+                {welcomeSoldOut
+                  ? 'Founding offer sold out'
+                  : `${welcomeSeatsLeft} of ${welcomeTotal} spots remaining`}
               </p>
               <hr />
               <ul>
@@ -532,21 +579,29 @@ export function PricingPage({
                 </span>
               ) : welcomeSoldOut ? (
                 <span className="pricing-btn is-fill is-current">
-                  Seats full — $16/yr soon
+                  Founding offer sold out
                 </span>
               ) : signedIn ? (
-                <a
-                  href={annualWelcomeCheckoutHref}
+                <button
+                  type="button"
                   className="pricing-btn is-fill"
-                  rel="noopener noreferrer"
+                  disabled={annualStarting}
+                  onClick={() => void startAnnualCheckout()}
                 >
-                  Take one of the {welcomeSeatsLeft} seats
-                </a>
+                  {annualStarting
+                    ? 'Starting checkout…'
+                    : `Get Annual Plan · ${welcomeSeatsLeft} left`}
+                </button>
               ) : (
                 <Link href={annualPlanHref} className="pricing-btn is-fill">
                   Sign in to take a seat
                 </Link>
               )}
+              {annualErr ? (
+                <p className="pricing-checkout-err" role="alert">
+                  {annualErr}
+                </p>
+              ) : null}
             </article>
           </div>
         </div>

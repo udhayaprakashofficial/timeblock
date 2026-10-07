@@ -4,11 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UserDto } from '@timeblock/shared-types';
 import { api } from '../api';
-import {
-  buildAnnualWelcomeCheckoutUrl,
-  buildProCheckoutUrl,
-  catalogFromApi,
-} from '../lib/billing';
+import { buildProCheckoutUrl, catalogFromApi } from '../lib/billing';
 import './subscription.css';
 
 type InvoiceRow = {
@@ -46,10 +42,20 @@ const PRO_HIGHLIGHTS = [
 
 const ANNUAL_HIGHLIGHTS = [
   'Everything in Pro for a year',
-  'Lock in $12/year',
+  'Lock in $29/year',
   'AI features the day they ship',
   'Founding member list',
 ];
+
+type BillingConfig = {
+  proProductId: string;
+  annualWelcomeProductId: string;
+  checkoutBase?: string;
+  annualWelcomeLimit?: number;
+  annualWelcomeTaken?: number;
+  annualWelcomeRemaining?: number;
+  annualWelcomeSoldOut?: boolean;
+};
 
 function formatSince(iso: string | null | undefined): string {
   if (!iso) return '—';
@@ -80,18 +86,24 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
 
   const billingCatalogQuery = useQuery({
     queryKey: ['billing-config'],
-    queryFn: () =>
-      api.get<{
-        proProductId: string;
-        annualWelcomeProductId: string;
-        checkoutBase?: string;
-      }>('/api/billing/config'),
-    staleTime: 60_000,
+    queryFn: () => api.get<BillingConfig>('/api/billing/config'),
+    staleTime: 15_000,
+    refetchOnWindowFocus: true,
   });
   const billingCatalog = useMemo(
     () => catalogFromApi(billingCatalogQuery.data),
     [billingCatalogQuery.data],
   );
+  const annualLimit = billingCatalogQuery.data?.annualWelcomeLimit ?? 10;
+  const annualRemaining =
+    billingCatalogQuery.data?.annualWelcomeRemaining ??
+    Math.max(
+      0,
+      annualLimit - (billingCatalogQuery.data?.annualWelcomeTaken ?? 0),
+    );
+  const annualSoldOut =
+    billingCatalogQuery.data?.annualWelcomeSoldOut ?? annualRemaining <= 0;
+  const [annualStarting, setAnnualStarting] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -189,8 +201,34 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
   const priceDisplay = !isPro
     ? { amount: '$0', note: 'Forever' }
     : isAnnualWelcome
-      ? { amount: '$12', note: '/ year' }
-      : { amount: '$10', note: '/ month' };
+      ? { amount: '$29', note: '/ year' }
+      : { amount: '$11', note: '/ month' };
+
+  const startAnnualCheckout = async () => {
+    setErr(null);
+    setAnnualStarting(true);
+    try {
+      const result = await api.post<{
+        checkoutUrl?: string | null;
+        soldOut?: boolean;
+        error?: string;
+      }>('/api/billing/checkout/annual');
+      if (result.soldOut || !result.checkoutUrl) {
+        setErr(result.error || 'Founding offer sold out');
+        await qc.invalidateQueries({ queryKey: ['billing-config'] });
+        return;
+      }
+      window.location.href = result.checkoutUrl;
+    } catch (e) {
+      setErr(
+        e instanceof Error
+          ? e.message
+          : 'Could not start Annual Welcome checkout',
+      );
+    } finally {
+      setAnnualStarting(false);
+    }
+  };
 
   const badgeLabel = isActive ? 'Active' : isPro ? 'Paid' : 'Free';
   const badgeTone = isActive ? 'is-pro' : isPro ? 'is-pending' : 'is-free';
@@ -202,11 +240,6 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
 
   const proCheckoutHref = useMemo(
     () => buildProCheckoutUrl(billingCatalog, checkoutCustomer),
-    [billingCatalog, checkoutCustomer],
-  );
-
-  const annualCheckoutHref = useMemo(
-    () => buildAnnualWelcomeCheckoutUrl(billingCatalog, checkoutCustomer),
     [billingCatalog, checkoutCustomer],
   );
 
@@ -341,7 +374,7 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
                 <span className="sub-plan-pill">Recommended</span>
               </div>
               <p className="sub-plan-price">
-                $10<span> / month</span>
+                $11<span> / month</span>
               </p>
               <p className="sub-plan-blurb">
                 Lock the price now. Billing starts when AI ships.
@@ -365,24 +398,44 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
                 <h4>Annual welcome</h4>
                 <span className="sub-plan-pill is-solid">Limited</span>
               </div>
+              <p className="sub-plan-price-was" aria-label="Regular price $99 per year">
+                $99<span> / year</span>
+              </p>
               <p className="sub-plan-price">
-                $12<span> / year</span>
+                $29<span> / year</span>
               </p>
               <p className="sub-plan-blurb">
-                Founding rate for early supporters.
+                Founding rate for the first {annualLimit} members.
+              </p>
+              <p className="sub-plan-seats" role="status">
+                {annualSoldOut
+                  ? 'Founding offer sold out'
+                  : `Only ${annualRemaining} of ${annualLimit} founding spots left`}
               </p>
               <ul>
                 {ANNUAL_HIGHLIGHTS.map((f) => (
                   <li key={f}>{f}</li>
                 ))}
               </ul>
-              <a
-                href={annualCheckoutHref}
-                className="sub-btn is-primary"
-                rel="noopener noreferrer"
-              >
-                Get Annual Plan
-              </a>
+              {annualSoldOut ? (
+                <button
+                  type="button"
+                  className="sub-btn is-primary"
+                  disabled
+                  aria-disabled="true"
+                >
+                  Founding offer sold out
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="sub-btn is-primary"
+                  disabled={annualStarting}
+                  onClick={() => void startAnnualCheckout()}
+                >
+                  {annualStarting ? 'Starting checkout…' : 'Get Annual Plan'}
+                </button>
+              )}
             </article>
           </div>
 

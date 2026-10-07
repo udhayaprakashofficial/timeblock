@@ -271,6 +271,36 @@
   letter-spacing: 0;
 }
 
+.pricing-price-was {
+  margin: 16px 0 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  color: var(--pricing-soft);
+  text-decoration: line-through;
+}
+
+.pricing-price-was + .pricing-price {
+  margin-top: 4px;
+}
+
+.pricing-price-was span {
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.pricing-price-was.is-light {
+  color: #a8a29e;
+}
+
+.pricing-checkout-err {
+  margin: 10px 0 0;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: #ef4444;
+}
+
 .pricing-price.is-light {
   color: #fff;
 }
@@ -356,6 +386,18 @@
   font-weight: 800;
   box-sizing: border-box;
   transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+button.pricing-btn {
+  width: 100%;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+button.pricing-btn:disabled {
+  opacity: 0.75;
+  cursor: wait;
+  transform: none;
 }
 
 .pricing-btn.is-outline {

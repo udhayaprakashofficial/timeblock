@@ -13,12 +13,33 @@ import { BrevoMailService } from '../mail/brevo-mail.service';
 export const DODO_PRO_PRODUCT_ID =
   process.env.DODO_PRO_PRODUCT_ID?.trim() || 'pdt_0NoD66xtWburRIUH8s6AY';
 
-/** Annual welcome — one-time $12/yr (Dodo product). Grants Pro (pending activation). */
+/** Annual welcome — one-time founding offer (Dodo product). Grants Pro (pending activation). */
 export const DODO_ANNUAL_WELCOME_PRODUCT_ID =
   process.env.DODO_ANNUAL_WELCOME_PRODUCT_ID?.trim() ||
   'pdt_0NoLjZzkv1ZVWMngsqIuU';
 
+/** First-10 founding members only. */
+export const ANNUAL_WELCOME_LIMIT = 10;
+/** Soft hold while the buyer is on Dodo checkout. */
+const ANNUAL_WELCOME_HOLD_MINUTES = 45;
+/** Postgres advisory lock key for annual seat grants. */
+const ANNUAL_WELCOME_LOCK_KEY = 829_291_01;
+
+export const PRO_PRICE_USD = 11;
+export const ANNUAL_WELCOME_OFFER_USD = 29;
+export const ANNUAL_WELCOME_REGULAR_USD = 99;
+
 const DEFAULT_CHECKOUT_BASE = 'https://test.checkout.dodopayments.com/buy';
+
+type AnnualWelcomeOfferStatus = {
+  limit: number;
+  taken: number;
+  remaining: number;
+  soldOut: boolean;
+  offerPriceUsd: number;
+  regularPriceUsd: number;
+  proPriceUsd: number;
+};
 
 type PlanPatch = {
   plan: 'free' | 'pro';
@@ -77,7 +98,94 @@ export class BillingService {
     return this.productIdFromCart(pay.product_cart);
   }
 
-  /** UI label: Pro monthly vs Annual welcome ($12/yr). */
+  annualWelcomeOfferStatus(): Promise<AnnualWelcomeOfferStatus> {
+    return this.getAnnualWelcomeOfferStatus();
+  }
+
+  async getAnnualWelcomeOfferStatus(): Promise<AnnualWelcomeOfferStatus> {
+    await this.expireStaleAnnualClaims();
+    const taken = await this.countSuccessfulAnnualWelcomePurchases();
+    const remaining = Math.max(0, ANNUAL_WELCOME_LIMIT - taken);
+    return {
+      limit: ANNUAL_WELCOME_LIMIT,
+      taken,
+      remaining,
+      soldOut: remaining <= 0,
+      offerPriceUsd: ANNUAL_WELCOME_OFFER_USD,
+      regularPriceUsd: ANNUAL_WELCOME_REGULAR_USD,
+      proPriceUsd: PRO_PRICE_USD,
+    };
+  }
+
+  /**
+   * Successful Annual Welcome purchases only (paid Pro with annual product id).
+   * Abandoned / failed / cancelled checkouts are not counted.
+   */
+  async countSuccessfulAnnualWelcomePurchases(): Promise<number> {
+    const annualId = this.annualWelcomeProductId();
+    const isPaidAnnual = (u: {
+      plan?: string | null;
+      dodoProductId?: string | null;
+      dodoPaymentId?: string | null;
+      planStatus?: string | null;
+    }) => {
+      if (u.plan !== 'pro') return false;
+      if (u.dodoProductId !== annualId) return false;
+      if (!u.dodoPaymentId?.trim()) return false;
+      const st = (u.planStatus || '').toLowerCase();
+      if (st === 'failed' || st === 'cancelled') return false;
+      return true;
+    };
+
+    try {
+      const count = await this.prisma.user.count({
+        where: {
+          plan: 'pro',
+          dodoProductId: annualId,
+          dodoPaymentId: { not: null },
+          NOT: { planStatus: { in: ['failed', 'cancelled'] } },
+        },
+      });
+      return count;
+    } catch {
+      /* REST / local */
+    }
+
+    if (this.supabase.isConfigured()) {
+      try {
+        const rows = await this.supabase.select<{
+          id: string;
+          plan?: string;
+          dodoProductId?: string | null;
+          dodoPaymentId?: string | null;
+          planStatus?: string | null;
+        }>(
+          'User',
+          'id,plan,dodoProductId,dodoPaymentId,planStatus',
+          {
+            filter: `plan=eq.pro&dodoProductId=eq.${encodeURIComponent(annualId)}`,
+            limit: 500,
+          },
+        );
+        return rows.filter(isPaidAnnual).length;
+      } catch {
+        /* ignore */
+      }
+    }
+
+    return this.localUsers
+      .readAll()
+      .filter((u) =>
+        isPaidAnnual({
+          plan: u.plan,
+          dodoProductId: (u as { dodoProductId?: string | null }).dodoProductId,
+          dodoPaymentId: u.dodoPaymentId,
+          planStatus: u.planStatus,
+        }),
+      ).length;
+  }
+
+  /** UI label: Pro monthly vs Annual welcome founding offer. */
   planLabelForProduct(
     productId: string | null | undefined,
     subscriptionId: string | null | undefined,
@@ -200,11 +308,13 @@ export class BillingService {
     email?: string;
     name?: string;
     redirectUrl?: string;
+    productId?: string;
   }): string {
-    const url = new URL(`${this.checkoutBase()}/${this.proProductId()}`);
+    const productId = input.productId?.trim() || this.proProductId();
+    const url = new URL(`${this.checkoutBase()}/${productId}`);
     url.searchParams.set('quantity', '1');
     const defaultRedirect = input.userId?.trim()
-      ? `${this.appPublicUrl()}/subscription`
+      ? `${this.appPublicUrl()}/settings?panel=subscription`
       : `${this.appPublicUrl()}/pricing`;
     url.searchParams.set(
       'redirect_url',
@@ -221,6 +331,97 @@ export class BillingService {
       url.searchParams.set('metadata_userId', input.userId.trim());
     }
     return url.toString();
+  }
+
+  /**
+   * Reserve a founding seat (soft hold) then return Annual Welcome checkout.
+   * Enforced again atomically when payment is confirmed.
+   */
+  async createAnnualWelcomeCheckout(input: {
+    userId: string;
+    email: string;
+    name: string;
+  }): Promise<{
+    checkoutUrl: string | null;
+    mode: 'session' | 'static';
+    soldOut: boolean;
+    remaining: number;
+  }> {
+    const reserved = await this.reserveAnnualWelcomeSeat(input.userId);
+    if (!reserved.ok) {
+      return {
+        checkoutUrl: null,
+        mode: 'static',
+        soldOut: true,
+        remaining: 0,
+      };
+    }
+
+    const staticUrl = this.buildStaticCheckoutUrl({
+      ...input,
+      productId: this.annualWelcomeProductId(),
+    });
+    const apiKey = process.env.DODO_PAYMENTS_API_KEY?.trim();
+    if (!apiKey) {
+      return {
+        checkoutUrl: staticUrl,
+        mode: 'static',
+        soldOut: false,
+        remaining: reserved.remaining,
+      };
+    }
+
+    try {
+      const res = await fetch(`${this.apiBase()}/checkouts`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          product_cart: [
+            { product_id: this.annualWelcomeProductId(), quantity: 1 },
+          ],
+          customer: { email: input.email, name: input.name },
+          return_url: `${this.appPublicUrl()}/settings?panel=subscription`,
+          metadata: {
+            userId: input.userId,
+            plan: 'annual_welcome',
+          },
+        }),
+      });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '');
+        this.logger.warn(
+          `Dodo annual checkout session failed (${res.status}): ${detail.slice(0, 200)}`,
+        );
+        return {
+          checkoutUrl: staticUrl,
+          mode: 'static',
+          soldOut: false,
+          remaining: reserved.remaining,
+        };
+      }
+      const data = (await res.json()) as { checkout_url?: string };
+      return {
+        checkoutUrl: data.checkout_url || staticUrl,
+        mode: data.checkout_url ? 'session' : 'static',
+        soldOut: false,
+        remaining: reserved.remaining,
+      };
+    } catch (err) {
+      this.logger.warn(
+        `Dodo annual checkout session error: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return {
+        checkoutUrl: staticUrl,
+        mode: 'static',
+        soldOut: false,
+        remaining: reserved.remaining,
+      };
+    }
   }
 
   /**
@@ -532,6 +733,13 @@ export class BillingService {
       return { ok: true, plan: 'pro', verified: true };
     }
 
+    const productId =
+      paidProductId?.trim() ||
+      (hasSub ? this.proProductId() : null);
+    if (productId === this.annualWelcomeProductId()) {
+      await this.assertAndConsumeAnnualWelcomeSeat(input.userId);
+    }
+
     await this.applyPlan(input.userId, {
       plan: 'pro',
       // Paid = locked; admin activates when AI features go live
@@ -539,7 +747,7 @@ export class BillingService {
       dodoCustomerId: customerId,
       dodoSubscriptionId: hasSub ? subscriptionId : null,
       dodoPaymentId: hasPay ? paymentId : null,
-      dodoProductId: paidProductId,
+      dodoProductId: productId,
       proPaidAt: paidAt,
     });
     this.logger.log(
@@ -752,6 +960,10 @@ export class BillingService {
         const st = (pay.status || '').toLowerCase();
         if (st && st !== 'succeeded' && st !== 'success') continue;
         this.assertPaymentBelongsToUser(pay, input);
+        const paidProductId = this.extractPaidProductId(pay);
+        if (paidProductId === this.annualWelcomeProductId()) {
+          await this.assertAndConsumeAnnualWelcomeSeat(input.userId);
+        }
         const paidAt = pay.created_at
           ? new Date(pay.created_at)
           : new Date();
@@ -762,7 +974,7 @@ export class BillingService {
             pay.customer_id || pay.customer?.customer_id || null,
           dodoSubscriptionId: pay.subscription_id || null,
           dodoPaymentId: paymentId,
-          dodoProductId: this.extractPaidProductId(pay),
+          dodoProductId: paidProductId,
           proPaidAt: Number.isNaN(paidAt.getTime()) ? new Date() : paidAt,
         });
         this.logger.log(
@@ -933,13 +1145,32 @@ export class BillingService {
       prior.plan === 'pro' &&
       Boolean(prior.dodoPaymentId || prior.dodoSubscriptionId);
 
+    const resolvedProductId =
+      productId?.trim() ||
+      (subscriptionId ? this.proProductId() : null);
+    if (
+      resolvedProductId === this.annualWelcomeProductId() &&
+      !alreadyPaid
+    ) {
+      try {
+        await this.assertAndConsumeAnnualWelcomeSeat(resolved);
+      } catch (err) {
+        this.logger.warn(
+          `Annual welcome webhook rejected for ${resolved}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return;
+      }
+    }
+
     await this.applyPlan(resolved, {
       plan: 'pro',
       planStatus: 'pending_activation',
       dodoCustomerId: customerId,
       dodoSubscriptionId: subscriptionId,
       ...(paymentId ? { dodoPaymentId: paymentId } : {}),
-      dodoProductId: productId,
+      dodoProductId: resolvedProductId,
       proPaidAt: new Date(),
     });
     this.logger.log(`Pro paid (pending) for user ${resolved} (${type})`);
@@ -1024,6 +1255,263 @@ export class BillingService {
     return null;
   }
 
+  private annualHoldExpiresAt(): Date {
+    return new Date(Date.now() + ANNUAL_WELCOME_HOLD_MINUTES * 60_000);
+  }
+
+  private async expireStaleAnnualClaims(): Promise<void> {
+    const now = new Date();
+    try {
+      await this.prisma.annualWelcomeClaim.updateMany({
+        where: { status: 'pending', expiresAt: { lt: now } },
+        data: { status: 'released', updatedAt: now },
+      });
+    } catch {
+      /* table may be missing until migration */
+    }
+    if (this.supabase.isConfigured()) {
+      try {
+        await this.supabase.patch(
+          'AnnualWelcomeClaim',
+          `status=eq.pending&expiresAt=lt.${now.toISOString()}`,
+          { status: 'released', updatedAt: now.toISOString() },
+        );
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  private async countActiveAnnualHolds(excludeUserId?: string): Promise<number> {
+    const now = new Date();
+    try {
+      return await this.prisma.annualWelcomeClaim.count({
+        where: {
+          status: 'pending',
+          expiresAt: { gt: now },
+          ...(excludeUserId ? { userId: { not: excludeUserId } } : {}),
+        },
+      });
+    } catch {
+      /* REST */
+    }
+    if (this.supabase.isConfigured()) {
+      try {
+        const rows = await this.supabase.select<{
+          userId: string;
+          status: string;
+          expiresAt: string;
+        }>('AnnualWelcomeClaim', 'userId,status,expiresAt', {
+          filter: 'status=eq.pending',
+          limit: 100,
+        });
+        return rows.filter((r) => {
+          if (excludeUserId && r.userId === excludeUserId) return false;
+          return new Date(r.expiresAt).getTime() > now.getTime();
+        }).length;
+      } catch {
+        /* ignore */
+      }
+    }
+    return 0;
+  }
+
+  /**
+   * Soft-hold a founding seat before redirecting to Dodo.
+   * Occupancy = successful paid seats + other users' pending holds.
+   */
+  async reserveAnnualWelcomeSeat(
+    userId: string,
+  ): Promise<{ ok: boolean; remaining: number }> {
+    await this.expireStaleAnnualClaims();
+
+    const existing = await this.getBillingProfile(userId);
+    if (
+      existing.plan === 'pro' &&
+      existing.dodoProductId === this.annualWelcomeProductId() &&
+      existing.dodoPaymentId
+    ) {
+      return { ok: false, remaining: 0 };
+    }
+
+    const paid = await this.countSuccessfulAnnualWelcomePurchases();
+    const otherHolds = await this.countActiveAnnualHolds(userId);
+    const occupied = paid + otherHolds;
+    if (occupied >= ANNUAL_WELCOME_LIMIT) {
+      return { ok: false, remaining: 0 };
+    }
+
+    const expiresAt = this.annualHoldExpiresAt();
+    const remaining = Math.max(0, ANNUAL_WELCOME_LIMIT - paid - otherHolds - 1);
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ANNUAL_WELCOME_LOCK_KEY})`;
+        const paidLocked = await tx.user.count({
+          where: {
+            plan: 'pro',
+            dodoProductId: this.annualWelcomeProductId(),
+            dodoPaymentId: { not: null },
+            NOT: { planStatus: { in: ['failed', 'cancelled'] } },
+          },
+        });
+        const holdsLocked = await tx.annualWelcomeClaim.count({
+          where: {
+            status: 'pending',
+            expiresAt: { gt: new Date() },
+            userId: { not: userId },
+          },
+        });
+        if (paidLocked + holdsLocked >= ANNUAL_WELCOME_LIMIT) {
+          throw new BadRequestException('Founding offer sold out');
+        }
+        await tx.annualWelcomeClaim.upsert({
+          where: { userId },
+          create: {
+            userId,
+            status: 'pending',
+            expiresAt,
+          },
+          update: {
+            status: 'pending',
+            expiresAt,
+            updatedAt: new Date(),
+          },
+        });
+      });
+      return { ok: true, remaining };
+    } catch (err) {
+      if (err instanceof BadRequestException) {
+        return { ok: false, remaining: 0 };
+      }
+      this.logger.warn(
+        `Annual seat reserve via Prisma failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    // Fallback without advisory lock (Supabase / local): best-effort hold.
+    if (this.supabase.isConfigured()) {
+      try {
+        await this.supabase.upsert(
+          'AnnualWelcomeClaim',
+          {
+            id: `awc_${userId}`,
+            userId,
+            status: 'pending',
+            expiresAt: expiresAt.toISOString(),
+            updatedAt: new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+          },
+          'userId',
+        );
+        return { ok: true, remaining };
+      } catch (err) {
+        this.logger.warn(
+          `Annual seat reserve via Supabase failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    // Local / no claim table: allow checkout if paid seats remain.
+    if (paid < ANNUAL_WELCOME_LIMIT) {
+      return {
+        ok: true,
+        remaining: Math.max(0, ANNUAL_WELCOME_LIMIT - paid - 1),
+      };
+    }
+    return { ok: false, remaining: 0 };
+  }
+
+  /**
+   * Atomically grant an Annual Welcome seat after a verified successful payment.
+   * Rejects if the founding quota is already full (unless this user already holds it).
+   */
+  async assertAndConsumeAnnualWelcomeSeat(userId: string): Promise<void> {
+    await this.expireStaleAnnualClaims();
+
+    const existing = await this.getBillingProfile(userId);
+    if (
+      existing.plan === 'pro' &&
+      existing.dodoProductId === this.annualWelcomeProductId() &&
+      existing.dodoPaymentId
+    ) {
+      return;
+    }
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ANNUAL_WELCOME_LOCK_KEY})`;
+        const paid = await tx.user.count({
+          where: {
+            plan: 'pro',
+            dodoProductId: this.annualWelcomeProductId(),
+            dodoPaymentId: { not: null },
+            id: { not: userId },
+            NOT: { planStatus: { in: ['failed', 'cancelled'] } },
+          },
+        });
+        if (paid >= ANNUAL_WELCOME_LIMIT) {
+          throw new BadRequestException(
+            'Founding offer sold out. If you were charged, contact support for a refund.',
+          );
+        }
+        await tx.annualWelcomeClaim.upsert({
+          where: { userId },
+          create: {
+            userId,
+            status: 'converted',
+            expiresAt: new Date(),
+          },
+          update: {
+            status: 'converted',
+            updatedAt: new Date(),
+          },
+        });
+      });
+      return;
+    } catch (err) {
+      if (err instanceof BadRequestException) throw err;
+      this.logger.warn(
+        `Annual seat consume via Prisma failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    const paid = await this.countSuccessfulAnnualWelcomePurchases();
+    const already =
+      existing.plan === 'pro' &&
+      existing.dodoProductId === this.annualWelcomeProductId();
+    if (!already && paid >= ANNUAL_WELCOME_LIMIT) {
+      throw new BadRequestException(
+        'Founding offer sold out. If you were charged, contact support for a refund.',
+      );
+    }
+
+    if (this.supabase.isConfigured()) {
+      try {
+        await this.supabase.upsert(
+          'AnnualWelcomeClaim',
+          {
+            id: `awc_${userId}`,
+            userId,
+            status: 'converted',
+            expiresAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+          },
+          'userId',
+        );
+      } catch {
+        /* optional */
+      }
+    }
+  }
+
   async applyPlan(userId: string, patch: PlanPatch): Promise<void> {
     const now = new Date();
     const paidAt =
@@ -1051,8 +1539,7 @@ export class BillingService {
           local.dodoPaymentId = patch.dodoPaymentId;
         }
         if (patch.dodoProductId !== undefined) {
-          (local as { dodoProductId?: string | null }).dodoProductId =
-            patch.dodoProductId;
+          local.dodoProductId = patch.dodoProductId;
         }
         if (paidAt) local.proPaidAt = paidAt.toISOString();
         if (activatedAt) local.proActivatedAt = activatedAt.toISOString();
