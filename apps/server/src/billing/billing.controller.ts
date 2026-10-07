@@ -26,10 +26,15 @@ export class BillingController {
   @Get('config')
   async config() {
     const annual = await this.billing.getAnnualWelcomeOfferStatus();
+    const [proProductId, annualWelcomeProductId] = await Promise.all([
+      this.billing.resolveProProductId(),
+      this.billing.resolveAnnualWelcomeProductId(),
+    ]);
     return {
-      proProductId: this.billing.proProductId(),
-      annualWelcomeProductId: this.billing.annualWelcomeProductId(),
+      proProductId,
+      annualWelcomeProductId,
       checkoutBase: this.billing.checkoutBaseUrl(),
+      paymentsEnvironment: this.billing.paymentsEnvironment(),
       checkoutReady: true,
       apiKeyConfigured: this.billing.apiKeyConfigured(),
       webhookConfigured: this.billing.webhookConfigured(),

@@ -108,6 +108,7 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
   const annualSoldOut =
     billingCatalogQuery.data?.annualWelcomeSoldOut ?? annualRemaining <= 0;
   const [annualStarting, setAnnualStarting] = useState(false);
+  const [proStarting, setProStarting] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -220,6 +221,41 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
     () => buildProCheckoutUrl(billingCatalog, checkoutCustomer),
     [billingCatalog, checkoutCustomer],
   );
+
+  const startProCheckout = async () => {
+    setErr(null);
+    setProStarting(true);
+    try {
+      const result = await api.post<{
+        checkoutUrl?: string | null;
+        alreadyPro?: boolean;
+      }>('/api/billing/checkout', { plan: 'pro' });
+      if (result.alreadyPro) {
+        setBanner('You already have Pro on this account.');
+        await qc.invalidateQueries({ queryKey: ['billing-summary'] });
+        return;
+      }
+      if (result.checkoutUrl) {
+        window.location.href = result.checkoutUrl;
+        return;
+      }
+      if (proCheckoutHref) {
+        window.location.href = proCheckoutHref;
+        return;
+      }
+      setErr('Could not start Pro checkout');
+    } catch (e) {
+      if (proCheckoutHref) {
+        window.location.href = proCheckoutHref;
+        return;
+      }
+      setErr(
+        e instanceof Error ? e.message : 'Could not start Pro checkout',
+      );
+    } finally {
+      setProStarting(false);
+    }
+  };
 
   const startAnnualCheckout = async () => {
     setErr(null);
@@ -418,13 +454,14 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
                   <li key={f}>{f}</li>
                 ))}
               </ul>
-              <a
-                href={proCheckoutHref}
+              <button
+                type="button"
                 className="sub-btn is-primary"
-                rel="noopener noreferrer"
+                disabled={proStarting}
+                onClick={() => void startProCheckout()}
               >
-                Upgrade to Pro
-              </a>
+                {proStarting ? 'Starting checkout…' : 'Upgrade to Pro'}
+              </button>
             </article>
 
             <article className="sub-plan-card is-accent">

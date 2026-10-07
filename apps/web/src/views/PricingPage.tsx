@@ -256,8 +256,43 @@ export function PricingPage({
     'success' | 'failed' | null
   >(null);
   const [annualStarting, setAnnualStarting] = useState(false);
+  const [proStarting, setProStarting] = useState(false);
   const [annualErr, setAnnualErr] = useState<string | null>(null);
   const autoBuyStarted = useRef(false);
+
+  const startProCheckout = async () => {
+    setAnnualErr(null);
+    setProStarting(true);
+    try {
+      const result = await api.post<{
+        checkoutUrl?: string | null;
+        alreadyPro?: boolean;
+      }>('/api/billing/checkout', { plan: 'pro' });
+      if (result.alreadyPro) {
+        setCheckoutBanner('success');
+        return;
+      }
+      if (result.checkoutUrl) {
+        window.location.href = result.checkoutUrl;
+        return;
+      }
+      if (proCheckoutHref) {
+        window.location.href = proCheckoutHref;
+        return;
+      }
+      setAnnualErr('Could not start Pro checkout');
+    } catch (e) {
+      if (proCheckoutHref) {
+        window.location.href = proCheckoutHref;
+        return;
+      }
+      setAnnualErr(
+        e instanceof Error ? e.message : 'Could not start Pro checkout',
+      );
+    } finally {
+      setProStarting(false);
+    }
+  };
 
   const startAnnualCheckout = async () => {
     setAnnualErr(null);
@@ -339,9 +374,10 @@ export function PricingPage({
     if (buy === 'pro' && signedIn && user && !isPro) {
       if (autoBuyStarted.current) return;
       autoBuyStarted.current = true;
-      window.location.assign(
-        buildProCheckoutUrl(billingCatalog, checkoutCustomer),
-      );
+      const url = new URL(window.location.href);
+      url.searchParams.delete('buy');
+      window.history.replaceState({}, '', url.pathname + url.search);
+      void startProCheckout();
       return;
     }
 
@@ -546,13 +582,14 @@ export function PricingPage({
                   Current plan
                 </span>
               ) : signedIn ? (
-                <a
-                  href={proCheckoutHref}
+                <button
+                  type="button"
                   className="pricing-btn is-fill"
-                  rel="noopener noreferrer"
+                  disabled={proStarting}
+                  onClick={() => void startProCheckout()}
                 >
-                  Lock in $11 a month
-                </a>
+                  {proStarting ? 'Starting checkout…' : 'Lock in $11 a month'}
+                </button>
               ) : (
                 <Link href={proPlanHref} className="pricing-btn is-fill">
                   Sign in to lock in $11/mo

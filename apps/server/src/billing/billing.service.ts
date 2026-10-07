@@ -10,13 +10,18 @@ import { SupabaseRestService } from '../supabase/supabase-rest.service';
 import { LocalUserStore } from '../auth/local-user.store';
 import { BrevoMailService } from '../mail/brevo-mail.service';
 
+/** Known-good Cupkey products in Dodo test mode (fallbacks when env IDs 404). */
+export const DEFAULT_DODO_PRO_PRODUCT_ID = 'pdt_0NoD66xtWburRIUH8s6AY';
+export const DEFAULT_DODO_ANNUAL_WELCOME_PRODUCT_ID =
+  'pdt_0NoLjZzkv1ZVWMngsqIuU';
+
 export const DODO_PRO_PRODUCT_ID =
-  process.env.DODO_PRO_PRODUCT_ID?.trim() || 'pdt_0NoD66xtWburRIUH8s6AY';
+  process.env.DODO_PRO_PRODUCT_ID?.trim() || DEFAULT_DODO_PRO_PRODUCT_ID;
 
 /** Annual welcome — one-time founding offer (Dodo product). Grants Pro (pending activation). */
 export const DODO_ANNUAL_WELCOME_PRODUCT_ID =
   process.env.DODO_ANNUAL_WELCOME_PRODUCT_ID?.trim() ||
-  'pdt_0NoLjZzkv1ZVWMngsqIuU';
+  DEFAULT_DODO_ANNUAL_WELCOME_PRODUCT_ID;
 
 /** First-10 founding members only. */
 export const ANNUAL_WELCOME_LIMIT = 10;
@@ -29,7 +34,9 @@ export const PRO_PRICE_USD = 11;
 export const ANNUAL_WELCOME_OFFER_USD = 29;
 export const ANNUAL_WELCOME_REGULAR_USD = 99;
 
-const DEFAULT_CHECKOUT_BASE = 'https://test.checkout.dodopayments.com/buy';
+const TEST_CHECKOUT_BASE = 'https://test.checkout.dodopayments.com/buy';
+const LIVE_CHECKOUT_BASE = 'https://checkout.dodopayments.com/buy';
+const DEFAULT_CHECKOUT_BASE = TEST_CHECKOUT_BASE;
 
 type AnnualWelcomeOfferStatus = {
   limit: number;
@@ -55,6 +62,10 @@ type PlanPatch = {
 @Injectable()
 export class BillingService {
   private readonly logger = new Logger(BillingService.name);
+  private productIdCache = new Map<
+    string,
+    { id: string; checkedAt: number }
+  >();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -62,6 +73,11 @@ export class BillingService {
     private readonly localUsers: LocalUserStore,
     private readonly mail: BrevoMailService,
   ) {}
+
+  paymentsEnvironment(): 'test_mode' | 'live_mode' {
+    const env = (process.env.DODO_PAYMENTS_ENVIRONMENT || 'test_mode').trim();
+    return env === 'live_mode' ? 'live_mode' : 'test_mode';
+  }
 
   proProductId() {
     return DODO_PRO_PRODUCT_ID;
@@ -71,12 +87,97 @@ export class BillingService {
     return DODO_ANNUAL_WELCOME_PRODUCT_ID;
   }
 
+  /**
+   * Prefer configured product; if it 404s in the current Dodo mode, fall back
+   * to the known-good default so checkout links stop landing on not-found.
+   */
+  async resolveProProductId(): Promise<string> {
+    return this.resolveWorkingProductId(
+      'pro',
+      this.proProductId(),
+      DEFAULT_DODO_PRO_PRODUCT_ID,
+    );
+  }
+
+  async resolveAnnualWelcomeProductId(): Promise<string> {
+    return this.resolveWorkingProductId(
+      'annual',
+      this.annualWelcomeProductId(),
+      DEFAULT_DODO_ANNUAL_WELCOME_PRODUCT_ID,
+    );
+  }
+
+  private async resolveWorkingProductId(
+    kind: string,
+    configured: string,
+    fallback: string,
+  ): Promise<string> {
+    const cacheKey = `${this.paymentsEnvironment()}:${kind}:${configured}`;
+    const cached = this.productIdCache.get(cacheKey);
+    if (cached && Date.now() - cached.checkedAt < 5 * 60_000) {
+      return cached.id;
+    }
+
+    const exists = await this.dodoProductExists(configured);
+    if (exists) {
+      this.productIdCache.set(cacheKey, {
+        id: configured,
+        checkedAt: Date.now(),
+      });
+      return configured;
+    }
+
+    if (configured !== fallback) {
+      const fallbackExists = await this.dodoProductExists(fallback);
+      if (fallbackExists) {
+        this.logger.warn(
+          `Dodo ${kind} product ${configured} not found in ${this.paymentsEnvironment()}; using ${fallback}`,
+        );
+        this.productIdCache.set(cacheKey, {
+          id: fallback,
+          checkedAt: Date.now(),
+        });
+        return fallback;
+      }
+    }
+
+    this.productIdCache.set(cacheKey, {
+      id: configured,
+      checkedAt: Date.now(),
+    });
+    return configured;
+  }
+
+  private async dodoProductExists(productId: string): Promise<boolean> {
+    const apiKey = process.env.DODO_PAYMENTS_API_KEY?.trim();
+    if (!apiKey || !productId.trim()) return true;
+    try {
+      const res = await fetch(
+        `${this.apiBase()}/products/${encodeURIComponent(productId)}`,
+        { headers: { Authorization: `Bearer ${apiKey}` } },
+      );
+      if (res.status === 404) return false;
+      if (res.ok) return true;
+      // Auth / rate-limit errors: don't swap product IDs.
+      return true;
+    } catch (err) {
+      this.logger.warn(
+        `Dodo product lookup failed for ${productId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return true;
+    }
+  }
+
   /** Pro monthly or Annual welcome one-time — both unlock paid Pro in Cupkey. */
   isCupkeyPaidProduct(productId: string | null | undefined): boolean {
     if (!productId?.trim()) return false;
     return (
       productId === this.proProductId() ||
-      productId === this.annualWelcomeProductId()
+      productId === this.annualWelcomeProductId() ||
+      productId === DEFAULT_DODO_PRO_PRODUCT_ID ||
+      productId === DEFAULT_DODO_ANNUAL_WELCOME_PRODUCT_ID
     );
   }
 
@@ -279,10 +380,34 @@ export class BillingService {
     return this.mail.isConfigured();
   }
 
+  /**
+   * Static payment-link host must match DODO_PAYMENTS_ENVIRONMENT.
+   * A live product on test.checkout (or the reverse) shows Dodo "link isn't available".
+   */
   checkoutBaseUrl() {
-    return (
-      process.env.DODO_CHECKOUT_BASE?.trim() || DEFAULT_CHECKOUT_BASE
-    ).replace(/\/$/, '');
+    const fromEnv = process.env.DODO_CHECKOUT_BASE?.trim() || '';
+    const mode = this.paymentsEnvironment();
+    if (mode === 'live_mode') {
+      if (
+        fromEnv &&
+        !fromEnv.includes('test.checkout.dodopayments.com')
+      ) {
+        return fromEnv.replace(/\/$/, '');
+      }
+      return LIVE_CHECKOUT_BASE;
+    }
+    if (fromEnv.includes('test.checkout.dodopayments.com')) {
+      return fromEnv.replace(/\/$/, '');
+    }
+    // Ignore live checkout base while API is in test_mode
+    if (
+      fromEnv &&
+      !fromEnv.includes('checkout.dodopayments.com/buy') &&
+      !fromEnv.includes('live.checkout')
+    ) {
+      return fromEnv.replace(/\/$/, '');
+    }
+    return DEFAULT_CHECKOUT_BASE;
   }
 
   private checkoutBase() {
@@ -290,8 +415,7 @@ export class BillingService {
   }
 
   private apiBase() {
-    const env = (process.env.DODO_PAYMENTS_ENVIRONMENT || 'test_mode').trim();
-    return env === 'live_mode'
+    return this.paymentsEnvironment() === 'live_mode'
       ? 'https://live.dodopayments.com'
       : 'https://test.dodopayments.com';
   }
@@ -357,9 +481,10 @@ export class BillingService {
       };
     }
 
+    const productId = await this.resolveAnnualWelcomeProductId();
     const staticUrl = this.buildStaticCheckoutUrl({
       ...input,
-      productId: this.annualWelcomeProductId(),
+      productId,
     });
     const apiKey = process.env.DODO_PAYMENTS_API_KEY?.trim();
     if (!apiKey) {
@@ -379,9 +504,7 @@ export class BillingService {
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          product_cart: [
-            { product_id: this.annualWelcomeProductId(), quantity: 1 },
-          ],
+          product_cart: [{ product_id: productId, quantity: 1 }],
           customer: { email: input.email, name: input.name },
           return_url: `${this.appPublicUrl()}/settings?panel=subscription`,
           metadata: {
@@ -433,7 +556,11 @@ export class BillingService {
     email: string;
     name: string;
   }): Promise<{ checkoutUrl: string; mode: 'session' | 'static' }> {
-    const staticUrl = this.buildStaticCheckoutUrl(input);
+    const productId = await this.resolveProProductId();
+    const staticUrl = this.buildStaticCheckoutUrl({
+      ...input,
+      productId,
+    });
     const apiKey = process.env.DODO_PAYMENTS_API_KEY?.trim();
     if (!apiKey) {
       return { checkoutUrl: staticUrl, mode: 'static' };
@@ -447,10 +574,10 @@ export class BillingService {
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          product_cart: [{ product_id: this.proProductId(), quantity: 1 }],
+          product_cart: [{ product_id: productId, quantity: 1 }],
           customer: { email: input.email, name: input.name },
-          return_url: `${this.appPublicUrl()}/subscription`,
-          metadata: { userId: input.userId },
+          return_url: `${this.appPublicUrl()}/settings?panel=subscription`,
+          metadata: { userId: input.userId, plan: 'pro' },
         }),
       });
       if (!res.ok) {
