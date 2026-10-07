@@ -219,6 +219,22 @@ export function SettingsPage({ user }: { user: UserDto }) {
     },
   });
 
+  const sync = useMutation({
+    mutationFn: () =>
+      api.post<{ synced: string[]; warning?: string }>('/api/calendar/sync'),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['events'] }),
+        qc.invalidateQueries({ queryKey: ['tasks'] }),
+        qc.invalidateQueries({ queryKey: ['stats'] }),
+        qc.invalidateQueries({ queryKey: ['me'] }),
+      ]);
+    },
+  });
+
+  const providers = user.connectedProviders ?? [];
+  const connected = providers.length ? providers.join(', ') : 'None connected';
+
   const byWeekday = useMemo(() => {
     const map = new Map<number, DailyScheduleTemplateDto>();
     for (const t of scheduleQ.data ?? []) {
@@ -600,23 +616,16 @@ export function SettingsPage({ user }: { user: UserDto }) {
                   <div>
                     <p className="settings-kicker">Account</p>
                     <h2 className="settings-panel-title">Calendar</h2>
-                    <p className="settings-meta">Meeting import — coming soon</p>
+                    <p className="settings-meta">{connected}</p>
                   </div>
                 </div>
                 <div className="settings-connect-row">
-                  <div className="settings-outlook-soon">
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      disabled
-                      aria-label="Connect Google Calendar — coming soon"
-                    >
-                      Connect Google Calendar
-                    </button>
-                    <span className="coming-soon-tag" aria-hidden>
-                      Coming soon
-                    </span>
-                  </div>
+                  <a
+                    className="btn btn-primary"
+                    href={`/api/auth/google?returnTo=${encodeURIComponent('/settings?panel=account')}`}
+                  >
+                    Connect Google Calendar
+                  </a>
                   <div className="settings-outlook-soon">
                     <button
                       type="button"
@@ -630,9 +639,33 @@ export function SettingsPage({ user }: { user: UserDto }) {
                       Coming soon
                     </span>
                   </div>
+                  <button
+                    className="btn btn-outline"
+                    type="button"
+                    onClick={() => sync.mutate()}
+                    disabled={sync.isPending || providers.length === 0}
+                  >
+                    {sync.isPending ? 'Syncing…' : 'Sync calendars now'}
+                  </button>
                 </div>
+                {sync.isSuccess && (
+                  <p className="settings-toast is-ok">
+                    Calendar sync completed
+                    {sync.data?.synced?.length
+                      ? `: ${sync.data.synced.join(', ')}`
+                      : '.'}
+                    {sync.data?.warning ? ` Warning: ${sync.data.warning}` : ''}
+                  </p>
+                )}
+                {sync.isError && (
+                  <p className="settings-toast is-err">
+                    {sync.error instanceof Error
+                      ? sync.error.message
+                      : 'Calendar sync failed'}
+                  </p>
+                )}
                 <p className="settings-hint">
-                  Calendar sync will pull meetings into your plan. We’re finishing this next.
+                  Connect links the account. Sync pulls the latest meetings into your plan.
                 </p>
               </section>
             </>

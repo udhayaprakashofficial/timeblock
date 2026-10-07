@@ -1,8 +1,9 @@
 'use client';
 
 import Link from 'next/link';
+import { useQuery } from '@tanstack/react-query';
 import { useState, type CSSProperties, type FormEvent } from 'react';
-import type { UserDto } from '@timeblock/shared-types';
+import type { AuthConfigDto, UserDto } from '@timeblock/shared-types';
 import { api } from '../api';
 import { CupkeyLogo } from '../components/CupkeyLogo';
 import './auth.css'; // LAYOUT_FIX_V1
@@ -56,16 +57,41 @@ const cardStyle: CSSProperties = {
 };
 
 /**
- * Auth card: email/password now; social providers shown as coming soon.
+ * Auth card: Google OAuth (when configured) + email/password.
+ * Google uses /api/auth/google so JS origins are not required.
  */
 export function LoginScreen({
   onSignedIn,
 }: {
   onSignedIn: (user: UserDto) => void;
 }) {
+  const authConfig = useQuery({
+    queryKey: ['auth-config'],
+    queryFn: () => api.get<AuthConfigDto>('/api/users/auth-config'),
+  });
   const authError = new URLSearchParams(window.location.search).get('authError');
+  const googleEnabled = Boolean(
+    authConfig.data?.googleSignIn || authConfig.data?.googleCalendarOAuth,
+  );
 
-  return <AuthCard authError={authError} onSignedIn={onSignedIn} />;
+  if (authConfig.isLoading) {
+    return (
+      <div className="auth-kit">
+        <style>{AUTH_CRITICAL_CSS}</style>
+        <section className="auth-kit-left">
+          <p className="auth-kit-lede">Loading…</p>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <AuthCard
+      googleEnabled={googleEnabled}
+      authError={authError}
+      onSignedIn={onSignedIn}
+    />
+  );
 }
 
 const formStyle: CSSProperties = {
@@ -136,9 +162,11 @@ const socialBtnStyle: CSSProperties = {
 };
 
 function AuthCard({
+  googleEnabled,
   authError,
   onSignedIn,
 }: {
+  googleEnabled: boolean;
   authError: string | null;
   onSignedIn: (user: UserDto) => void;
 }) {
@@ -149,16 +177,16 @@ function AuthCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(() => {
     if (authError === 'google' || authError === 'google_token') {
-      return 'Google sign-in is coming soon. Use email instead.';
+      return 'Google sign-in failed. Try again.';
     }
     if (authError === 'google_not_configured') {
-      return 'Google sign-in is coming soon. Use email instead.';
+      return 'Google OAuth is not configured on the server.';
     }
     if (authError === 'origin_mismatch' || authError === 'redirect_uri_mismatch') {
-      return 'Google sign-in is coming soon. Use email instead.';
+      return 'Google OAuth redirect URI mismatch. Check GOOGLE_CALLBACK_URL.';
     }
     if (authError === 'exchange') {
-      return 'Google sign-in is coming soon. Use email instead.';
+      return 'Google sign-in failed. Try again.';
     }
     return authError;
   });
@@ -170,6 +198,12 @@ function AuthCard({
     if (next === 'signup') url.searchParams.set('mode', 'signup');
     else url.searchParams.delete('mode');
     window.history.replaceState({}, '', url.pathname + url.search);
+  };
+
+  const onGoogleClick = () => {
+    setError(null);
+    setBusy(true);
+    window.location.href = `/api/auth/google?returnTo=${encodeURIComponent('/')}`;
   };
 
   const onSubmit = async (e: FormEvent) => {
@@ -212,44 +246,24 @@ function AuthCard({
         <h1>{title}</h1>
         <p className="auth-kit-lede">{subtitle}</p>
 
-        {/* Social OAuth — re-enable when Google / Microsoft / Apple are wired up
-        <div className="auth-kit-social">
-          <button
-            type="button"
-            className="auth-kit-social-btn"
-            disabled
-            title="Coming soon"
-          >
-            <GoogleIcon />
-            Continue with Google
-            <em>Soon</em>
-          </button>
-          <button
-            type="button"
-            className="auth-kit-social-btn"
-            disabled
-            title="Coming soon"
-          >
-            <MicrosoftIcon />
-            Continue with Microsoft
-            <em>Soon</em>
-          </button>
-          <button
-            type="button"
-            className="auth-kit-social-btn"
-            disabled
-            title="Coming soon"
-          >
-            <AppleIcon />
-            Continue with Apple
-            <em>Soon</em>
-          </button>
-        </div>
-
-        <div className="auth-kit-or" role="separator">
-          <span>or email</span>
-        </div>
-        */}
+        {googleEnabled ? (
+          <>
+            <div className="auth-kit-social">
+              <button
+                type="button"
+                className="auth-kit-social-btn"
+                disabled={busy}
+                onClick={onGoogleClick}
+              >
+                <GoogleIcon />
+                Continue with Google
+              </button>
+            </div>
+            <div className="auth-kit-or" role="separator">
+              <span>or email</span>
+            </div>
+          </>
+        ) : null}
 
         <form className="auth-kit-form" onSubmit={onSubmit}>
           {mode === 'signup' ? (
@@ -348,22 +362,6 @@ function AuthCard({
         </p>
       </aside>
     </div>
-  );
-}
-
-function MicrosoftIcon() {
-  return (
-    <svg width={18} height={18} viewBox="0 0 24 24" aria-hidden fill="currentColor">
-      <path d="M3 5.6 10.5 4.5v7.1H3zM11.6 4.3 21 3v8.6h-9.4zM3 12.6h7.5v7.1L3 18.6zM11.6 12.6H21V21l-9.4-1.3z" />
-    </svg>
-  );
-}
-
-function AppleIcon() {
-  return (
-    <svg width={18} height={18} viewBox="0 0 24 24" aria-hidden fill="currentColor">
-      <path d="M16.4 12.7c0-2.6 2.1-3.9 2.2-4-1.2-1.8-3.1-2-3.8-2-1.6-.2-3.1.9-3.9.9s-2.1-.9-3.4-.9c-1.8 0-3.4 1-4.3 2.6-1.8 3.2-.5 7.9 1.3 10.5.9 1.3 1.9 2.7 3.2 2.6 1.3-.05 1.8-.8 3.3-.8s2 .8 3.4.8 2.3-1.3 3.1-2.6c1-1.5 1.4-2.9 1.4-3-.03-.02-2.7-1-2.7-4.1zM14 4.9c.7-.9 1.2-2.1 1-3.3-1 .04-2.3.7-3 1.6-.7.8-1.3 2-1.1 3.2 1.1.08 2.3-.6 3.1-1.5z" />
-    </svg>
   );
 }
 
