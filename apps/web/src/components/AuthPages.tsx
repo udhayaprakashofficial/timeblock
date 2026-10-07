@@ -28,8 +28,9 @@ export function AuthPages() {
   });
 
   const authError = new URLSearchParams(window.location.search).get('authError');
-  // Google sign-in hidden for now (keep auth-config fetch for future re-enable).
-  const googleOAuth = false;
+  const googleOAuth = Boolean(
+    authConfig.data?.googleSignIn || authConfig.data?.googleCalendarOAuth,
+  );
 
   const onSignedIn = (user: UserDto) => {
     qc.setQueryData(['me'], user);
