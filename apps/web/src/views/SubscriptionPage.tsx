@@ -4,7 +4,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UserDto } from '@timeblock/shared-types';
 import { api } from '../api';
-import { buildProCheckoutUrl, catalogFromApi } from '../lib/billing';
+import {
+  buildAnnualWelcomeCheckoutUrl,
+  buildProCheckoutUrl,
+  catalogFromApi,
+} from '../lib/billing';
 import './subscription.css';
 
 type InvoiceRow = {
@@ -204,32 +208,6 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
       ? { amount: '$29', note: '/ year' }
       : { amount: '$11', note: '/ month' };
 
-  const startAnnualCheckout = async () => {
-    setErr(null);
-    setAnnualStarting(true);
-    try {
-      const result = await api.post<{
-        checkoutUrl?: string | null;
-        soldOut?: boolean;
-        error?: string;
-      }>('/api/billing/checkout/annual');
-      if (result.soldOut || !result.checkoutUrl) {
-        setErr(result.error || 'Founding offer sold out');
-        await qc.invalidateQueries({ queryKey: ['billing-config'] });
-        return;
-      }
-      window.location.href = result.checkoutUrl;
-    } catch (e) {
-      setErr(
-        e instanceof Error
-          ? e.message
-          : 'Could not start Annual Welcome checkout',
-      );
-    } finally {
-      setAnnualStarting(false);
-    }
-  };
-
   const badgeLabel = isActive ? 'Active' : isPro ? 'Paid' : 'Free';
   const badgeTone = isActive ? 'is-pro' : isPro ? 'is-pending' : 'is-free';
 
@@ -242,6 +220,62 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
     () => buildProCheckoutUrl(billingCatalog, checkoutCustomer),
     [billingCatalog, checkoutCustomer],
   );
+
+  const startAnnualCheckout = async () => {
+    setErr(null);
+    setAnnualStarting(true);
+    try {
+      if (annualSoldOut) {
+        setErr('Founding offer sold out');
+        return;
+      }
+
+      // New API advertises founding seats on /billing/config. Until that
+      // ships, use the static Annual Welcome Dodo link (never Pro monthly).
+      const foundingApiReady =
+        typeof billingCatalogQuery.data?.annualWelcomeLimit === 'number';
+
+      if (foundingApiReady) {
+        const result = await api.post<{
+          checkoutUrl?: string | null;
+          soldOut?: boolean;
+          error?: string;
+        }>('/api/billing/checkout', { plan: 'annual' });
+        if (result.soldOut) {
+          setErr(result.error || 'Founding offer sold out');
+          await qc.invalidateQueries({ queryKey: ['billing-config'] });
+          return;
+        }
+        if (result.checkoutUrl) {
+          window.location.href = result.checkoutUrl;
+          return;
+        }
+      }
+
+      const fallback = buildAnnualWelcomeCheckoutUrl(
+        billingCatalog,
+        checkoutCustomer,
+      );
+      if (!fallback) {
+        setErr('Could not start Annual Welcome checkout');
+        return;
+      }
+      window.location.href = fallback;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '';
+      const fallback = buildAnnualWelcomeCheckoutUrl(
+        billingCatalog,
+        checkoutCustomer,
+      );
+      if (fallback) {
+        window.location.href = fallback;
+        return;
+      }
+      setErr(msg || 'Could not start Annual Welcome checkout');
+    } finally {
+      setAnnualStarting(false);
+    }
+  };
 
   const refreshPaymentStatus = () => {
     setSyncing(true);
@@ -410,7 +444,7 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
               <p className="sub-plan-seats" role="status">
                 {annualSoldOut
                   ? 'Founding offer sold out'
-                  : `Only ${annualRemaining} of ${annualLimit} founding spots left`}
+                  : `${annualRemaining} of ${annualLimit} spots remaining`}
               </p>
               <ul>
                 {ANNUAL_HIGHLIGHTS.map((f) => (

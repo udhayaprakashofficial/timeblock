@@ -221,29 +221,16 @@ export class BillingController {
     }
   }
 
+  /**
+   * Start Dodo checkout. Body: `{ plan?: 'pro' | 'annual' }` (default pro).
+   * Annual Welcome soft-holds a founding seat server-side before redirecting.
+   */
   @Post('checkout')
   @UseGuards(SessionAuthGuard)
-  async checkout(@Req() req: Request) {
-    const userId = req.session!.userId!;
-    const me = await this.users.getMe(userId);
-    if (me.plan === 'pro') {
-      return { checkoutUrl: null, alreadyPro: true };
-    }
-    const result = await this.billing.createCheckout({
-      userId: me.id,
-      email: me.email,
-      name: me.name,
-    });
-    return { ...result, alreadyPro: false };
-  }
-
-  /**
-   * Annual Welcome founding checkout — server-side seat check before Dodo.
-   * Soft-holds a seat, then returns the checkout URL (or soldOut).
-   */
-  @Post('checkout/annual')
-  @UseGuards(SessionAuthGuard)
-  async checkoutAnnual(@Req() req: Request) {
+  async checkout(
+    @Req() req: Request,
+    @Body() body?: { plan?: string },
+  ) {
     const userId = req.session!.userId!;
     const me = await this.users.getMe(userId);
     if (me.plan === 'pro') {
@@ -254,21 +241,39 @@ export class BillingController {
         remaining: 0,
       };
     }
-    const result = await this.billing.createAnnualWelcomeCheckout({
+
+    const plan = String(body?.plan || 'pro').toLowerCase();
+    if (plan === 'annual' || plan === 'annual_welcome') {
+      const result = await this.billing.createAnnualWelcomeCheckout({
+        userId: me.id,
+        email: me.email,
+        name: me.name,
+      });
+      if (result.soldOut || !result.checkoutUrl) {
+        return {
+          checkoutUrl: null,
+          alreadyPro: false,
+          soldOut: true,
+          remaining: 0,
+          error: 'Founding offer sold out',
+        };
+      }
+      return { ...result, alreadyPro: false };
+    }
+
+    const result = await this.billing.createCheckout({
       userId: me.id,
       email: me.email,
       name: me.name,
     });
-    if (result.soldOut || !result.checkoutUrl) {
-      return {
-        checkoutUrl: null,
-        alreadyPro: false,
-        soldOut: true,
-        remaining: 0,
-        error: 'Founding offer sold out',
-      };
-    }
-    return { ...result, alreadyPro: false };
+    return { ...result, alreadyPro: false, soldOut: false };
+  }
+
+  /** Alias for annual founding checkout (same as POST /checkout { plan: 'annual' }). */
+  @Post('annual-checkout')
+  @UseGuards(SessionAuthGuard)
+  async checkoutAnnual(@Req() req: Request) {
+    return this.checkout(req, { plan: 'annual' });
   }
 
   /**

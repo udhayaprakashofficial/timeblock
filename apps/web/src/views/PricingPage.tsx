@@ -7,6 +7,7 @@ import type { UserDto } from '@timeblock/shared-types';
 import { CupkeyLogo } from '../components/CupkeyLogo';
 import { api } from '../api';
 import {
+  buildAnnualWelcomeCheckoutUrl,
   buildProCheckoutUrl,
   catalogFromApi,
   loginPathBeforeCheckout,
@@ -262,23 +263,51 @@ export function PricingPage({
     setAnnualErr(null);
     setAnnualStarting(true);
     try {
-      const result = await api.post<{
-        checkoutUrl?: string | null;
-        soldOut?: boolean;
-        error?: string;
-      }>('/api/billing/checkout/annual');
-      if (result.soldOut || !result.checkoutUrl) {
-        setAnnualErr(result.error || 'Founding offer sold out');
-        await qc.invalidateQueries({ queryKey: ['billing-config'] });
+      if (welcomeSoldOut) {
+        setAnnualErr('Founding offer sold out');
         return;
       }
-      window.location.href = result.checkoutUrl;
-    } catch (e) {
-      setAnnualErr(
-        e instanceof Error
-          ? e.message
-          : 'Could not start Annual Welcome checkout',
+
+      const foundingApiReady =
+        typeof billingCatalogQuery.data?.annualWelcomeLimit === 'number';
+
+      if (foundingApiReady) {
+        const result = await api.post<{
+          checkoutUrl?: string | null;
+          soldOut?: boolean;
+          error?: string;
+        }>('/api/billing/checkout', { plan: 'annual' });
+        if (result.soldOut) {
+          setAnnualErr(result.error || 'Founding offer sold out');
+          await qc.invalidateQueries({ queryKey: ['billing-config'] });
+          return;
+        }
+        if (result.checkoutUrl) {
+          window.location.href = result.checkoutUrl;
+          return;
+        }
+      }
+
+      const fallback = buildAnnualWelcomeCheckoutUrl(
+        billingCatalog,
+        checkoutCustomer,
       );
+      if (!fallback) {
+        setAnnualErr('Could not start Annual Welcome checkout');
+        return;
+      }
+      window.location.href = fallback;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '';
+      const fallback = buildAnnualWelcomeCheckoutUrl(
+        billingCatalog,
+        checkoutCustomer,
+      );
+      if (fallback) {
+        window.location.href = fallback;
+        return;
+      }
+      setAnnualErr(msg || 'Could not start Annual Welcome checkout');
     } finally {
       setAnnualStarting(false);
     }
