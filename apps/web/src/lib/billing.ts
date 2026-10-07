@@ -10,10 +10,6 @@ export const FALLBACK_PRO_PRODUCT_ID = 'pdt_0NoD66xtWburRIUH8s6AY';
 export const FALLBACK_ANNUAL_WELCOME_PRODUCT_ID =
   'pdt_0NoLjZzkv1ZVWMngsqIuU';
 
-/** TEMPORARY — ₹1 live smoke test. Remove when told. */
-export const FALLBACK_LIVE_TESTING_PRODUCT_ID =
-  'pdt_0NpAOr1ey195dTkMgmjik';
-
 const FALLBACK_CHECKOUT_BASE =
   'https://test.checkout.dodopayments.com/buy';
 
@@ -21,17 +17,12 @@ export type BillingCatalog = {
   proProductId: string;
   annualWelcomeProductId: string;
   checkoutBase: string;
-  /** TEMPORARY ₹1 live smoke test — remove when told */
-  liveTestingPayment?: boolean;
-  liveTestingProductId?: string;
 };
 
 export const DEFAULT_BILLING_CATALOG: BillingCatalog = {
   proProductId: FALLBACK_PRO_PRODUCT_ID,
   annualWelcomeProductId: FALLBACK_ANNUAL_WELCOME_PRODUCT_ID,
   checkoutBase: FALLBACK_CHECKOUT_BASE,
-  liveTestingPayment: true,
-  liveTestingProductId: FALLBACK_LIVE_TESTING_PRODUCT_ID,
 };
 
 /** Map public /api/billing/config into checkout link builders. */
@@ -39,8 +30,6 @@ export function catalogFromApi(data?: {
   proProductId?: string;
   annualWelcomeProductId?: string;
   checkoutBase?: string;
-  liveTestingPayment?: boolean;
-  liveTestingProductId?: string;
 } | null): BillingCatalog {
   if (!data) return DEFAULT_BILLING_CATALOG;
   return {
@@ -51,10 +40,6 @@ export function catalogFromApi(data?: {
     checkoutBase: (
       data.checkoutBase?.trim() || FALLBACK_CHECKOUT_BASE
     ).replace(/\/$/, ''),
-    // TEMPORARY — always expose ₹1 test product until removed
-    liveTestingPayment: true,
-    liveTestingProductId:
-      data.liveTestingProductId?.trim() || FALLBACK_LIVE_TESTING_PRODUCT_ID,
   };
 }
 
@@ -134,26 +119,6 @@ export function buildAnnualWelcomeCheckoutUrl(
   return buildDodoCheckoutUrl(
     catalog,
     catalog.annualWelcomeProductId,
-    customer,
-    redirectUrl,
-  );
-}
-
-/** TEMPORARY — ₹1 live payment smoke test. Remove when told. */
-const LIVE_TESTING_CHECKOUT_BASE =
-  'https://checkout.dodopayments.com/buy';
-
-export function buildLiveTestingCheckoutUrl(
-  catalog: BillingCatalog = DEFAULT_BILLING_CATALOG,
-  customer?: ProCheckoutCustomer | null,
-  redirectUrl?: string,
-): string {
-  const productId = catalog.liveTestingProductId?.trim();
-  if (!productId) return '';
-  // ₹1 product is Live-mode in Dodo — never open test.checkout (404 not-found).
-  return buildDodoCheckoutUrl(
-    { ...catalog, checkoutBase: LIVE_TESTING_CHECKOUT_BASE },
-    productId,
     customer,
     redirectUrl,
   );

@@ -9,7 +9,6 @@ import {
   buildProCheckoutUrl,
   catalogFromApi,
 } from '../lib/billing';
-import { LiveTestingPaymentBanner } from '../components/LiveTestingPaymentBanner';
 import './subscription.css';
 
 type InvoiceRow = {
@@ -385,9 +384,6 @@ export function SubscriptionPage({ user }: { user: UserDto }) {
                 Get Annual Plan
               </a>
             </article>
-
-            {/* TEMPORARY — remove with LiveTestingPaymentBanner */}
-            <LiveTestingPaymentBanner user={user} variant="card" />
           </div>
 
           {summary.data?.apiKeyConfigured ? (
