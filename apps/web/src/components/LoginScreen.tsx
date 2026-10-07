@@ -28,9 +28,8 @@ export function LoginScreen() {
   });
 
   const authError = new URLSearchParams(window.location.search).get('authError');
-  const googleOAuth = Boolean(
-    authConfig.data?.googleSignIn || authConfig.data?.googleCalendarOAuth,
-  );
+  // Google sign-in hidden for now.
+  const googleOAuth = false;
 
   const onSignedIn = (user: UserDto) => {
     qc.setQueryData(['me'], user);
