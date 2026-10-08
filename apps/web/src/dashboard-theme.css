@@ -27,12 +27,13 @@
 
 /* —— Top bar —— */
 [data-theme='dark'] .topbar {
-  gap: 12px;
+  gap: 20px;
   margin: 0;
-  padding: 12px 16px 10px;
+  padding: 0 20px;
+  height: 52px;
   align-items: center;
   background: #0a0a0a;
-  border-bottom: 1px solid #141414;
+  border-bottom: 1px solid #1c1c1c;
 }
 
 [data-theme='dark'] .topbar-brand-name {
@@ -48,40 +49,49 @@
 }
 
 [data-theme='dark'] .topbar-greeting {
-  max-width: 280px;
+  max-width: 200px;
 }
 
 [data-theme='dark'] .topbar-date {
   display: block;
-  font-size: 0.62rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: 0.6875rem;
+  letter-spacing: 0.01em;
+  text-transform: none;
   color: #6e6e6e;
-  margin-bottom: 3px;
-  font-weight: 600;
+  margin-bottom: 2px;
+  font-weight: 450;
 }
 
 [data-theme='dark'] .topbar-greeting strong {
-  font-family: var(--font-display);
-  font-size: 1.08rem;
-  font-weight: 750;
-  letter-spacing: -0.03em;
-  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: #f2f2f2;
 }
 
 [data-theme='dark'] .search-bar {
-  background: #121212;
-  border: 1px solid #252525;
-  border-radius: 10px;
+  background: #141414;
+  border: 1px solid transparent;
+  border-radius: 6px;
   box-shadow: none;
-  padding: 9px 14px;
+  padding: 0 11px;
+  height: 34px;
   max-width: none;
   flex: 1 1 auto;
   margin: 0;
 }
 
+[data-theme='dark'] .search-bar:focus-within {
+  background: #161616;
+  border-color: #333;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.04);
+}
+
 [data-theme='dark'] .search-bar.is-open {
-  border-radius: 12px 12px 0 0;
+  border-radius: 6px 6px 0 0;
+  background: #161616;
+  border-color: #333;
+  box-shadow: none;
 }
 
 [data-theme='dark'] .search-bar input {
@@ -93,8 +103,9 @@
 }
 
 [data-theme='dark'] .search-results {
-  background: #121212;
-  border-color: #252525;
+  background: #161616;
+  border-color: #333;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
 }
 
 [data-theme='dark'] .search-hit:hover,
@@ -108,34 +119,64 @@
 }
 
 [data-theme='dark'] .view-toggle {
-  background: #121212;
-  border: 1px solid #252525;
-  border-radius: 10px;
-  padding: 3px;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+[data-theme='dark'] .view-toggle a:hover {
+  background: transparent;
+  color: #eee;
 }
 
 [data-theme='dark'] .view-toggle a.is-active {
-  background: #f4f4f4 !important;
-  color: #111 !important;
-  box-shadow: none;
+  background: transparent !important;
+  color: #f5f5f5 !important;
+  border-bottom-color: #f5f5f5 !important;
+  box-shadow: none !important;
 }
 
 [data-theme='dark'] .topbar-pulse {
-  background: #121212;
-  border-color: #252525;
+  background: transparent;
+  border: none;
 }
 
 [data-theme='dark'] .topbar-pulse-clock strong,
 [data-theme='dark'] .topbar-pulse-item strong {
-  color: #f2f2f2;
+  color: #e8e8e8;
 }
 
 [data-theme='dark'] .topbar-pulse-badges strong {
   color: #ff6a33;
 }
 
-[data-theme='dark'] .topbar-pulse-sep {
-  background: #2a2a2a;
+[data-theme='dark'] .topbar-pulse-item::before,
+[data-theme='dark'] .topbar-pulse-badges::before {
+  color: #555;
+}
+
+[data-theme='dark'] .topbar-utils {
+  border-left-color: #2a2a2a;
+}
+
+[data-theme='dark'] .topbar-util {
+  color: #8a8a8a;
+}
+
+[data-theme='dark'] .topbar-util:hover {
+  color: #eee;
+  background: transparent;
+}
+
+[data-theme='dark'] .topbar-util--demo {
+  color: #fff;
+  background: linear-gradient(135deg, #ff8a50, #ff4d00);
+  box-shadow: 0 4px 14px rgba(255, 77, 0, 0.35);
+}
+
+[data-theme='dark'] .topbar-util--demo:hover {
+  color: #fff;
+  background: #ff4d00;
 }
 
 [data-theme='dark'] .btn-primary {
@@ -662,6 +703,23 @@
   padding: 11px 12px !important;
   gap: 10px;
   align-items: center;
+}
+
+[data-theme='dark'] .queue-list .priority-row.is-editing {
+  grid-template-columns: 28px 40px minmax(0, 1fr) !important;
+  align-items: start;
+}
+
+[data-theme='dark'] .queue-list .priority-row.is-editing .priority-actions {
+  display: none;
+}
+
+[data-theme='dark'] .queue-list .priority-title-input {
+  display: block;
+  width: 100%;
+  background: #141414;
+  border-color: #3a3a3a;
+  color: #f2f2f2;
 }
 
 [data-theme='dark'] .queue-list .priority-row.is-running {

@@ -8,6 +8,8 @@ import {
 import type { TaskDto } from '@timeblock/shared-types';
 import { api } from '../api';
 
+export type TasksPersistStatus = 'idle' | 'saving' | 'saved' | 'error';
+
 export type TasksState = {
   byDate: Record<string, TaskDto[]>;
   backlog: TaskDto[];
@@ -20,6 +22,8 @@ export type TasksState = {
   pendingKeys: string[];
   error: string | null;
   createError: string | null;
+  /** True after at least one mutation finished while no keys remain. */
+  hasSavedOnce: boolean;
 };
 
 const initialState: TasksState = {
@@ -32,7 +36,18 @@ const initialState: TasksState = {
   pendingKeys: [],
   error: null,
   createError: null,
+  hasSavedOnce: false,
 };
+
+export type FetchTasksArg = string | { date: string; force?: boolean };
+
+export function normalizeFetchTasksArg(arg: FetchTasksArg): {
+  date: string;
+  force: boolean;
+} {
+  if (typeof arg === 'string') return { date: arg, force: false };
+  return { date: arg.date, force: Boolean(arg.force) };
+}
 
 function beginDateLoad(state: TasksState, date: string) {
   state.loadingDates[date] = (state.loadingDates[date] ?? 0) + 1;
@@ -88,6 +103,11 @@ function pushPending(state: TasksState, key: string) {
 
 function popPending(state: TasksState, key: string) {
   state.pendingKeys = state.pendingKeys.filter((k) => k !== key);
+  if (state.pendingKeys.length === 0) {
+    state.hasSavedOnce = true;
+    // Successful flush — don't keep a prior mutation error as "Save failed".
+    state.error = null;
+  }
 }
 
 function dayList(state: TasksState, date: string): TaskDto[] {
@@ -144,6 +164,9 @@ const completeIntentById = new Map<
   { epoch: number; status: CompleteStatus }
 >();
 const completeChainById = new Map<string, Promise<unknown>>();
+
+/** Latest patch generation — stale update responses must not clobber Redux. */
+const updateEpochById = new Map<string, number>();
 
 /** Call before optimisticComplete + completeTaskOptimistic. */
 export function beginCompleteIntent(
@@ -205,19 +228,34 @@ function mergeDayPreservingPendingCompletes(
   state.byDate[date] = sortDayTasks(merged);
 }
 
-/** Fetch day tasks — fills Redux cache. */
+/**
+ * Fetch day tasks into Redux.
+ * After a date is hydrated, subsequent fetches are skipped unless `{ force: true }`
+ * so late GETs cannot wipe optimistic creates/edits.
+ */
 export const fetchTasks = createAsyncThunk(
   'tasks/fetchTasks',
-  async (date: string, { rejectWithValue }) => {
+  async (arg: FetchTasksArg, { rejectWithValue }) => {
+    const { date, force } = normalizeFetchTasksArg(arg);
     try {
       const tasks = await api.get<TaskDto[]>(`/api/tasks?date=${date}`);
-      return { date, tasks: asTaskList(tasks) };
+      return { date, tasks: asTaskList(tasks), force };
     } catch (err) {
       return rejectWithValue({
         date,
+        force,
         message: err instanceof Error ? err.message : 'Failed to load tasks',
       });
     }
+  },
+  {
+    condition: (arg, { getState }) => {
+      const { date, force } = normalizeFetchTasksArg(arg);
+      if (force) return true;
+      const tasksState = (getState() as { tasks: TasksState }).tasks;
+      // Initial hydrate only — Redux owns the day after that.
+      return !tasksState.loadedDates[date];
+    },
   },
 );
 
@@ -395,18 +433,22 @@ export const updateTaskOptimistic = createAsyncThunk(
         startTime?: string;
         endTime?: string;
       };
+      epoch?: number;
     },
     { rejectWithValue },
   ) => {
+    const epoch = payload.epoch ?? updateEpochById.get(payload.taskId) ?? 0;
     try {
       const task = await api.patch<TaskDto>(
         `/api/tasks/${payload.taskId}`,
         payload.body,
       );
-      return { date: payload.date, task };
+      return { date: payload.date, task, epoch };
     } catch (err) {
       return rejectWithValue({
         date: payload.date,
+        taskId: payload.taskId,
+        epoch,
         message: err instanceof Error ? err.message : 'Could not update',
       });
     }
@@ -473,7 +515,10 @@ export const removeTaskOptimistic = createAsyncThunk(
   'tasks/remove',
   async (payload: { taskId: string; date: string }, { rejectWithValue }) => {
     try {
-      await api.delete(`/api/tasks/${payload.taskId}`);
+      // Optimistic creates use temp_* ids — nothing to delete on the server yet.
+      if (!payload.taskId.startsWith('temp_')) {
+        await api.delete(`/api/tasks/${payload.taskId}`);
+      }
       return { date: payload.date, taskId: payload.taskId };
     } catch (err) {
       return rejectWithValue({
@@ -669,6 +714,9 @@ const tasksSlice = createSlice({
       if (idx < 0) return;
       list[idx] = { ...list[idx], ...action.payload.patch };
       state.byDate[hit.date] = sortDayTasks(list);
+      const epoch = (updateEpochById.get(hit.task.id) ?? 0) + 1;
+      updateEpochById.set(hit.task.id, epoch);
+      pushPending(state, `update:${hit.task.id}`);
     },
     optimisticRemoveFromDay(
       state,
@@ -751,15 +799,23 @@ const tasksSlice = createSlice({
   extraReducers: (builder) => {
     builder
       .addCase(fetchTasks.pending, (state, action) => {
-        beginDateLoad(state, action.meta.arg);
+        const { date } = normalizeFetchTasksArg(action.meta.arg);
+        beginDateLoad(state, date);
         state.error = null;
       })
       .addCase(fetchTasks.fulfilled, (state, action) => {
         const incoming = asTaskList(action.payload?.tasks);
         const date = action.payload?.date;
+        const force = Boolean(action.payload?.force);
         if (!date) return;
         endDateLoad(state, date);
         delete state.loadErrors[date];
+
+        // After initial hydrate, ignore GETs unless explicitly forced —
+        // stale responses were wiping reconciled creates (no longer temp_*).
+        if (state.loadedDates[date] && !force) {
+          return;
+        }
         // While a drag-reorder is in flight, don't let a parallel fetch
         // snap the queue back — UI stays on optimistic order.
         if (state.pendingKeys.includes(`reorder:${date}`)) {
@@ -808,7 +864,8 @@ const tasksSlice = createSlice({
         const payload = action.payload as
           | { date?: string; message?: string }
           | undefined;
-        const date = payload?.date ?? action.meta.arg;
+        const date =
+          payload?.date ?? normalizeFetchTasksArg(action.meta.arg).date;
         endDateLoad(state, date);
         const message =
           payload?.message ?? action.error.message ?? 'Failed to load tasks';
@@ -849,18 +906,29 @@ const tasksSlice = createSlice({
       .addCase(createTaskOptimistic.fulfilled, (state, action) => {
         const { date, tempId, task } = action.payload;
         popPending(state, `create:${tempId}`);
-        // Swap temp card for server task instantly (keep plan painted)
-        const withoutTemp = removeTask(dayList(state, date), tempId);
+        // Swap only this temp card — never replace the whole day from the API.
+        const list = dayList(state, date);
+        const tempIdx = list.findIndex((t) => t.id === tempId);
         if (task.inBacklog) {
-          state.byDate[date] = sortDayTasks(withoutTemp);
+          state.byDate[date] = sortDayTasks(removeTask(list, tempId));
           state.backlog = [
             task,
             ...asTaskList(state.backlog).filter((t) => t.id !== task.id),
           ];
-        } else {
-          state.byDate[date] = sortDayTasks(upsertTask(withoutTemp, task));
+        } else if (tempIdx >= 0) {
+          const next = list.slice();
+          next[tempIdx] = {
+            ...task,
+            order: list[tempIdx]!.order,
+            inBacklog: false,
+          };
+          state.byDate[date] = sortDayTasks(next);
+          state.backlog = asTaskList(state.backlog).filter((t) => t.id !== task.id);
+        } else if (!list.some((t) => t.id === task.id)) {
+          state.byDate[date] = sortDayTasks(upsertTask(list, task));
           state.backlog = asTaskList(state.backlog).filter((t) => t.id !== task.id);
         }
+        // If temp already gone and real id exists, keep local row (may be newer).
         state.createError = null;
       })
       .addCase(createTaskOptimistic.rejected, (state, action) => {
@@ -1056,9 +1124,24 @@ const tasksSlice = createSlice({
         }
       })
       .addCase(updateTaskOptimistic.fulfilled, (state, action) => {
+        const taskId = action.payload.task.id;
+        const latest = updateEpochById.get(taskId) ?? 0;
+        // Stale PATCH — keep pending key for the newer edit; don't clobber Redux.
+        if (action.payload.epoch !== latest) return;
+        popPending(state, `update:${taskId}`);
         state.byDate[action.payload.date] = sortDayTasks(
           upsertTask(dayList(state, action.payload.date), action.payload.task),
         );
+      })
+      .addCase(updateTaskOptimistic.rejected, (state, action) => {
+        const payload = action.payload as
+          | { taskId?: string; message?: string; epoch?: number }
+          | undefined;
+        const taskId = payload?.taskId ?? action.meta.arg.taskId;
+        const latest = updateEpochById.get(taskId) ?? 0;
+        if (payload?.epoch != null && payload.epoch !== latest) return;
+        popPending(state, `update:${taskId}`);
+        state.error = payload?.message ?? 'Could not update';
       })
       .addCase(moveToBacklogOptimistic.fulfilled, (state, action) => {
         popPending(state, `backlog:${action.payload.task.id}`);
@@ -1161,5 +1244,15 @@ export const selectCreateError = (state: { tasks: TasksState }) =>
 
 export const selectTaskPending = (taskId: string) => (state: { tasks: TasksState }) =>
   state.tasks.pendingKeys.some((k) => k.endsWith(`:${taskId}`));
+
+/** Persistence badge for the topbar — reflects all in-flight mutations. */
+export const selectTasksPersistStatus = (state: {
+  tasks: TasksState;
+}): TasksPersistStatus => {
+  if (state.tasks.pendingKeys.length > 0) return 'saving';
+  if (state.tasks.createError || state.tasks.error) return 'error';
+  if (state.tasks.hasSavedOnce) return 'saved';
+  return 'idle';
+};
 
 export default tasksSlice.reducer;

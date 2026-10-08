@@ -20,6 +20,7 @@ import { ThemeForceLight, ThemeSeed, useTheme } from './theme';
 import { RightPanel } from './components/RightPanel';
 import { TopbarPulse } from './components/TopbarPulse';
 import { TopbarSearch } from './components/TopbarSearch';
+import { TasksPersistStatus } from './components/TasksPersistStatus';
 import { CupkeyLogo } from './components/CupkeyLogo';
 import { BootProgressScreen } from './components/BootProgressScreen';
 import { HINTS } from './components/ui-hints/hints';
@@ -649,9 +650,14 @@ function Shell({
             {greet}, {firstName}
           </strong>
         </div>
-        <TopbarSearch timeZone={displayUser.timezone} />
+
+        <div className="topbar-center">
+          <TopbarSearch timeZone={displayUser.timezone} />
+          <TasksPersistStatus />
+        </div>
+
         <div className="topbar-actions">
-          <div className="view-toggle" aria-label="View">
+          <nav className="view-toggle" aria-label="View">
             <Link
               href="/schedule"
               className={pathname.startsWith('/schedule') ? 'is-active' : undefined}
@@ -670,28 +676,32 @@ function Shell({
             >
               Sessions
             </Link>
-          </div>
+          </nav>
+
           <TopbarPulse timeZone={displayUser.timezone} />
-          <a
-            className="btn btn-outline btn-pill topbar-demo"
-            href="https://cal.com/cupkey/30min"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Demo
-          </a>
-          <button
-            className="btn btn-outline btn-pill topbar-theme"
-            type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onToggleTheme();
-            }}
-            aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
-          >
-            {theme === 'light' ? 'Dark' : 'Light'}
-          </button>
+
+          <div className="topbar-utils">
+            <a
+              className="topbar-util topbar-util--demo"
+              href="https://cal.com/cupkey/30min"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Demo
+            </a>
+            <button
+              className="topbar-util"
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onToggleTheme();
+              }}
+              aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
+            >
+              {theme === 'light' ? 'Dark' : 'Light'}
+            </button>
+          </div>
         </div>
       </header>
 

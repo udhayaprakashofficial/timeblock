@@ -524,7 +524,7 @@ export function OnboardingFlow({
       qc.setQueryData(['schedule'], result.scheduleSeed);
       qc.setQueryData(['me'], result.user);
       // Warm stats/tasks in parallel with navigation (gate stays up until ready).
-      void dispatch(fetchTasks(result.date));
+      void dispatch(fetchTasks({ date: result.date, force: true }));
       void dispatch(fetchStats(result.date)).then((action) => {
         if (fetchStats.fulfilled.match(action)) {
           qc.setQueryData(['stats', result.date], action.payload.stats);

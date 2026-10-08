@@ -288,6 +288,28 @@ function ParkIcon({ size = 16 }: { size?: number }) {
   );
 }
 
+function DeleteIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M19 6l-1 14H6L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  );
+}
+
 const DURATION_MIN = 5;
 const DURATION_MAX = 999; // 3 digits
 const DURATION_STEP = 5;
@@ -1435,7 +1457,7 @@ export function TodayPage({
           (result.payload as { message?: string })?.message ||
             'Could not move task — slot may be taken.',
         );
-        void dispatch(fetchTasks(date));
+        void dispatch(fetchTasks({ date, force: true }));
       } else {
         invalidateStats();
       }
@@ -2224,7 +2246,7 @@ export function TodayPage({
                         style={{ marginTop: 10 }}
                         onClick={() => {
                           dispatch(tasksActions.clearLoadError(date));
-                          void dispatch(fetchTasks(date));
+                          void dispatch(fetchTasks({ date, force: true }));
                         }}
                       >
                         Try again
@@ -2597,7 +2619,7 @@ function BacklogSection({
       ) {
         // Soft recovery only on failure — don't thrash the list on success.
         void dispatch(fetchBacklog());
-        void dispatch(fetchTasks(today));
+        void dispatch(fetchTasks({ date: today, force: true }));
       } else {
         onStatsRefresh();
       }
@@ -2745,6 +2767,7 @@ function SortableTask({
   const canStartTimer = !done && !isFutureDay && !otherSessionLive;
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState(task.name);
   const [minsDraft, setMinsDraft] = useState(String(task.estimatedMinutes));
   const [editError, setEditError] = useState<string | null>(null);
@@ -2799,7 +2822,7 @@ function SortableTask({
       onStatsRefresh?.();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Action failed');
-      void dispatch(fetchTasks(task.date));
+      void dispatch(fetchTasks({ date: task.date, force: true }));
       void dispatch(fetchBacklog());
     } finally {
       setActionBusy(false);
@@ -2899,6 +2922,8 @@ function SortableTask({
     });
   };
 
+  const isEditing = editing && !locked && !timerLocked;
+
   return (
     <div
       ref={setNodeRef}
@@ -2910,6 +2935,7 @@ function SortableTask({
         running ? 'is-running' : '',
         isDragging ? 'is-dragging' : '',
         commentsOpen ? 'is-comments-open' : '',
+        isEditing ? 'is-editing' : '',
       ]
         .filter(Boolean)
         .join(' ')}
@@ -2961,8 +2987,8 @@ function SortableTask({
       </button>
 
       <div className="priority-body">
-        <div className="priority-title-row">
-          {editing && !locked && !timerLocked ? (
+        <div className={`priority-title-row${isEditing ? ' is-editing' : ''}`}>
+          {isEditing ? (
             <input
               className="priority-title-input"
               value={nameDraft}
@@ -2977,36 +3003,38 @@ function SortableTask({
               autoFocus
             />
           ) : (
-            <strong
-              className="priority-title"
-              title={
-                timerLocked
-                  ? 'Pause the timer to edit'
-                  : locked
-                    ? undefined
-                    : 'Click to rename'
-              }
-              onClick={() => {
-                if (!locked && !done && !timerLocked) setEditing(true);
-              }}
-              style={{
-                cursor: locked || done || timerLocked ? undefined : 'text',
-              }}
-            >
-              {task.name}
-            </strong>
-          )}
-          {locked && (
-            <MeetSourceBadge
-              sourceProvider={task.sourceProvider}
-              meetLink={task.meetLink}
-            />
-          )}
-          {running && <span className="priority-badge live">Live</span>}
-          {hasNotes && !commentsOpen && (
-            <span className="priority-badge notes" title="Has comments">
-              Notes
-            </span>
+            <>
+              <strong
+                className="priority-title"
+                title={
+                  timerLocked
+                    ? 'Pause the timer to edit'
+                    : locked
+                      ? undefined
+                      : 'Click to rename'
+                }
+                onClick={() => {
+                  if (!locked && !done && !timerLocked) setEditing(true);
+                }}
+                style={{
+                  cursor: locked || done || timerLocked ? undefined : 'text',
+                }}
+              >
+                {task.name}
+              </strong>
+              {locked && (
+                <MeetSourceBadge
+                  sourceProvider={task.sourceProvider}
+                  meetLink={task.meetLink}
+                />
+              )}
+              {running && <span className="priority-badge live">Live</span>}
+              {hasNotes && !commentsOpen && (
+                <span className="priority-badge notes" title="Has comments">
+                  Notes
+                </span>
+              )}
+            </>
           )}
         </div>
         <div className="priority-meta">
@@ -3026,7 +3054,29 @@ function SortableTask({
           <span className="queue-cat">
             {locked || task.meetLink ? 'Meeting' : 'Deep work'}
           </span>
-          {editing && !locked && !timerLocked ? (
+          {!isEditing ? (
+            <button
+              type="button"
+              className="priority-mins-btn"
+              onClick={() => {
+                if (!locked && !done && !timerLocked) setEditing(true);
+              }}
+              disabled={locked || done || timerLocked}
+              title={
+                timerLocked
+                  ? 'Pause the timer to change duration'
+                  : locked
+                    ? undefined
+                    : 'Edit duration'
+              }
+            >
+              {task.estimatedMinutes}m
+            </button>
+          ) : null}
+          {task.actualMinutes > 0 ? ` · ${Math.round(task.actualMinutes)}m actual` : ''}
+        </div>
+        {isEditing ? (
+          <div className="priority-edit-bar">
             <span className="priority-time-edit" aria-label="Task duration">
               <input
                 className="priority-mins-input"
@@ -3075,27 +3125,6 @@ function SortableTask({
               />
               <span>m</span>
             </span>
-          ) : (
-            <button
-              type="button"
-              className="priority-mins-btn"
-              onClick={() => {
-                if (!locked && !done && !timerLocked) setEditing(true);
-              }}
-              disabled={locked || done || timerLocked}
-              title={
-                timerLocked
-                  ? 'Pause the timer to change duration'
-                  : locked
-                    ? undefined
-                    : 'Edit duration'
-              }
-            >
-              {task.estimatedMinutes}m
-            </button>
-          )}
-          {task.actualMinutes > 0 ? ` · ${Math.round(task.actualMinutes)}m actual` : ''}
-          {editing && !locked && !timerLocked && (
             <span className="priority-edit-actions">
               <button
                 type="button"
@@ -3113,8 +3142,8 @@ function SortableTask({
                 Cancel
               </button>
             </span>
-          )}
-        </div>
+          </div>
+        ) : null}
         {actionError && (
           <div className="priority-error">{editError || actionError}</div>
         )}
@@ -3263,6 +3292,19 @@ function SortableTask({
             </button>
           </UiTooltip>
         )}
+        {!timerLocked && (
+          <UiTooltip label="Delete task" placement="top">
+            <button
+              className="btn btn-ghost btn-pill btn-sm priority-icon-btn priority-icon-btn--danger"
+              type="button"
+              disabled={busy}
+              aria-label="Delete task"
+              onClick={() => setDeleteOpen(true)}
+            >
+              <DeleteIcon />
+            </button>
+          </UiTooltip>
+        )}
         {running ? (
           <button
             className="btn btn-outline btn-pill btn-sm"
@@ -3307,6 +3349,67 @@ function SortableTask({
           </button>
         )}
       </div>
+
+      {deleteOpen ? (
+        <div
+          className="overflow-modal-backdrop"
+          role="presentation"
+          onClick={() => {
+            if (busy) return;
+            setDeleteOpen(false);
+          }}
+        >
+          <div
+            className="overflow-modal confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`delete-task-title-${task.id}`}
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <p className="overflow-modal-kicker">Delete task</p>
+            <h2 id={`delete-task-title-${task.id}`}>
+              Delete “{task.name}”?
+            </h2>
+            <p className="overflow-modal-body">
+              This removes it from your queue. You can’t undo this.
+            </p>
+            <div className="overflow-modal-actions confirm-modal-actions">
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={busy}
+                onClick={() => {
+                  setDeleteOpen(false);
+                  void runAction(async () => {
+                    dispatch(
+                      tasksActions.optimisticRemoveFromDay({
+                        taskId: task.id,
+                        date: task.date,
+                      }),
+                    );
+                    await dispatch(
+                      removeTaskOptimistic({
+                        taskId: task.id,
+                        date: task.date,
+                      }),
+                    );
+                  });
+                }}
+              >
+                Delete
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={busy}
+                onClick={() => setDeleteOpen(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

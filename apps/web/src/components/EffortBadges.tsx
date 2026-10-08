@@ -50,7 +50,7 @@ function progressLabel(badge: EffortBadgeDto): string {
   }
 
   if (progress.target === 100) {
-    return `${progress.current}%`;
+    return progress.current > 0 ? 'Progress' : 'Not started';
   }
 
   return `${progress.current} / ${progress.target}`;

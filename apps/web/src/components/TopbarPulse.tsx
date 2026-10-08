@@ -49,7 +49,6 @@ export function TopbarPulse({ timeZone }: { timeZone?: string | null }) {
         <span className="topbar-pulse-label">Now</span>
         <strong>{clock}</strong>
       </div>
-      <span className="topbar-pulse-sep" aria-hidden />
       <div className="topbar-pulse-item" title="Day utilization">
         <span className="topbar-pulse-label">Load</span>
         <strong>{util == null ? '—' : `${util}%`}</strong>

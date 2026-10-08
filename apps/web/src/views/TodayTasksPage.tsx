@@ -286,6 +286,7 @@ function TaskDetail({
   const [minsDraft, setMinsDraft] = useState(String(task.estimatedMinutes));
   const [notesDraft, setNotesDraft] = useState(task.notes ?? '');
   const [comment, setComment] = useState('');
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   useEffect(() => {
     setNameDraft(task.name);
@@ -524,16 +525,55 @@ function TaskDetail({
             type="button"
             className="btn btn-ghost tw-delete"
             disabled={busy}
-            onClick={() => {
-              if (window.confirm(`Delete “${task.name}”?`)) {
-                remove.mutate();
-              }
-            }}
+            onClick={() => setDeleteOpen(true)}
           >
             Delete
           </button>
         )}
       </div>
+
+      {deleteOpen ? (
+        <div
+          className="overflow-modal-backdrop"
+          role="presentation"
+          onClick={() => {
+            if (remove.isPending) return;
+            setDeleteOpen(false);
+          }}
+        >
+          <div
+            className="overflow-modal confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`tw-delete-title-${task.id}`}
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <p className="overflow-modal-kicker">Delete task</p>
+            <h2 id={`tw-delete-title-${task.id}`}>Delete “{task.name}”?</h2>
+            <p className="overflow-modal-body">
+              This removes it from your queue. You can’t undo this.
+            </p>
+            <div className="overflow-modal-actions confirm-modal-actions">
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={remove.isPending}
+                onClick={() => remove.mutate()}
+              >
+                {remove.isPending ? 'Deleting…' : 'Delete'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={remove.isPending}
+                onClick={() => setDeleteOpen(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
