@@ -148,6 +148,7 @@ function initials(name: string) {
 }
 
 const FEEDBACK_URL = 'https://cupkey.featurebase.app/';
+const DEMO_URL = 'https://cal.com/cupkey/30min';
 
 function NavItem({
   href,
@@ -184,9 +185,10 @@ function NavItem({
 function RailAvatar({ name, userId }: { name: string; userId: string }) {
   const [photo, setPhoto] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
-  const [coords, setCoords] = useState<{ top: number; left: number } | null>(
-    null,
-  );
+  const [coords, setCoords] = useState<{
+    bottom: number;
+    left: number;
+  } | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const closeTimer = useRef<number | null>(null);
 
@@ -199,8 +201,9 @@ function RailAvatar({ name, userId }: { name: string; userId: string }) {
     const el = wrapRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
+    // Grow upward from the avatar so the full menu stays on-screen
     setCoords({
-      top: r.top + r.height / 2,
+      bottom: Math.max(12, window.innerHeight - r.bottom),
       left: r.right + 12,
     });
   }, []);
@@ -250,6 +253,7 @@ function RailAvatar({ name, userId }: { name: string; userId: string }) {
     },
     { href: '/settings?panel=help', label: 'Help', external: false },
     { href: FEEDBACK_URL, label: 'Feedback', external: true },
+    { href: DEMO_URL, label: 'Demo', external: true },
   ] as const;
 
   return (
@@ -280,7 +284,7 @@ function RailAvatar({ name, userId }: { name: string; userId: string }) {
             role="menu"
             aria-label="Account"
             style={{
-              top: coords.top,
+              bottom: coords.bottom,
               left: coords.left,
             }}
             onMouseEnter={openMenu}
@@ -683,7 +687,7 @@ function Shell({
           <div className="topbar-utils">
             <a
               className="topbar-util topbar-util--demo"
-              href="https://cal.com/cupkey/30min"
+              href={DEMO_URL}
               target="_blank"
               rel="noopener noreferrer"
             >
