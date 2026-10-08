@@ -672,6 +672,14 @@ function Shell({
             </Link>
           </div>
           <TopbarPulse timeZone={displayUser.timezone} />
+          <a
+            className="btn btn-outline btn-pill topbar-demo"
+            href="https://cal.com/cupkey/30min"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Demo
+          </a>
           <button
             className="btn btn-outline btn-pill topbar-theme"
             type="button"

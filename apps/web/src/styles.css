@@ -992,8 +992,15 @@ body:has(.landing) {
   background: var(--border);
 }
 
+.topbar-demo,
 .topbar-theme {
   flex-shrink: 0;
+}
+
+a.topbar-demo {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
 }
 
 .page-title {
