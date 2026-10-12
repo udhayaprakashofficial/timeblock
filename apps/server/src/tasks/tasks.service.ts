@@ -1762,17 +1762,23 @@ export class TasksService {
         where: { id: taskId },
         data,
       });
-      const refreshed = await this.prisma.task.findUnique({
+      let refreshed = await this.prisma.task.findUnique({
         where: { id: taskId },
         include: { timeEntries: true },
       });
-      const next = this.mapTask(refreshed!);
+      let next = this.mapTask(refreshed!);
       if (!next.inBacklog) {
         await this.scheduler.rescheduleDay(userId, next.date);
       }
       if (prevDate !== next.date && !existing.inBacklog) {
         await this.scheduler.rescheduleDay(userId, prevDate);
       }
+      // Return post-reschedule times so clients don't briefly lose the slot.
+      refreshed = await this.prisma.task.findUnique({
+        where: { id: taskId },
+        include: { timeEntries: true },
+      });
+      if (refreshed) next = this.mapTask(refreshed);
       return next;
     } catch (err) {
       if (

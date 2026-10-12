@@ -2883,16 +2883,43 @@ function SortableTask({
     const body: {
       name?: string;
       estimatedMinutes?: number;
+      startTime?: string;
+      endTime?: string;
     } = {};
-    if (name !== task.name) body.name = name;
+    const patch: Partial<TaskDto> = {};
+    if (name !== task.name) {
+      body.name = name;
+      patch.name = name;
+    }
 
     const mins = Number(minsDraft);
     if (!Number.isFinite(mins) || mins < 5) {
       setEditError('Duration must be at least 5 minutes.');
       return;
     }
-    if (Math.round(mins) !== task.estimatedMinutes) {
-      body.estimatedMinutes = Math.round(mins);
+    const nextMins = Math.round(mins);
+    const durationChanged = nextMins !== task.estimatedMinutes;
+    if (durationChanged) {
+      body.estimatedMinutes = nextMins;
+      patch.estimatedMinutes = nextMins;
+
+      // Keep timeline in sync with Redux immediately — resize the existing
+      // slot from scheduledStart rather than waiting for a server repack.
+      if (
+        !locked &&
+        task.scheduledStart &&
+        !task.activeEntryId &&
+        task.status !== 'completed'
+      ) {
+        const startMin = minutesOf(task.scheduledStart, timeZone);
+        const endMin = startMin + nextMins;
+        if (endMin > startMin && endMin <= 24 * 60) {
+          patch.scheduledStart = isoFromMinutes(task.date, startMin);
+          patch.scheduledEnd = isoFromMinutes(task.date, endMin);
+          body.startTime = formatHm(startMin);
+          body.endTime = formatHm(endMin);
+        }
+      }
     }
 
     if (!Object.keys(body).length) {
@@ -2905,19 +2932,23 @@ function SortableTask({
       dispatch(
         tasksActions.optimisticPatch({
           taskId: task.id,
-          patch: {
-            name: body.name ?? task.name,
-            estimatedMinutes: body.estimatedMinutes ?? task.estimatedMinutes,
-          },
+          patch,
         }),
       );
-      await dispatch(
+      const result = await dispatch(
         updateTaskOptimistic({
           taskId: task.id,
           date: task.date,
           body,
         }),
       );
+      // Duration changes can move siblings on the server — refresh the day.
+      if (
+        durationChanged &&
+        !updateTaskOptimistic.rejected.match(result)
+      ) {
+        void dispatch(fetchTasks({ date: task.date, force: true }));
+      }
       setEditing(false);
     });
   };

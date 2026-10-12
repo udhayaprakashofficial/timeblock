@@ -1129,8 +1129,27 @@ const tasksSlice = createSlice({
         // Stale PATCH — keep pending key for the newer edit; don't clobber Redux.
         if (action.payload.epoch !== latest) return;
         popPending(state, `update:${taskId}`);
+        const incoming = action.payload.task;
+        const current = findTask(state, taskId)?.task;
+        // If the API briefly returns cleared schedule times after a duration
+        // edit, keep the optimistic slot so the timeline doesn't flash empty.
+        const merged =
+          current &&
+          current.scheduledStart &&
+          current.scheduledEnd &&
+          !incoming.scheduledStart &&
+          !incoming.scheduledEnd &&
+          !incoming.inBacklog
+            ? {
+                ...incoming,
+                scheduledStart: current.scheduledStart,
+                scheduledEnd: current.scheduledEnd,
+                estimatedMinutes:
+                  incoming.estimatedMinutes || current.estimatedMinutes,
+              }
+            : incoming;
         state.byDate[action.payload.date] = sortDayTasks(
-          upsertTask(dayList(state, action.payload.date), action.payload.task),
+          upsertTask(dayList(state, action.payload.date), merged),
         );
       })
       .addCase(updateTaskOptimistic.rejected, (state, action) => {
