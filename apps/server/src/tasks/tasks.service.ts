@@ -7,6 +7,8 @@ import type {
   TaskDto,
   UpdateTaskDto,
   Weekday,
+  WorkHistoryDto,
+  WorkHistoryItemDto,
 } from '@timeblock/shared-types';
 import { PrismaService } from '../prisma/prisma.service';
 import { SchedulerService } from './scheduler.service';
@@ -24,6 +26,17 @@ import {
   yesterdayInTimeZone,
 } from '../common/time.util';
 import { rangesOverlap } from '../common/time.util';
+import { isActiveProUser } from '../ai/ai-credits';
+import {
+  HOMER_MIN_TASK_NOTES,
+  taskHasHomerNotes,
+} from '../ai/homer-notes';
+
+function trimCareer(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const s = String(value).trim();
+  return s || null;
+}
 
 type ResolvedCreate = CreateTaskDto & {
   name: string;
@@ -385,6 +398,12 @@ export class TasksService {
     for (const t of candidates) {
       this.local.scheduleFromBacklog(userId, t.id, today);
     }
+    // Match Supabase path — pack into work hours so The plan gets times.
+    this.local.rescheduleDayPublic(userId, today, {
+      repackUnlocked: true,
+      ignorePackingFloor: true,
+      allowOvertime: true,
+    });
   }
 
   /** Names seeded by onboarding — keep dashboard plan aligned with the preview. */
@@ -552,6 +571,162 @@ export class TasksService {
     }
 
     if (changed) TasksService.onboardAlignDone.add(key);
+  }
+
+  /**
+   * Finished work for Homer.
+   * Free: last 90 days (no keyword search).
+   * Pro: full searchable history.
+   */
+  async searchFinishedHistory(
+    userId: string,
+    opts: { q?: string; from?: string; to?: string },
+  ): Promise<WorkHistoryDto> {
+    const tz = await this.resolveTimeZone(userId);
+    const today = todayInTimeZone(tz);
+    const isPro = await this.resolveIsPro(userId);
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(String(opts.to ?? ''))
+      ? String(opts.to)
+      : today;
+    const maxDays = isPro ? 1825 : 90;
+    const fromAnchor = new Date(`${to}T12:00:00.000Z`);
+    fromAnchor.setUTCDate(fromAnchor.getUTCDate() - maxDays);
+    const fromDefault = formatDateOnly(fromAnchor);
+    let from = /^\d{4}-\d{2}-\d{2}$/.test(String(opts.from ?? ''))
+      ? String(opts.from)
+      : fromDefault;
+    if (from < fromDefault) from = fromDefault;
+    if (from > to) {
+      throw new BadRequestException('from must be on or before to');
+    }
+    const wantedQuery = String(opts.q ?? '').trim();
+    const query = isPro ? wantedQuery : '';
+
+    const all = await this.loadTasksInRange(userId, from, to);
+    const needle = query.toLowerCase();
+    const items: WorkHistoryItemDto[] = all
+      .filter((t) => t.status === 'completed')
+      .filter((t) => {
+        if (!needle) return true;
+        const hay = [
+          t.name,
+          t.notes,
+          t.careerProject,
+          t.careerResponsibility,
+          t.careerAchievement,
+          t.careerContribution,
+          t.careerOutcome,
+        ]
+          .filter(Boolean)
+          .join('\n')
+          .toLowerCase();
+        return hay.includes(needle);
+      })
+      .sort((a, b) => b.date.localeCompare(a.date) || a.name.localeCompare(b.name))
+      .map((t) => ({
+        id: t.id,
+        date: t.date,
+        name: t.name,
+        estimatedMinutes: t.estimatedMinutes,
+        actualMinutes: t.actualMinutes,
+        notes: t.notes ?? null,
+        careerProject: t.careerProject ?? null,
+        careerResponsibility: t.careerResponsibility ?? null,
+        careerAchievement: t.careerAchievement ?? null,
+        careerContribution: t.careerContribution ?? null,
+        careerOutcome: t.careerOutcome ?? null,
+        scheduledStart: t.scheduledStart ?? null,
+        scheduledEnd: t.scheduledEnd ?? null,
+      }));
+
+    const readiness = await this.homerNotesReadiness(userId, today);
+
+    return {
+      from,
+      to,
+      query,
+      total: items.length,
+      items,
+      hasAccess: isPro,
+      reason: isPro
+        ? null
+        : 'Searchable history across your full archive is a Pro feature. Free includes the last 90 days for Homer.',
+      notedTaskCount: readiness.notedTaskCount,
+      homerMinNotes: readiness.homerMinNotes,
+      homerReady: readiness.homerReady,
+    };
+  }
+
+  /** Account-wide Homer unlock progress (last ~5 years of finished work). */
+  async homerNotesReadiness(
+    userId: string,
+    today = todayInTimeZone('UTC'),
+  ): Promise<{
+    notedTaskCount: number;
+    homerMinNotes: number;
+    homerReady: boolean;
+  }> {
+    const fromAnchor = new Date(`${today}T12:00:00.000Z`);
+    fromAnchor.setUTCDate(fromAnchor.getUTCDate() - 1825);
+    const from = formatDateOnly(fromAnchor);
+    const all = await this.loadTasksInRange(userId, from, today);
+    const notedTaskCount = all.filter(
+      (t) => t.status === 'completed' && taskHasHomerNotes(t),
+    ).length;
+    return {
+      notedTaskCount,
+      homerMinNotes: HOMER_MIN_TASK_NOTES,
+      homerReady: notedTaskCount >= HOMER_MIN_TASK_NOTES,
+    };
+  }
+
+  private async resolveIsPro(userId: string): Promise<boolean> {
+    try {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { plan: true, planStatus: true },
+      });
+      if (user) return isActiveProUser(user);
+    } catch {
+      /* DB unavailable */
+    }
+    return false;
+  }
+
+  private async loadTasksInRange(
+    userId: string,
+    from: string,
+    to: string,
+  ): Promise<TaskDto[]> {
+    const fromDb = await this.viaDb(userId, async (id) => {
+      const rows = await this.supabase.listTasksInRange(id, from, to);
+      return rows.map((t) => {
+        const { _entries: _e, ...dto } = t as TaskDto & {
+          _entries?: unknown;
+        };
+        return dto as TaskDto;
+      });
+    });
+    if (fromDb) return fromDb;
+
+    if (userId.startsWith('local_')) {
+      return this.local.listTasksInRange(userId, from, to);
+    }
+
+    try {
+      const tasks = await this.prisma.task.findMany({
+        where: {
+          userId,
+          inBacklog: false,
+          date: { gte: dateOnly(from), lte: dateOnly(to) },
+        },
+        include: { timeEntries: true },
+        orderBy: [{ date: 'desc' }, { order: 'asc' }],
+      });
+      return tasks.map((t) => this.mapTask(t));
+    } catch {
+      return this.local.listTasksInRange(userId, from, to);
+    }
   }
 
   async list(userId: string, dateStr: string): Promise<TaskDto[]> {
@@ -1619,6 +1794,11 @@ export class TasksService {
   ): Promise<TaskDto> {
     const hasField =
       dto.notes !== undefined ||
+      dto.careerProject !== undefined ||
+      dto.careerResponsibility !== undefined ||
+      dto.careerAchievement !== undefined ||
+      dto.careerContribution !== undefined ||
+      dto.careerOutcome !== undefined ||
       dto.name !== undefined ||
       dto.estimatedMinutes !== undefined ||
       dto.startTime !== undefined ||
@@ -1674,6 +1854,21 @@ export class TasksService {
       if (dto.notes !== undefined) {
         data.notes =
           dto.notes == null ? null : String(dto.notes).trim() || null;
+      }
+      if (dto.careerProject !== undefined) {
+        data.careerProject = trimCareer(dto.careerProject);
+      }
+      if (dto.careerResponsibility !== undefined) {
+        data.careerResponsibility = trimCareer(dto.careerResponsibility);
+      }
+      if (dto.careerAchievement !== undefined) {
+        data.careerAchievement = trimCareer(dto.careerAchievement);
+      }
+      if (dto.careerContribution !== undefined) {
+        data.careerContribution = trimCareer(dto.careerContribution);
+      }
+      if (dto.careerOutcome !== undefined) {
+        data.careerOutcome = trimCareer(dto.careerOutcome);
       }
       if (dto.estimatedMinutes !== undefined) {
         const n = Number(dto.estimatedMinutes);
@@ -1801,6 +1996,11 @@ export class TasksService {
     scheduledStart: Date | null;
     scheduledEnd: Date | null;
     notes?: string | null;
+    careerProject?: string | null;
+    careerResponsibility?: string | null;
+    careerAchievement?: string | null;
+    careerContribution?: string | null;
+    careerOutcome?: string | null;
     meetLink?: string | null;
     scheduleLocked?: boolean;
     sourceProvider?: string | null;
@@ -1835,6 +2035,11 @@ export class TasksService {
       activeEntryId: active?.id ?? null,
       timerStartedAt: active?.startedAt?.toISOString() ?? null,
       notes: t.notes ?? null,
+      careerProject: t.careerProject ?? null,
+      careerResponsibility: t.careerResponsibility ?? null,
+      careerAchievement: t.careerAchievement ?? null,
+      careerContribution: t.careerContribution ?? null,
+      careerOutcome: t.careerOutcome ?? null,
       meetLink: t.meetLink ?? null,
       scheduleLocked: Boolean(t.scheduleLocked),
       sourceProvider: t.sourceProvider ?? null,

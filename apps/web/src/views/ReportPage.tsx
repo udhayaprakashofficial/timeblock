@@ -300,6 +300,7 @@ export function ReportPage({ timeZone }: { timeZone?: string | null }) {
         onClose={() => setShareOpen(false)}
         week={shareWeek}
         initialTab="linkedin"
+        timeZone={timeZone}
       />
     </div>
   );

@@ -18,6 +18,8 @@ import type { ThemePreference, UserDto } from '@timeblock/shared-types';
 import { api, detectBrowserTimeZone, AUTH_LOST_EVENT, todayISO } from './api';
 import { ThemeForceLight, ThemeSeed, useTheme } from './theme';
 import { RightPanel } from './components/RightPanel';
+import { AiHubHost } from './components/ai/AiHubHost';
+import { AiCreditsBadge } from './components/ai/AiCreditsBadge';
 import { TopbarPulse } from './components/TopbarPulse';
 import { TopbarSearch } from './components/TopbarSearch';
 import { TasksPersistStatus } from './components/TasksPersistStatus';
@@ -25,7 +27,17 @@ import { CupkeyLogo } from './components/CupkeyLogo';
 import { BootProgressScreen } from './components/BootProgressScreen';
 import { HINTS } from './components/ui-hints/hints';
 import { PinTabNudge } from './components/ui-hints/PinTabNudge';
-import { UiTooltip } from './components/ui-hints/UiTooltip';
+import {
+  IconAdmin,
+  IconBadges,
+  IconLogout,
+  IconPosts,
+  IconReport,
+  IconSchedule,
+  IconSettings,
+  IconTimesheet,
+  IconToday,
+} from './components/NavIcons';
 import { onAvatarChange, readAvatar } from './components/user-avatar';
 import { LoginScreen } from './auth/SignInCard';
 import { UserProvider } from './user-context';
@@ -153,32 +165,35 @@ const DEMO_URL = 'https://cal.com/cupkey/30min';
 function NavItem({
   href,
   exact,
+  matchPrefixes,
   children,
   title,
-  tip,
+  onNavigate,
 }: {
   href: string;
   exact?: boolean;
+  /** Extra path prefixes that count as active (e.g. legacy /history → Homer) */
+  matchPrefixes?: string[];
   children: ReactNode;
   title?: string;
   tip?: string;
+  onNavigate?: () => void;
 }) {
   const pathname = usePathname();
-  const active = exact ? pathname === href : pathname.startsWith(href);
-  const link = (
+  const active = exact
+    ? pathname === href
+    : pathname.startsWith(href) ||
+      (matchPrefixes?.some((p) => pathname.startsWith(p)) ?? false);
+  return (
     <Link
       href={href}
       className={`nav-link${active ? ' active' : ''}`}
       aria-label={title}
+      title={title}
+      onClick={() => onNavigate?.()}
     >
       {children}
     </Link>
-  );
-  if (!title) return link;
-  return (
-    <UiTooltip label={title} body={tip} placement="right" className="nav-tip-wrap">
-      {link}
-    </UiTooltip>
   );
 }
 
@@ -351,19 +366,19 @@ function LogoutButton({ onLoggedOut }: { onLoggedOut: () => void }) {
   };
 
   return (
-    <UiTooltip label="Log out" placement="right" className="nav-tip-wrap">
-      <button
-        className="btn btn-ghost sidebar-logout"
-        type="button"
-        aria-label="Log out"
-        disabled={busy}
-        onClick={() => void logout()}
-      >
-        <span className="nav-icon" aria-hidden>
-          ↩
-        </span>
-      </button>
-    </UiTooltip>
+    <button
+      className="btn btn-ghost sidebar-logout"
+      type="button"
+      aria-label="Log out"
+      title="Log out"
+      disabled={busy}
+      onClick={() => void logout()}
+    >
+      <span className="nav-icon" aria-hidden>
+        <IconLogout />
+      </span>
+      <span className="nav-label">Log out</span>
+    </button>
   );
 }
 
@@ -436,7 +451,47 @@ function Shell({
   const { theme, setTheme } = useTheme();
   const pathname = usePathname();
   const qc = useQueryClient();
+  const [railOpen, setRailOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const closeRail = useCallback(() => {
+    setRailOpen(false);
+    const el = document.activeElement;
+    if (el instanceof HTMLElement && el.closest('.sidebar')) {
+      el.blur();
+    }
+  }, []);
+  const closeMobileNav = useCallback(() => setMobileNavOpen(false), []);
   const offline = typeof user.id === 'string' && user.id.startsWith('local_');
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 800px)');
+    const sync = () => {
+      setIsMobile(mq.matches);
+      if (!mq.matches) setMobileNavOpen(false);
+    };
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileNavOpen(false);
+    };
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [mobileNavOpen]);
   const firstName = user.name.split(/\s+/)[0] || user.name;
   const browserTz = useMemo(() => detectBrowserTimeZone(), []);
   const displayUser = useMemo(
@@ -554,19 +609,68 @@ function Shell({
         pathname.startsWith('/settings') ||
         pathname.startsWith('/pricing') ||
         pathname.startsWith('/subscription') ||
-        pathname.startsWith('/admin')
+        pathname.startsWith('/admin') ||
+        pathname.startsWith('/posts') ||
+        pathname.startsWith('/spotlight') ||
+        pathname.startsWith('/history') ||
+        pathname.startsWith('/homer')
           ? ' is-wide'
           : ''
       }${pathname.startsWith('/badges') ? ' is-badges' : ''}${
         pathname.startsWith('/settings') ? ' is-settings' : ''
       }${pathname.startsWith('/pricing') || pathname.startsWith('/subscription') ? ' is-pricing' : ''}${
         pathname.startsWith('/admin') ? ' is-admin' : ''
+      }${
+        pathname.startsWith('/posts') || pathname.startsWith('/spotlight')
+          ? ' is-posts'
+          : ''
+      }${
+        pathname.startsWith('/history') || pathname.startsWith('/homer')
+          ? ' is-history'
+          : ''
       }`}
     >
-      <aside className="sidebar" aria-label="Primary">
-        <Link href="/schedule" className="brand" aria-label="Cupkey home">
-          <CupkeyLogo size={54} className="brand-logo" title="Cupkey" />
-        </Link>
+      {mobileNavOpen ? (
+        <button
+          type="button"
+          className="sidebar-backdrop"
+          aria-label="Close menu"
+          onClick={closeMobileNav}
+        />
+      ) : null}
+
+      <aside
+        id="primary-nav"
+        className={`sidebar${railOpen && !isMobile ? ' is-open' : ''}${
+          mobileNavOpen ? ' is-mobile-open' : ''
+        }`}
+        aria-label="Primary"
+        onMouseEnter={() => {
+          if (!isMobile) setRailOpen(true);
+        }}
+        onMouseLeave={() => {
+          if (!isMobile) closeRail();
+        }}
+      >
+        <div className="sidebar-mobile-head">
+          <Link
+            href="/schedule"
+            className="brand"
+            aria-label="Cupkey home"
+            onClick={closeMobileNav}
+          >
+            <CupkeyLogo size={44} className="brand-logo" title="Cupkey" />
+            <span className="brand-name">Cupkey</span>
+          </Link>
+          <button
+            type="button"
+            className="sidebar-mobile-close"
+            aria-label="Close menu"
+            onClick={closeMobileNav}
+          >
+            ✕
+          </button>
+        </div>
 
         <nav className="nav">
           <NavItem
@@ -574,9 +678,10 @@ function Shell({
             exact
             title={HINTS['nav.schedule'].title}
             tip={HINTS['nav.schedule'].body}
+            onNavigate={closeMobileNav}
           >
             <span className="nav-icon" aria-hidden>
-              ▦
+              <IconSchedule />
             </span>
             <span className="nav-label">Schedule</span>
           </NavItem>
@@ -584,29 +689,56 @@ function Shell({
             href="/today"
             title={HINTS['nav.today'].title}
             tip={HINTS['nav.today'].body}
+            onNavigate={closeMobileNav}
           >
             <span className="nav-icon" aria-hidden>
-              ▣
+              <IconToday />
             </span>
-            <span className="nav-label">Today</span>
+            <span className="nav-label">Tasks</span>
           </NavItem>
           <NavItem
             href="/report"
             title={HINTS['nav.report'].title}
             tip={HINTS['nav.report'].body}
+            onNavigate={closeMobileNav}
           >
             <span className="nav-icon" aria-hidden>
-              ↗
+              <IconReport />
             </span>
             <span className="nav-label">Report</span>
+          </NavItem>
+          <NavItem
+            href="/homer"
+            matchPrefixes={['/history']}
+            title={HINTS['nav.history'].title}
+            tip={HINTS['nav.history'].body}
+            onNavigate={closeMobileNav}
+          >
+            <span className="nav-icon nav-icon--homer" aria-hidden>
+              <img src="/homer-bust.webp" alt="" width={22} height={22} />
+            </span>
+            <span className="nav-label">Homer</span>
+          </NavItem>
+          <NavItem
+            href="/spotlight"
+            matchPrefixes={['/posts']}
+            title={HINTS['nav.posts'].title}
+            tip={HINTS['nav.posts'].body}
+            onNavigate={closeMobileNav}
+          >
+            <span className="nav-icon" aria-hidden>
+              <IconPosts />
+            </span>
+            <span className="nav-label">Spotlight</span>
           </NavItem>
           <NavItem
             href="/timesheet"
             title={HINTS['nav.timesheet'].title}
             tip={HINTS['nav.timesheet'].body}
+            onNavigate={closeMobileNav}
           >
             <span className="nav-icon" aria-hidden>
-              ☰
+              <IconTimesheet />
             </span>
             <span className="nav-label">Timesheet</span>
           </NavItem>
@@ -614,9 +746,10 @@ function Shell({
             href="/badges"
             title={HINTS['nav.badges'].title}
             tip={HINTS['nav.badges'].body}
+            onNavigate={closeMobileNav}
           >
             <span className="nav-icon" aria-hidden>
-              ◈
+              <IconBadges />
             </span>
             <span className="nav-label">Badges</span>
           </NavItem>
@@ -624,17 +757,23 @@ function Shell({
             href="/settings"
             title={HINTS['nav.settings'].title}
             tip={HINTS['nav.settings'].body}
+            onNavigate={closeMobileNav}
           >
             <span className="nav-icon" aria-hidden>
-              ⚙
+              <IconSettings />
             </span>
             <span className="nav-label">Settings</span>
           </NavItem>
           {user.email.trim().toLowerCase() ===
           'udhayaprakashmohan@gmail.com' ? (
-            <NavItem href="/admin" title="Admin" tip="Pro payers and activation">
+            <NavItem
+              href="/admin"
+              title="Admin"
+              tip="Pro payers and activation"
+              onNavigate={closeMobileNav}
+            >
               <span className="nav-icon" aria-hidden>
-                ✦
+                <IconAdmin />
               </span>
               <span className="nav-label">Admin</span>
             </NavItem>
@@ -642,12 +781,23 @@ function Shell({
         </nav>
 
         <div className="sidebar-footer">
+          <AiCreditsBadge />
           <RailAvatar name={user.name} userId={user.id} />
           <LogoutButton onLoggedOut={onLoggedOut} />
         </div>
       </aside>
 
       <header className="topbar">
+        <button
+          type="button"
+          className="topbar-menu-btn"
+          aria-label={mobileNavOpen ? 'Close menu' : 'Open menu'}
+          aria-expanded={mobileNavOpen}
+          aria-controls="primary-nav"
+          onClick={() => setMobileNavOpen((v) => !v)}
+        >
+          <span aria-hidden>{mobileNavOpen ? '✕' : '☰'}</span>
+        </button>
         <div className="topbar-greeting">
           <span className="topbar-date">{dateLine}</span>
           <strong>
@@ -735,9 +885,14 @@ function Shell({
         !pathname.startsWith('/settings') &&
         !pathname.startsWith('/pricing') &&
         !pathname.startsWith('/subscription') &&
-        !pathname.startsWith('/admin') && (
+        !pathname.startsWith('/admin') &&
+        !pathname.startsWith('/posts') &&
+        !pathname.startsWith('/spotlight') &&
+        !pathname.startsWith('/history') &&
+        !pathname.startsWith('/homer') && (
           <RightPanel user={displayUser} />
         )}
+      <AiHubHost timeZone={displayUser.timezone} />
     </div>
     </DashboardReadyGate>
     </UserProvider>
@@ -833,13 +988,33 @@ function AppWithSearchParams({ children }: { children: ReactNode }) {
         return;
       }
 
-      if (!needsOnboarding(normalized)) {
-        setEnteringDashboard(true);
-        router.replace('/schedule');
-      } else {
+      if (needsOnboarding(normalized)) {
         setEnteringDashboard(false);
         router.replace('/onboarding');
+        return;
       }
+
+      // Calendar reconnect lands on /settings — stay there instead of bouncing
+      // to /schedule after the loginCode exchange.
+      const path = window.location.pathname;
+      if (
+        path.startsWith('/settings') ||
+        path.startsWith('/schedule') ||
+        path.startsWith('/today') ||
+        path.startsWith('/homer') ||
+        path.startsWith('/history') ||
+        path.startsWith('/spotlight') ||
+        path.startsWith('/posts') ||
+        path.startsWith('/timesheet') ||
+        path.startsWith('/report') ||
+        path.startsWith('/badges')
+      ) {
+        setEnteringDashboard(false);
+        return;
+      }
+
+      setEnteringDashboard(true);
+      router.replace('/schedule');
     },
     [qc, router],
   );
@@ -912,9 +1087,7 @@ function AppWithSearchParams({ children }: { children: ReactNode }) {
         console.error('[auth] login exchange failed', e);
         loginCodeInflight.delete(loginCode);
         if (!alive) return;
-        const url = new URL(window.location.href);
-        url.searchParams.set('authError', 'exchange');
-        window.history.replaceState({}, '', url.pathname + url.search);
+        router.replace('/login?authError=exchange');
       })
       .finally(() => {
         if (alive) setExchanging(false);
@@ -923,7 +1096,7 @@ function AppWithSearchParams({ children }: { children: ReactNode }) {
     return () => {
       alive = false;
     };
-  }, [handleSignedIn, hydrated]);
+  }, [handleSignedIn, hydrated, router]);
 
   useEffect(() => {
     if (!hydrated || exchanging || loggingOut || !me.isSuccess) return;

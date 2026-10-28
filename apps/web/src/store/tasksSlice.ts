@@ -6,7 +6,7 @@ import {
   type PayloadAction,
 } from '@reduxjs/toolkit';
 import type { TaskDto } from '@timeblock/shared-types';
-import { api } from '../api';
+import { api, parseInstant } from '../api';
 
 export type TasksPersistStatus = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -78,6 +78,51 @@ function asTaskList(value: unknown): TaskDto[] {
   return Array.isArray(value) ? (value as TaskDto[]) : [];
 }
 
+/** Survive full page reload when the API briefly omits timerStartedAt. */
+const TIMER_ANCHOR_KEY = 'tb.timerAnchor.v1';
+
+function readTimerAnchors(): Record<string, string> {
+  try {
+    const raw = sessionStorage.getItem(TIMER_ANCHOR_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, string>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeTimerAnchor(taskId: string, startedAt: string | null) {
+  try {
+    const next = readTimerAnchors();
+    if (startedAt) next[taskId] = startedAt;
+    else delete next[taskId];
+    sessionStorage.setItem(TIMER_ANCHOR_KEY, JSON.stringify(next));
+  } catch {
+    /* private mode / quota */
+  }
+}
+
+/** Prefer server start time; fall back to sessionStorage so refresh keeps ticking. */
+function withRestoredTimer(task: TaskDto): TaskDto {
+  if (!task.activeEntryId) {
+    writeTimerAnchor(task.id, null);
+    return { ...task, timerStartedAt: null };
+  }
+  const serverStart = task.timerStartedAt?.trim() || null;
+  if (serverStart && Number.isFinite(Date.parse(serverStart))) {
+    writeTimerAnchor(task.id, serverStart);
+    return { ...task, timerStartedAt: serverStart };
+  }
+  const cached = readTimerAnchors()[task.id];
+  if (cached && Number.isFinite(Date.parse(cached))) {
+    return { ...task, timerStartedAt: cached };
+  }
+  return task;
+}
+
 function asTask(value: unknown): TaskDto | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const t = value as TaskDto;
@@ -118,17 +163,19 @@ function dayList(state: TasksState, date: string): TaskDto[] {
 /** Bank open-session seconds into actualMinutes (fractional OK for resume). */
 function withBankedLiveSession(task: TaskDto, nowMs = Date.now()): TaskDto {
   if (!task.timerStartedAt || !task.activeEntryId) {
+    writeTimerAnchor(task.id, null);
     return {
       ...task,
       activeEntryId: null,
       timerStartedAt: null,
     };
   }
-  const started = Date.parse(task.timerStartedAt);
+  const started = parseInstant(task.timerStartedAt).getTime();
   const liveSec = Number.isFinite(started)
     ? Math.max(0, Math.floor((nowMs - started) / 1000))
     : 0;
   const base = Math.max(0, Number(task.actualMinutes) || 0);
+  writeTimerAnchor(task.id, null);
   return {
     ...task,
     actualMinutes: base + liveSec / 60,
@@ -671,10 +718,12 @@ const tasksSlice = createSlice({
       if (idx < 0) return;
       const t = list[idx]!;
       // Keep banked actualMinutes — resume continues from last pause.
+      const startedAt = new Date().toISOString();
+      writeTimerAnchor(t.id, startedAt);
       list[idx] = {
         ...t,
         activeEntryId: `opt_${Date.now()}`,
-        timerStartedAt: new Date().toISOString(),
+        timerStartedAt: startedAt,
         status: 'in_progress',
       };
       state.byDate[hit.date] = sortDayTasks(list);
@@ -857,7 +906,8 @@ const tasksSlice = createSlice({
           next = next.filter((t) => !removePending.includes(t.id));
         }
 
-        state.byDate[date] = next;
+        // Restore live timer anchors after refresh (elapsed from startedAt).
+        state.byDate[date] = next.map(withRestoredTimer);
         state.loadedDates[date] = true;
       })
       .addCase(fetchTasks.rejected, (state, action) => {
@@ -1003,17 +1053,38 @@ const tasksSlice = createSlice({
       .addCase(startTimerOptimistic.fulfilled, (state, action) => {
         popPending(state, `start:${action.meta.arg.taskId}`);
         const server = action.payload.task;
+        if (!server?.id) return;
         const current = dayList(state, action.payload.date).find(
           (t) => t.id === server.id,
         );
-        // Prefer the higher banked total (optimistic pause may be ahead of server minutes).
-        const merged: TaskDto = {
+        // Keep the earliest start so a slow API response doesn't reset elapsed.
+        const serverStart = server.timerStartedAt
+          ? parseInstant(server.timerStartedAt).getTime()
+          : NaN;
+        const localStart = current?.timerStartedAt
+          ? parseInstant(current.timerStartedAt).getTime()
+          : NaN;
+        let timerStartedAt =
+          server.timerStartedAt ?? current?.timerStartedAt ?? null;
+        if (
+          Number.isFinite(serverStart) &&
+          Number.isFinite(localStart) &&
+          localStart < serverStart &&
+          current?.timerStartedAt
+        ) {
+          timerStartedAt = current.timerStartedAt;
+        }
+        const merged = withRestoredTimer({
           ...server,
           actualMinutes: Math.max(
             Number(server.actualMinutes) || 0,
             Number(current?.actualMinutes) || 0,
           ),
-        };
+          activeEntryId:
+            server.activeEntryId ?? current?.activeEntryId ?? null,
+          timerStartedAt,
+          status: 'in_progress',
+        });
         state.byDate[action.payload.date] = sortDayTasks(
           upsertTask(dayList(state, action.payload.date), merged),
         );
@@ -1021,6 +1092,7 @@ const tasksSlice = createSlice({
       .addCase(startTimerOptimistic.rejected, (state, action) => {
         const taskId = action.meta.arg.taskId;
         popPending(state, `start:${taskId}`);
+        writeTimerAnchor(taskId, null);
         const date = action.meta.arg.date;
         const list = dayList(state, date);
         const idx = list.findIndex((t) => t.id === taskId);
@@ -1093,9 +1165,23 @@ const tasksSlice = createSlice({
         const merged = current.map((t, i) => {
           const server = byId.get(t.id);
           if (!server) return { ...t, order: i };
+          // Keep optimistic schedule if the API briefly returns cleared times
+          // (otherwise Queue labels persist while The plan goes blank).
+          const keepSchedule =
+            t.scheduledStart &&
+            t.scheduledEnd &&
+            !server.scheduledStart &&
+            !server.scheduledEnd &&
+            !server.inBacklog;
           return {
             ...t,
             ...server,
+            ...(keepSchedule
+              ? {
+                  scheduledStart: t.scheduledStart,
+                  scheduledEnd: t.scheduledEnd,
+                }
+              : null),
             // Preserve the order the user just dragged to
             order: i,
           };

@@ -11,6 +11,7 @@ import {
 } from '../store/tasksSlice';
 import { HintMark } from './ui-hints';
 import { CoachSlot, resolveCoachSlot } from './coach';
+import { openAiHub } from './ai/ai-events';
 import { ShareStudio } from './share/ShareStudio';
 import type { ShareWeekPayload } from './share/shareFormat';
 import {
@@ -380,13 +381,29 @@ export function RightPanel({ user }: { user: UserDto }) {
             />
           </div>
         </div>
-        <button
-          type="button"
-          className="focus-schedule-link"
-          onClick={viewSchedule}
-        >
-          View schedule →
-        </button>
+        <div className="focus-links">
+          <button
+            type="button"
+            className="focus-schedule-link"
+            onClick={() => openAiHub({ tab: 'coach' })}
+          >
+            ✦ Coach me on today
+          </button>
+          <button
+            type="button"
+            className="focus-schedule-link"
+            onClick={() => openAiHub({ tab: 'focus' })}
+          >
+            ✦ What should I do next?
+          </button>
+          <button
+            type="button"
+            className="focus-schedule-link"
+            onClick={viewSchedule}
+          >
+            View schedule →
+          </button>
+        </div>
       </div>
 
       <div className="side-card">
@@ -455,6 +472,7 @@ export function RightPanel({ user }: { user: UserDto }) {
         onClose={() => setShareOpen(false)}
         week={shareWeek}
         initialTab="story"
+        timeZone={user.timezone}
       />
     </aside>
   );

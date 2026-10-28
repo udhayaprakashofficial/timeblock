@@ -71,6 +71,13 @@ export class GoogleOAuthRegistrar implements OnModuleInit {
         return done(new Error('Google profile missing email'));
       }
       try {
+        const intent = (
+          req.session as { oauthIntent?: 'login' | 'calendar' } | undefined
+        )?.oauthIntent;
+        const scope =
+          intent === 'calendar'
+            ? 'email profile openid https://www.googleapis.com/auth/calendar.readonly'
+            : 'email profile openid';
         const user = await this.authService.upsertOAuthUser({
           provider: CalendarProvider.google,
           providerAccountId: profile.id,
@@ -78,7 +85,7 @@ export class GoogleOAuthRegistrar implements OnModuleInit {
           name: profile.displayName || email,
           accessToken,
           refreshToken,
-          scope: 'calendar.readonly gmail.send email profile',
+          scope,
           linkToUserId: req.session?.userId,
         });
         done(null, user);
@@ -95,12 +102,9 @@ export class GoogleOAuthRegistrar implements OnModuleInit {
           clientSecret: secret,
           callbackURL,
           passReqToCallback: true,
-          scope: [
-            'email',
-            'profile',
-            'https://www.googleapis.com/auth/calendar.readonly',
-            'https://www.googleapis.com/auth/gmail.send',
-          ],
+          // Basic identity only so Testing-mode login works without a Test-users
+          // allowlist. Sensitive scopes (Calendar / Gmail) are added later.
+          scope: ['email', 'profile', 'openid'],
         },
         verify as never,
       ),

@@ -28,8 +28,7 @@ export function LoginScreen() {
   });
 
   const authError = new URLSearchParams(window.location.search).get('authError');
-  // Google sign-in hidden for now.
-  const googleOAuth = false;
+  const googleOAuth = Boolean(authConfig.data?.googleSignIn);
 
   const onSignedIn = (user: UserDto) => {
     qc.setQueryData(['me'], user);

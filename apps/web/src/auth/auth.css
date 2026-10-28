@@ -367,14 +367,24 @@
   width: 100%;
   margin: 0;
   padding: 14px 16px;
-  border: 0;
-  background: var(--ck-ink);
-  color: var(--ck-ground);
+  border: 2px solid var(--ck-ink);
+  background: #fff;
+  color: var(--ck-ink);
   font: inherit;
   font-size: 0.95rem;
   font-weight: 700;
   cursor: pointer;
   position: relative;
+}
+
+.auth-kit-social-btn .google-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.auth-kit-social-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ck-ink) 6%, #fff);
 }
 
 .auth-kit-social-btn:disabled {

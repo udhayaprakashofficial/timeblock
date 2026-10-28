@@ -30,6 +30,17 @@ export class TasksController {
     return this.tasksService.listBacklog(userId);
   }
 
+  /** Career History — searchable completed work (all users) */
+  @Get('history')
+  history(
+    @CurrentUserId() userId: string,
+    @Query('q') q?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.tasksService.searchFinishedHistory(userId, { q, from, to });
+  }
+
   @Get('recurring')
   listRecurring(@CurrentUserId() userId: string) {
     return this.tasksService.listRecurring(userId);

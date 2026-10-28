@@ -51,7 +51,7 @@ function clock(iso: string | null | undefined, timeZone?: string | null) {
 function liveActualMinutes(t: TaskDto): number {
   const banked = Math.max(0, Number(t.actualMinutes) || 0);
   if (!t.activeEntryId || !t.timerStartedAt) return banked;
-  const started = Date.parse(t.timerStartedAt);
+  const started = parseInstant(t.timerStartedAt).getTime();
   if (!Number.isFinite(started)) return banked;
   const liveMin = Math.max(0, (Date.now() - started) / 60_000);
   return banked + liveMin;

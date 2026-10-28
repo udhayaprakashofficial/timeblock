@@ -473,6 +473,29 @@ button.pricing-btn:disabled {
   font-weight: 700;
 }
 
+.pricing-table-row.is-section {
+  border-bottom: 1px solid var(--pricing-line);
+  padding-top: 22px;
+  padding-bottom: 8px;
+}
+
+.pricing-table-row.is-section span:first-child {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pricing-accent-deep);
+}
+
+.pricing-cell-note {
+  display: inline-block;
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--pricing-ink);
+  line-height: 1.25;
+  max-width: 9.5rem;
+}
+
 .pricing-dot {
   display: inline-block;
   width: 11px;

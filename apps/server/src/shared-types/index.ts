@@ -81,6 +81,16 @@ export interface TaskDto {
   timerStartedAt?: string | null;
   /** Free-form comments / notes for later review */
   notes?: string | null;
+  /** Career History — project or area of work */
+  careerProject?: string | null;
+  /** Career History — responsibility / role */
+  careerResponsibility?: string | null;
+  /** Career History — achievement */
+  careerAchievement?: string | null;
+  /** Career History — contribution */
+  careerContribution?: string | null;
+  /** Career History — outcome / impact */
+  careerOutcome?: string | null;
   /** Present when task was created from a calendar/Meet event */
   meetLink?: string | null;
   scheduleLocked?: boolean;
@@ -94,11 +104,11 @@ export interface TaskDto {
 export interface CreateTaskDto {
   date: string;
   name: string;
-  /** Defaults to the user's defaultTaskMinutes (usually 30) when omitted */
+  /** Defaults to the user's defaultTaskMinutes (usually 30) when omitted. Any integer ≥ 5. */
   estimatedMinutes?: number;
-  /** HH:MM wall clock in the user's timezone — locks the task to this slot */
+  /** Optional HH:MM preferred start — auto-scheduler places here if free (no Pin required) */
   startTime?: string;
-  /** HH:MM wall clock in the user's timezone — locks the task to this slot */
+  /** Optional HH:MM preferred end — must pair with startTime */
   endTime?: string;
   /**
    * When the task cannot fit in work hours:
@@ -128,11 +138,16 @@ export interface CreateRecurringTaskDto {
 export interface UpdateTaskDto {
   name?: string;
   notes?: string | null;
+  careerProject?: string | null;
+  careerResponsibility?: string | null;
+  careerAchievement?: string | null;
+  careerContribution?: string | null;
+  careerOutcome?: string | null;
   estimatedMinutes?: number;
-  /** HH:MM — when both start and end are set, locks the task to that slot */
+  /** HH:MM — preferred slot; rejected if it overlaps another task. Does not require Pin. */
   startTime?: string | null;
   endTime?: string | null;
-  /** Clear lock and let the packer place the task */
+  /** Clear times and let the packer place the task again */
   unlockSchedule?: boolean;
   /** Move into or out of backlog */
   inBacklog?: boolean;
@@ -318,4 +333,414 @@ export interface TimelineBlockDto {
   end: string;
   task?: TaskDto;
   calendarEvent?: CalendarEventDto;
+}
+
+/** AI brand summary — Gemini post drafts from Cupkey evidence */
+export type AiBrandRange = 'today' | 'day' | 'week' | 'month' | 'year';
+
+export type AiBrandPlatform = 'linkedin' | 'x';
+
+export interface AiBrandSummaryRequestDto {
+  /** Anchor civil date YYYY-MM-DD */
+  date: string;
+  range: AiBrandRange;
+  platform: AiBrandPlatform;
+}
+
+export interface AiBrandSummaryDto {
+  range: AiBrandRange;
+  platform: AiBrandPlatform;
+  from: string;
+  to: string;
+  label: string;
+  /** Ready-to-paste post copy */
+  summary: string;
+  facts: {
+    totalTasks: number;
+    completed: number;
+    pending: number;
+    estimatedMinutes: number;
+    actualMinutes: number;
+    completionPercent: number;
+    topTasks: Array<{
+      name: string;
+      date: string;
+      actualMinutes: number;
+      estimatedMinutes: number;
+      status: string;
+    }>;
+  };
+}
+
+/** Per-task LinkedIn / X draft — requires task notes/comments */
+export interface AiTaskPostRequestDto {
+  taskId: string;
+  platform: AiBrandPlatform;
+}
+
+export interface AiTaskPostDto {
+  taskId: string;
+  taskName: string;
+  platform: AiBrandPlatform;
+  date: string;
+  /** Ready-to-paste post copy */
+  summary: string;
+  /** Notes/comments used as source material */
+  notes: string;
+  facts: {
+    estimatedMinutes: number;
+    actualMinutes: number;
+    status: string;
+  };
+  /** Set when the draft is persisted for the task */
+  id?: string;
+  createdAt?: string;
+}
+
+/** One saved AI social draft linked to a task */
+export interface StoredTaskAiPostDto {
+  id: string;
+  userId: string;
+  taskId: string;
+  taskName: string;
+  platform: AiBrandPlatform;
+  date: string;
+  summary: string;
+  notes: string;
+  createdAt: string;
+  facts: {
+    estimatedMinutes: number;
+    actualMinutes: number;
+    status: string;
+  };
+}
+
+export interface StoredTaskAiPostsDto {
+  items: StoredTaskAiPostDto[];
+}
+
+/** One finished task in Career History */
+export interface WorkHistoryItemDto {
+  id: string;
+  date: string;
+  name: string;
+  estimatedMinutes: number;
+  actualMinutes: number;
+  notes?: string | null;
+  careerProject?: string | null;
+  careerResponsibility?: string | null;
+  careerAchievement?: string | null;
+  careerContribution?: string | null;
+  careerOutcome?: string | null;
+  scheduledStart?: string | null;
+  scheduledEnd?: string | null;
+}
+
+/** Searchable Career History of completed work */
+export interface WorkHistoryDto {
+  from: string;
+  to: string;
+  query: string;
+  total: number;
+  items: WorkHistoryItemDto[];
+  /** False when free / inactive — client should show upgrade */
+  hasAccess: boolean;
+  reason?: string | null;
+  /**
+   * Finished tasks (recent archive) that have notes / career notes.
+   * Homer appraisal & interview unlock at HOMER_MIN_TASK_NOTES.
+   */
+  notedTaskCount?: number;
+  /** Minimum noted finished tasks required to generate with Homer */
+  homerMinNotes?: number;
+  /** True when notedTaskCount >= homerMinNotes */
+  homerReady?: boolean;
+}
+
+/** Minimum finished tasks with notes before Homer can generate */
+export const HOMER_MIN_TASK_NOTES = 20;
+
+/** What to include in a Homer summary */
+export type AiCareerSummaryScope = 'all' | 'project';
+
+/** Homer AI feature (not work notes) */
+export type AiHomerMode = 'weekly' | 'appraisal' | 'interview';
+
+/** Interview answer length / structure */
+export type AiHomerInterviewFormat = '30s' | '60s' | 'star';
+
+/** Post-generate refine without changing source filters */
+export type AiHomerRefineAction =
+  | 'regenerate'
+  | 'concise'
+  | 'evidence'
+  | 'natural'
+  | 'professional';
+
+/** How to persist when a matching story already exists */
+export type AiHomerSavePolicy = 'new' | 'replace';
+
+/** One finished task used as evidence for a Homer story */
+export interface HomerEvidenceItemDto {
+  taskId: string;
+  date: string;
+  name: string;
+  actualMinutes: number;
+  estimatedMinutes: number;
+  project: string | null;
+  /** Path to open the task notes context when available */
+  href?: string | null;
+}
+
+/** Homer summary request — mode picks the coaching format */
+export interface AiCareerSummaryRequestDto {
+  from: string;
+  to: string;
+  /** Optional keyword filter (name, notes, career fields) */
+  q?: string;
+  /** all = whole range; project = one project/product name */
+  scope?: AiCareerSummaryScope;
+  /** Required when scope is "project" — matches careerProject */
+  project?: string;
+  /** weekly update | appraisal prep | interview pitch */
+  mode?: AiHomerMode;
+  /** Interview format (ignored for appraisal) */
+  format?: AiHomerInterviewFormat;
+  /** Refine an existing draft (same sources) */
+  refine?: AiHomerRefineAction;
+  /** Prior summary text when refining */
+  baseSummary?: string;
+  /** Prior headline when refining */
+  baseHeadline?: string;
+  /** new = always insert; replace = overwrite replaceId */
+  savePolicy?: AiHomerSavePolicy;
+  /** Existing story id to update when savePolicy is replace */
+  replaceId?: string;
+}
+
+/** Homer-generated story from finished work */
+export interface AiCareerSummaryDto {
+  from: string;
+  to: string;
+  query: string;
+  scope: AiCareerSummaryScope;
+  project: string | null;
+  mode: AiHomerMode;
+  format: AiHomerInterviewFormat | null;
+  /** Short headline for the period */
+  headline: string;
+  /** Paste-ready story (weekly lines, appraisal wins, or interview answer) */
+  summary: string;
+  responsibilities: string[];
+  projects: string[];
+  achievements: string[];
+  /** Short coaching tip — what to lead with / leave out */
+  tip: string | null;
+  /** Gaps in the source data (do not invent to fill these) */
+  gaps: string[];
+  /** Source activities used for this story */
+  evidence: HomerEvidenceItemDto[];
+  /** Tasks used as source material */
+  taskCount: number;
+  /** Set when persisted (appraisal / interview) */
+  id?: string | null;
+  createdAt?: string | null;
+  /** Matching prior story id (client may ask replace vs new) */
+  duplicateOfId?: string | null;
+  version?: number | null;
+}
+
+/** Persisted Homer appraisal or interview write-up */
+export interface StoredHomerGenerationDto {
+  id: string;
+  userId: string;
+  mode: 'appraisal' | 'interview';
+  format: AiHomerInterviewFormat | null;
+  from: string;
+  to: string;
+  query: string;
+  scope: AiCareerSummaryScope;
+  project: string | null;
+  headline: string;
+  summary: string;
+  responsibilities: string[];
+  projects: string[];
+  achievements: string[];
+  tip: string | null;
+  gaps: string[];
+  evidence: HomerEvidenceItemDto[];
+  taskCount: number;
+  createdAt: string;
+  updatedAt?: string | null;
+  version?: number | null;
+  /** Prior version id when this is a new version of an older story */
+  replacesId?: string | null;
+}
+
+export interface StoredHomerGenerationsDto {
+  items: StoredHomerGenerationDto[];
+}
+
+/** Persist an unsaved Homer draft (update existing or save new version) */
+export interface AiHomerPersistRequestDto {
+  savePolicy: AiHomerSavePolicy;
+  /** Required when savePolicy is replace */
+  replaceId?: string;
+  draft: Pick<
+    AiCareerSummaryDto,
+    | 'from'
+    | 'to'
+    | 'query'
+    | 'scope'
+    | 'project'
+    | 'mode'
+    | 'format'
+    | 'headline'
+    | 'summary'
+    | 'responsibilities'
+    | 'projects'
+    | 'achievements'
+    | 'tip'
+    | 'gaps'
+    | 'evidence'
+    | 'taskCount'
+  >;
+}
+
+/** Whether the current user can call AI features (credits) */
+export interface AiAccessDto {
+  enabled: boolean;
+  /** Legacy flag — Pro gets the monthly pool */
+  requirePro: boolean;
+  /** True when creditsRemaining > 0 (or metering disabled for testing) */
+  hasAccess: boolean;
+  reason?: string | null;
+  /** Credits left in the current pool */
+  creditsRemaining: number;
+  /** Pool size (5 Free one-time / 50 Pro monthly) */
+  creditsLimit: number;
+  /** Credits spent in the current pool */
+  creditsUsed: number;
+  /** YYYY-MM for Pro, or "lifetime" for Free */
+  creditsMonth: string;
+  /** Active Pro subscriber */
+  isPro: boolean;
+  /** Human label for next refill (e.g. Nov 1) — Free: upgrade copy */
+  refillLabel: string;
+  /** Free allotment (one-time) */
+  freeCreditsMonthly: number;
+  /** Pro monthly allotment */
+  proCreditsMonthly: number;
+}
+
+/** Proposed task — never auto-saved; user must approve */
+export interface AiProposedTaskDto {
+  /** Client-side id for editing before apply */
+  key: string;
+  name: string;
+  estimatedMinutes: number;
+  /** Optional HH:mm preferred start */
+  startTime?: string | null;
+  endTime?: string | null;
+  notes?: string | null;
+  /** Existing task id when suggesting a change */
+  taskId?: string | null;
+}
+
+export interface AiDailyPlanRequestDto {
+  date: string;
+  /** Optional free-text goals / constraints */
+  goals?: string;
+}
+
+export interface AiDailyPlanDto {
+  date: string;
+  summary: string;
+  proposedTasks: AiProposedTaskDto[];
+  /** Reminder: apply is client-side after user approval */
+  requiresApproval: true;
+}
+
+export interface AiBrainDumpRequestDto {
+  date: string;
+  text: string;
+}
+
+export interface AiBrainDumpDto {
+  date: string;
+  proposedTasks: AiProposedTaskDto[];
+  requiresApproval: true;
+}
+
+export interface AiEstimateRequestDto {
+  name: string;
+  date?: string;
+  context?: string;
+}
+
+export interface AiEstimateDto {
+  name: string;
+  estimatedMinutes: number;
+  rationale: string;
+}
+
+export interface AiPrioritizeRequestDto {
+  date: string;
+}
+
+export interface AiPrioritizeDto {
+  date: string;
+  /** Suggested order (task ids, open tasks only) */
+  orderedTaskIds: string[];
+  rationale: string;
+  requiresApproval: true;
+}
+
+export type AiRecoveryAction = 'keep' | 'backlog' | 'reschedule' | 'shorten';
+
+export interface AiRecoveryMoveDto {
+  taskId: string;
+  taskName: string;
+  action: AiRecoveryAction;
+  /** HH:mm when action is reschedule */
+  startTime?: string | null;
+  estimatedMinutes?: number | null;
+  reason: string;
+}
+
+export interface AiRecoverRequestDto {
+  date: string;
+  /** Optional: what went wrong */
+  note?: string;
+}
+
+export interface AiRecoverDto {
+  date: string;
+  summary: string;
+  moves: AiRecoveryMoveDto[];
+  requiresApproval: true;
+}
+
+export interface AiCoachRequestDto {
+  date: string;
+}
+
+export interface AiCoachDto {
+  date: string;
+  title: string;
+  body: string;
+  tips: string[];
+}
+
+export interface AiFocusRequestDto {
+  date: string;
+  taskId?: string;
+}
+
+export interface AiFocusDto {
+  date: string;
+  taskId: string | null;
+  taskName: string | null;
+  message: string;
+  suggestion: string;
 }

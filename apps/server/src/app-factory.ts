@@ -5,8 +5,9 @@ import { config as loadEnv } from 'dotenv';
 import { existsSync } from 'fs';
 import { join, resolve } from 'path';
 
-loadEnv({ path: resolve(__dirname, '../.env'), override: false });
+// Root first, then apps/server/.env (server wins on conflicts).
 loadEnv({ path: resolve(__dirname, '../../../.env'), override: false });
+loadEnv({ path: resolve(__dirname, '../.env'), override: true });
 
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';

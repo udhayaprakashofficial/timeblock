@@ -56,6 +56,10 @@ model User {
   welcomeEmailLastAttemptAt DateTime?
   /// Outbox: last Brevo / send error (cleared on success).
   welcomeEmailLastError String?
+  /// AI credits used in aiCreditsMonth (1 request = 1 credit). Resets each calendar month.
+  aiCreditsUsed  Int     @default(0)
+  /// YYYY-MM bucket for monthly AI credit refill (no carry-forward).
+  aiCreditsMonth String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -161,6 +165,16 @@ model Task {
   inBacklog        Boolean    @default(false)
   /// Free-form comments for future review
   notes            String?
+  /// Career History — project / area of work
+  careerProject    String?
+  /// Career History — responsibility or role on the work
+  careerResponsibility String?
+  /// Career History — achievement highlight
+  careerAchievement String?
+  /// Career History — what you contributed
+  careerContribution String?
+  /// Career History — outcome / impact
+  careerOutcome    String?
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
 

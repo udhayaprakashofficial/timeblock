@@ -4,8 +4,9 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { StatsOverviewDto, TaskDto } from '@timeblock/shared-types';
-import { api, parseInstant, todayISO } from '../api';
+import { api, parseInstant, shiftDateISO, todayISO } from '../api';
 import { MeetSourceBadge } from '../components/MeetSourceBadge';
+import { TaskAiPostPanel } from '../components/share/TaskAiPostPanel';
 import { formatMinutesLabel } from '../components/share/shareFormat';
 
 type Filter = 'all' | 'open' | 'done';
@@ -52,10 +53,17 @@ function sortTodayTasks(tasks: TaskDto[], timeZone?: string | null) {
 }
 
 export function TodayTasksPage({ timeZone }: { timeZone?: string | null }) {
-  const date = todayISO(timeZone);
+  const today = todayISO(timeZone);
+  const [date, setDate] = useState(today);
   const qc = useQueryClient();
   const [filter, setFilter] = useState<Filter>('all');
   const [activeId, setActiveId] = useState<string | null>(null);
+  const isToday = date === today;
+  const lastWeekDate = shiftDateISO(today, -7);
+
+  useEffect(() => {
+    if (date > today) setDate(today);
+  }, [date, today]);
 
   const statsQ = useQuery({
     queryKey: ['stats', date],
@@ -82,7 +90,7 @@ export function TodayTasksPage({ timeZone }: { timeZone?: string | null }) {
   }, [allTasks, filter]);
 
   const util = statsQ.data?.utilization;
-  const today = statsQ.data?.today;
+  const dayStats = statsQ.data?.today;
   const pct = util?.utilizationPercent ?? 0;
 
   const invalidate = () => {
@@ -100,6 +108,20 @@ export function TodayTasksPage({ timeZone }: { timeZone?: string | null }) {
     });
   }, [date]);
 
+  const shortDateLabel = useMemo(() => {
+    return new Date(`${date}T12:00:00`).toLocaleDateString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+  }, [date]);
+
+  const goToDate = (next: string) => {
+    const clipped = next > today ? today : next;
+    setDate(clipped);
+    setActiveId(null);
+  };
+
   const activeTask = allTasks.find((t) => t.id === activeId) ?? null;
 
   useEffect(() => {
@@ -112,18 +134,72 @@ export function TodayTasksPage({ timeZone }: { timeZone?: string | null }) {
     <div className="today-workspace">
       <header className="tw-header">
         <div>
-          <p className="tw-kicker">Today</p>
-          <h1 className="page-title">Today&apos;s tasks</h1>
+          <p className="tw-kicker">Tasks</p>
+          <h1 className="page-title">
+            {isToday ? "Today's tasks" : 'Tasks by date'}
+          </h1>
           <p className="page-sub" style={{ marginBottom: 0 }}>
             {dateLabel}
+            {!isToday ? ' · past day' : ''}
           </p>
         </div>
-        <Link href="/schedule" className="btn btn-outline btn-pill">
-          Open schedule
-        </Link>
+        <div className="tw-header-actions">
+          <div className="tw-date-nav" aria-label="Choose task date">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm date-nav-btn"
+              aria-label="Previous day"
+              onClick={() => goToDate(shiftDateISO(date, -1))}
+            >
+              ‹
+            </button>
+            <label className="tw-date-picker">
+              <span className="sr-only">Date</span>
+              <input
+                type="date"
+                value={date}
+                max={today}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) goToDate(v);
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm date-nav-btn"
+              aria-label="Next day"
+              disabled={isToday}
+              onClick={() => goToDate(shiftDateISO(date, 1))}
+            >
+              ›
+            </button>
+            <button
+              type="button"
+              className={`btn btn-ghost btn-sm tw-date-chip${
+                date === lastWeekDate ? ' is-on' : ''
+              }`}
+              onClick={() => goToDate(lastWeekDate)}
+            >
+              Last week
+            </button>
+            {!isToday ? (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm tw-date-chip"
+                onClick={() => goToDate(today)}
+              >
+                Today
+              </button>
+            ) : null}
+          </div>
+          <Link href="/schedule" className="btn btn-outline btn-pill">
+            Open schedule
+          </Link>
+        </div>
       </header>
 
-      <section className="tw-metrics" aria-label="Today metrics">
+      <section className="tw-metrics" aria-label="Day metrics">
         <div className="tw-metric-card tw-metric-main">
           <div className="tw-metric-top">
             <span>Day utilization</span>
@@ -139,15 +215,15 @@ export function TodayTasksPage({ timeZone }: { timeZone?: string | null }) {
           </p>
         </div>
         <div className="tw-metric-card">
-          <strong>{today?.total ?? 0}</strong>
+          <strong>{dayStats?.total ?? 0}</strong>
           <span>Total tasks</span>
         </div>
         <div className="tw-metric-card">
-          <strong>{today?.completed ?? 0}</strong>
+          <strong>{dayStats?.completed ?? 0}</strong>
           <span>Completed</span>
         </div>
         <div className="tw-metric-card">
-          <strong>{today?.pending ?? 0}</strong>
+          <strong>{dayStats?.pending ?? 0}</strong>
           <span>Open</span>
         </div>
       </section>
@@ -155,7 +231,10 @@ export function TodayTasksPage({ timeZone }: { timeZone?: string | null }) {
       <div className="tw-layout">
         <section className="tw-list-panel">
           <div className="tw-list-head">
-            <h2>Assigned tasks</h2>
+            <div className="tw-list-title">
+              <h2>Tasks</h2>
+              <span className="tw-list-date">{shortDateLabel}</span>
+            </div>
             <div className="tw-filters" role="tablist" aria-label="Filter tasks">
               {(
                 [
@@ -181,8 +260,14 @@ export function TodayTasksPage({ timeZone }: { timeZone?: string | null }) {
           {tasksQ.isLoading && <div className="tw-empty">Loading…</div>}
           {!tasksQ.isLoading && tasks.length === 0 && (
             <div className="tw-empty">
-              No tasks in this view.
-              <Link href="/schedule">Add from schedule</Link>
+              No tasks for {shortDateLabel}.
+              {isToday ? (
+                <Link href="/schedule">Add from schedule</Link>
+              ) : (
+                <button type="button" onClick={() => goToDate(today)}>
+                  Back to today
+                </button>
+              )}
             </div>
           )}
 
@@ -477,6 +562,8 @@ function TaskDetail({
           Add
         </button>
       </div>
+
+      <TaskAiPostPanel taskId={task.id} notes={notesDraft} />
 
       <div className="tw-detail-actions">
         {!done && (

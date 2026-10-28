@@ -19,6 +19,13 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { api, formatTimeRange, todayISO, parseInstant, shiftDateISO } from '../api';
 import { MeetSourceBadge } from '../components/MeetSourceBadge';
+import {
+  AI_ESTIMATE_EVENT,
+  openAiHub,
+  withAiAccess,
+} from '../components/ai/ai-events';
+import type { AiEstimateDto } from '@timeblock/shared-types';
+import { TaskAiPostPanel } from '../components/share/TaskAiPostPanel';
 import { HintMark, UiTooltip } from '../components/ui-hints';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import {
@@ -369,7 +376,7 @@ function liveSessionSeconds(
   nowMs = Date.now(),
 ): number {
   if (!timerStartedAt) return 0;
-  const started = Date.parse(timerStartedAt);
+  const started = parseInstant(timerStartedAt).getTime();
   if (!Number.isFinite(started)) return 0;
   return Math.max(0, Math.floor((nowMs - started) / 1000));
 }
@@ -579,6 +586,7 @@ export function TodayPage({
   const [durationDraft, setDurationDraft] = useState(String(defaultTaskMinutes));
   const [formError, setFormError] = useState<string | null>(null);
   const [createHint, setCreateHint] = useState<string | null>(null);
+  const [estimateBusy, setEstimateBusy] = useState(false);
   const [overflowPrompt, setOverflowPrompt] = useState<{
     name: string;
     estimatedMinutes: number;
@@ -589,6 +597,19 @@ export function TodayPage({
   } | null>(null);
   const [overflowMovingNext, setOverflowMovingNext] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const onEstimate = (ev: Event) => {
+      const mins = Number(
+        (ev as CustomEvent<{ minutes?: number }>).detail?.minutes,
+      );
+      if (!Number.isFinite(mins) || mins < 5) return;
+      setDurationDraft(String(Math.round(mins)));
+      nameInputRef.current?.focus();
+    };
+    window.addEventListener(AI_ESTIMATE_EVENT, onEstimate);
+    return () => window.removeEventListener(AI_ESTIMATE_EVENT, onEstimate);
+  }, []);
 
   const reduxTasks = useAppSelector((s) => {
     const list = s.tasks.byDate[date];
@@ -881,32 +902,32 @@ export function TodayPage({
   const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
   const template = scheduleQ.data?.find((t) => t.weekday === weekday);
 
-  const scheduleLabels = useMemo(() => {
-    const slots = resolveDisplaySchedule(tasks, {
-      date,
-      timeZone,
-      workStart: template?.workStart,
-      workEnd: template?.workEnd,
-      breaks: template?.breaks?.map((b) => ({
-        start: b.start,
-        end: b.end,
-      })),
-    });
-    const labels = new Map<string, string>();
-    for (const t of tasks) {
-      const slot = slots.get(t.id);
-      if (!slot) continue;
-      labels.set(
-        t.id,
-        formatTimeRange(slot.start, slot.end, timeZone),
-      );
-    }
-    return labels;
-  }, [tasks, date, timeZone, template?.workStart, template?.workEnd, template?.breaks]);
-
   const dayStartMin = template ? parseHm(template.workStart) : null;
   const dayEndMin = template ? parseHm(template.workEnd) : null;
   const hasSchedule = dayStartMin !== null && dayEndMin !== null;
+
+  /** Same slots Queue shows — so The plan never drifts from queue labels. */
+  const displaySchedule = useMemo(
+    () =>
+      resolveDisplaySchedule(tasks, {
+        date,
+        timeZone,
+        workStart: template?.workStart,
+        workEnd: template?.workEnd,
+        breaks: template?.breaks?.map((b) => ({
+          start: b.start,
+          end: b.end,
+        })),
+      }),
+    [
+      tasks,
+      date,
+      timeZone,
+      template?.workStart,
+      template?.workEnd,
+      template?.breaks,
+    ],
+  );
 
   // Expand timeline to cover work hours and scheduled blocks.
   // Outside work hours, do NOT pull the viewport to midnight/late night —
@@ -930,8 +951,11 @@ export function TodayPage({
       bump(minutesOf(ev.end, timeZone));
     }
     for (const t of tasks) {
-      if (t.scheduledStart) bump(minutesOf(t.scheduledStart, timeZone));
-      if (t.scheduledEnd) bump(minutesOf(t.scheduledEnd, timeZone));
+      const slot = displaySchedule.get(t.id);
+      const startIso = slot?.start ?? t.scheduledStart;
+      const endIso = slot?.end ?? t.scheduledEnd;
+      if (startIso) bump(minutesOf(startIso, timeZone));
+      if (endIso) bump(minutesOf(endIso, timeZone));
     }
     if (isToday) {
       const now = nowMinutes(timeZone);
@@ -953,6 +977,7 @@ export function TodayPage({
     dayEndMin,
     eventsQ.data,
     tasks,
+    displaySchedule,
     timeZone,
     isToday,
   ]);
@@ -1063,6 +1088,16 @@ export function TodayPage({
     });
   }, [eventsQ.data, tasks, timeZone]);
 
+  const scheduleLabels = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const t of tasks) {
+      const slot = displaySchedule.get(t.id);
+      if (!slot) continue;
+      labels.set(t.id, formatTimeRange(slot.start, slot.end, timeZone));
+    }
+    return labels;
+  }, [tasks, displaySchedule, timeZone]);
+
   /** Task blocks clipped around breaks, with lanes when times still collide. */
   const planTaskBlocks = useMemo(() => {
     const breakBusy = (template?.breaks ?? [])
@@ -1083,9 +1118,12 @@ export function TodayPage({
     const blocks: Block[] = [];
 
     for (const t of tasks) {
-      if (!t.scheduledStart || !t.scheduledEnd) continue;
-      const rawS = minutesOf(t.scheduledStart, timeZone);
-      const rawE = minutesOf(t.scheduledEnd, timeZone);
+      const slot = displaySchedule.get(t.id);
+      const startIso = slot?.start ?? t.scheduledStart;
+      const endIso = slot?.end ?? t.scheduledEnd;
+      if (!startIso || !endIso) continue;
+      const rawS = minutesOf(startIso, timeZone);
+      const rawE = minutesOf(endIso, timeZone);
       if (!(rawE > rawS)) continue;
       const segments = t.scheduleLocked
         ? [{ start: rawS, end: rawE }]
@@ -1113,10 +1151,11 @@ export function TodayPage({
       lane: lanes.get(b.key)?.lane ?? 0,
       laneCount: lanes.get(b.key)?.laneCount ?? 1,
     }));
-  }, [tasks, template?.breaks, timeZone]);
+  }, [tasks, template?.breaks, timeZone, displaySchedule]);
 
-  // One-shot: if unlocked tasks overlap each other or a break, pack locally
-  // (including overtime stack) then persist — never leave side-by-side cards.
+  // One-shot: if unlocked tasks overlap, sit in a break, or are missing
+  // persisted times while Queue already shows slots — pack + persist so
+  // The plan and API stay aligned with Queue.
   const overlapRepackKey = useRef<string | null>(null);
   useEffect(() => {
     if (!tasks.length) return;
@@ -1124,22 +1163,24 @@ export function TodayPage({
     const breakBusy = (template?.breaks ?? [])
       .map((b) => ({ start: parseHm(b.start), end: parseHm(b.end) }))
       .filter((b) => b.end > b.start);
-    const placed = tasks
-      .filter(
-        (t) =>
-          !t.scheduleLocked &&
-          t.status !== 'completed' &&
-          !t.activeEntryId &&
-          t.scheduledStart &&
-          t.scheduledEnd,
-      )
+    const unlocked = tasks.filter(
+      (t) =>
+        !t.scheduleLocked &&
+        t.status !== 'completed' &&
+        !t.activeEntryId,
+    );
+    const missingSchedule = unlocked.some(
+      (t) => !t.scheduledStart || !t.scheduledEnd,
+    );
+    const placed = unlocked
+      .filter((t) => t.scheduledStart && t.scheduledEnd)
       .map((t) => ({
         id: t.id,
         start: minutesOf(t.scheduledStart!, timeZone),
         end: minutesOf(t.scheduledEnd!, timeZone),
       }))
       .filter((t) => t.end > t.start);
-    let conflict = false;
+    let conflict = missingSchedule;
     for (let i = 0; i < placed.length && !conflict; i++) {
       const a = placed[i]!;
       if (breakBusy.some((b) => a.start < b.end && a.end > b.start)) {
@@ -1166,7 +1207,9 @@ export function TodayPage({
       }
     }
     if (!conflict) return;
-    const key = `${date}:${placed.map((t) => `${t.id}:${t.start}-${t.end}`).join('|')}`;
+    const key = `${date}:${missingSchedule ? 'miss:' : ''}${tasks
+      .map((t) => `${t.id}:${t.scheduledStart ?? ''}-${t.scheduledEnd ?? ''}`)
+      .join('|')}`;
     if (overlapRepackKey.current === key) return;
     overlapRepackKey.current = key;
     const packed = optimisticRepackSchedule(tasks, {
@@ -1776,7 +1819,12 @@ export function TodayPage({
                             <strong>
                               {ev.title}
                               {ev.meetLink ? (
-                                <span className="cal-provider">Google</span>
+                                <MeetSourceBadge
+                                  sourceProvider={ev.provider}
+                                  meetLink={ev.meetLink}
+                                  size={16}
+                                  className="cal-meet-badge"
+                                />
                               ) : null}
                             </strong>
                             <span className="cal-meta">
@@ -1799,12 +1847,15 @@ export function TodayPage({
                       const isLive = Boolean(t.activeEntryId);
                       const done = t.status === 'completed';
                       const spanMin = Math.max(5, block.rawE - block.rawS);
+                      const liveMins = isLive
+                        ? (t.actualMinutes || 0) +
+                          liveSessionSeconds(t.timerStartedAt) / 60
+                        : t.actualMinutes || 0;
                       const progress = isLive
                         ? Math.min(
                             100,
                             Math.round(
-                              ((t.actualMinutes || 0) /
-                                Math.max(t.estimatedMinutes, 1)) *
+                              (liveMins / Math.max(t.estimatedMinutes, 1)) *
                                 100,
                             ),
                           )
@@ -1928,10 +1979,13 @@ export function TodayPage({
                             <strong>
                               {t.name}
                               {done ? ' ✓' : ''}
-                              {meet && t.sourceProvider ? (
-                                <span className="cal-provider">
-                                  {String(t.sourceProvider)}
-                                </span>
+                              {meet ? (
+                                <MeetSourceBadge
+                                  sourceProvider={t.sourceProvider}
+                                  meetLink={t.meetLink}
+                                  size={16}
+                                  className="cal-meet-badge"
+                                />
                               ) : null}
                             </strong>
                             <span className="cal-schedule" title="Scheduled time">
@@ -2040,6 +2094,24 @@ export function TodayPage({
                 {statsQ.data?.today.completed ?? 0} done
               </p>
             </div>
+            {(statsQ.data?.today.pending ?? 0) > 0 ? (
+              <div className="queue-ai-actions" role="group" aria-label="AI queue help">
+                <button
+                  type="button"
+                  className="queue-ai-btn"
+                  onClick={() => openAiHub({ tab: 'prioritize' })}
+                >
+                  ✦ Reorder queue
+                </button>
+                <button
+                  type="button"
+                  className="queue-ai-btn"
+                  onClick={() => openAiHub({ tab: 'recover' })}
+                >
+                  ✦ Fix the day
+                </button>
+              </div>
+            ) : null}
           </div>
 
           <form
@@ -2204,6 +2276,53 @@ export function TodayPage({
                   aria-label="Schedule date"
                 />
               </label>
+              {name.trim() ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-pill add-task-ai-est"
+                  title="Ask AI how long this should take"
+                  disabled={estimateBusy}
+                  onClick={() => {
+                    const taskName = name.trim();
+                    if (!taskName) return;
+                    setEstimateBusy(true);
+                    setFormError(null);
+                    void withAiAccess(
+                      async () => {
+                        const data = await api.post<AiEstimateDto>(
+                          '/api/ai/estimate',
+                          {
+                            name: taskName,
+                            date: scheduleDate,
+                          },
+                        );
+                        setDurationDraft(String(data.estimatedMinutes));
+                        setCreateHint(
+                          `✦ AI suggests ${data.estimatedMinutes}m — ${data.rationale}`,
+                        );
+                      },
+                      { tab: 'estimate', estimateName: taskName },
+                    )
+                      .catch((e) => {
+                        const msg =
+                          e instanceof Error
+                            ? e.message
+                            : 'Could not estimate';
+                        if (/pro|upgrade|not available|forbidden/i.test(msg)) {
+                          openAiHub({
+                            tab: 'estimate',
+                            estimateName: taskName,
+                          });
+                          return;
+                        }
+                        setFormError(msg);
+                      })
+                      .finally(() => setEstimateBusy(false));
+                  }}
+                >
+                  {estimateBusy ? '…' : '✦ How long?'}
+                </button>
+              ) : null}
               <button
                 className="btn btn-primary btn-pill add-task-submit"
                 type="submit"
@@ -2213,6 +2332,22 @@ export function TodayPage({
               </button>
             </div>
           </form>
+          <div className="composer-ai-bar" role="group" aria-label="Cupkey AI">
+            <button
+              type="button"
+              className="queue-ai-btn"
+              onClick={() => openAiHub({ tab: 'dump' })}
+            >
+              ✦ Notes → tasks
+            </button>
+            <button
+              type="button"
+              className="queue-ai-btn"
+              onClick={() => openAiHub({ tab: 'plan' })}
+            >
+              ✦ Plan my day
+            </button>
+          </div>
           {(formError || createErrorRedux) && (
             <p className="composer-hint is-error">
               {formError || createErrorRedux || 'Could not add task'}
@@ -2455,6 +2590,20 @@ function SessionBanner({
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [task.id, task.activeEntryId, task.timerStartedAt, mode]);
+
+  // Recalculate from wall clock when the tab wakes (interval may have been throttled).
+  useEffect(() => {
+    if (mode !== 'live') return;
+    const onVis = () => {
+      if (document.visibilityState === 'visible') setNowMs(Date.now());
+    };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', onVis);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', onVis);
+    };
+  }, [mode]);
 
   const liveSessionSec =
     mode === 'live' ? liveSessionSeconds(task.timerStartedAt, nowMs) : 0;
@@ -2966,6 +3115,7 @@ function SortableTask({
         running ? 'is-running' : '',
         isDragging ? 'is-dragging' : '',
         commentsOpen ? 'is-comments-open' : '',
+        !commentsOpen && done && hasNotes ? 'is-ai-inline' : '',
         isEditing ? 'is-editing' : '',
       ]
         .filter(Boolean)
@@ -3109,52 +3259,60 @@ function SortableTask({
         {isEditing ? (
           <div className="priority-edit-bar">
             <span className="priority-time-edit" aria-label="Task duration">
-              <input
-                className="priority-mins-input"
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                autoComplete="off"
-                spellCheck={false}
-                value={minsDraft}
-                onChange={(e) => setMinsDraft(digitsOnly(e.target.value))}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
+              <label className="priority-mins-wrap">
+                <input
+                  className="priority-mins-input"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={minsDraft}
+                  onChange={(e) => setMinsDraft(digitsOnly(e.target.value))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      saveEdits();
+                      return;
+                    }
+                    if (
+                      e.ctrlKey ||
+                      e.metaKey ||
+                      e.altKey ||
+                      e.key === 'Backspace' ||
+                      e.key === 'Delete' ||
+                      e.key === 'Tab' ||
+                      e.key === 'Escape' ||
+                      e.key === 'ArrowLeft' ||
+                      e.key === 'ArrowRight' ||
+                      e.key === 'Home' ||
+                      e.key === 'End'
+                    ) {
+                      return;
+                    }
+                    if (!/^\d$/.test(e.key)) {
+                      e.preventDefault();
+                    }
+                  }}
+                  onPaste={(e) => {
                     e.preventDefault();
-                    saveEdits();
-                    return;
+                    setMinsDraft(
+                      digitsOnly(e.clipboardData.getData('text') || ''),
+                    );
+                  }}
+                  onBlur={() =>
+                    setMinsDraft(
+                      String(
+                        parseDurationInput(minsDraft, task.estimatedMinutes),
+                      ),
+                    )
                   }
-                  if (
-                    e.ctrlKey ||
-                    e.metaKey ||
-                    e.altKey ||
-                    e.key === 'Backspace' ||
-                    e.key === 'Delete' ||
-                    e.key === 'Tab' ||
-                    e.key === 'Escape' ||
-                    e.key === 'ArrowLeft' ||
-                    e.key === 'ArrowRight' ||
-                    e.key === 'Home' ||
-                    e.key === 'End'
-                  ) {
-                    return;
-                  }
-                  if (!/^\d$/.test(e.key)) {
-                    e.preventDefault();
-                  }
-                }}
-                onPaste={(e) => {
-                  e.preventDefault();
-                  setMinsDraft(digitsOnly(e.clipboardData.getData('text') || ''));
-                }}
-                onBlur={() =>
-                  setMinsDraft(
-                    String(parseDurationInput(minsDraft, task.estimatedMinutes)),
-                  )
-                }
-                aria-label="Duration minutes"
-              />
-              <span>m</span>
+                  aria-label="Duration minutes"
+                />
+                <span className="priority-mins-suffix" aria-hidden>
+                  m
+                </span>
+              </label>
             </span>
             <span className="priority-edit-actions">
               <button
@@ -3182,81 +3340,6 @@ function SortableTask({
           <div className="priority-error">{editError}</div>
         )}
 
-        {commentsOpen && (
-          <div className="task-comments">
-            <div className="task-comments-head">
-              <label className="task-comments-label" htmlFor={`notes-${task.id}`}>
-                Comments
-              </label>
-              <button
-                type="button"
-                className="btn btn-ghost btn-pill btn-sm task-comments-collapse"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setCommentsOpen(false);
-                }}
-              >
-                Collapse
-              </button>
-            </div>
-            <textarea
-              id={`notes-${task.id}`}
-              className="task-comments-editor"
-              rows={4}
-              value={draft}
-              placeholder="Notes for this task — visible when you revisit this date."
-              onChange={(e) => setDraft(e.target.value)}
-            />
-            <div className="task-comments-append">
-              <input
-                type="text"
-                value={appendText}
-                placeholder="Add a quick comment…"
-                onChange={(e) => setAppendText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    onAppendComment();
-                  }
-                }}
-              />
-              <button
-                type="button"
-                className="btn btn-outline btn-pill btn-sm"
-                disabled={busy || !appendText.trim()}
-                onClick={onAppendComment}
-              >
-                Add
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary btn-pill btn-sm"
-                disabled={busy || !dirty}
-                onClick={() =>
-                  void runAction(async () => {
-                    const notes = draft.trim() || null;
-                    dispatch(
-                      tasksActions.optimisticPatch({
-                        taskId: task.id,
-                        patch: { notes },
-                      }),
-                    );
-                    await dispatch(
-                      updateTaskOptimistic({
-                        taskId: task.id,
-                        date: task.date,
-                        body: { notes },
-                      }),
-                    );
-                  })
-                }
-              >
-                {busy ? 'Saving…' : 'Save notes'}
-              </button>
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="priority-actions">
@@ -3352,7 +3435,7 @@ function SortableTask({
           >
             {busy ? '…' : 'Pause'}
           </button>
-        ) : (
+        ) : !done ? (
           <button
             className="btn btn-primary btn-pill btn-sm queue-start"
             type="button"
@@ -3360,11 +3443,9 @@ function SortableTask({
             title={
               isFutureDay
                 ? 'Timer unlocks on that day'
-                : done
-                  ? 'Already done'
-                  : otherSessionLive
-                    ? 'Pause the current session first'
-                    : 'Start timer'
+                : otherSessionLive
+                  ? 'Pause the current session first'
+                  : 'Start timer'
             }
             onClick={() => {
               if (!canStartTimer) return;
@@ -3378,8 +3459,92 @@ function SortableTask({
           >
             {busy ? '…' : 'Start'}
           </button>
-        )}
+        ) : null}
       </div>
+
+      {commentsOpen ? (
+        <div className="task-comments priority-expand">
+          <div className="task-comments-head">
+            <label className="task-comments-label" htmlFor={`notes-${task.id}`}>
+              Notes
+            </label>
+            <button
+              type="button"
+              className="btn btn-ghost btn-pill btn-sm task-comments-collapse"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setCommentsOpen(false);
+              }}
+            >
+              Close
+            </button>
+          </div>
+          <textarea
+            id={`notes-${task.id}`}
+            className="task-comments-editor"
+            rows={8}
+            value={draft}
+            placeholder="Notes & comments for this task…"
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <div className="task-comments-toolbar">
+            <input
+              type="text"
+              value={appendText}
+              placeholder="Quick comment…"
+              aria-label="Quick comment"
+              onChange={(e) => setAppendText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  onAppendComment();
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="btn btn-outline btn-pill btn-sm"
+              disabled={busy || !appendText.trim()}
+              onClick={onAppendComment}
+            >
+              Add
+            </button>
+            {dirty ? (
+              <button
+                type="button"
+                className="btn btn-primary btn-pill btn-sm"
+                disabled={busy}
+                onClick={() =>
+                  void runAction(async () => {
+                    const notes = draft.trim() || null;
+                    dispatch(
+                      tasksActions.optimisticPatch({
+                        taskId: task.id,
+                        patch: { notes },
+                      }),
+                    );
+                    await dispatch(
+                      updateTaskOptimistic({
+                        taskId: task.id,
+                        date: task.date,
+                        body: { notes },
+                      }),
+                    );
+                  })
+                }
+              >
+                {busy ? '…' : 'Save'}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      {(commentsOpen || (done && hasNotes)) && (
+        <div className="priority-expand">
+          <TaskAiPostPanel taskId={task.id} notes={draft} compact />
+        </div>
+      )}
 
       {deleteOpen ? (
         <div

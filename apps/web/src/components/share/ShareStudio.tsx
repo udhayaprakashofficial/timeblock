@@ -10,6 +10,7 @@ import { downloadNodePng } from './downloadPng';
 import { CloseIcon, DownloadIcon } from './ShareIcons';
 import { onAvatarChange, readAvatar } from '../user-avatar';
 import { useAppUserOptional } from '../../user-context';
+import { AiBrandPanel } from './AiBrandPanel';
 import './share.css';
 
 export type ShareTab =
@@ -17,7 +18,8 @@ export type ShareTab =
   | 'wrapped'
   | 'story'
   | 'square'
-  | 'badge';
+  | 'badge'
+  | 'ai';
 
 type Props = {
   open: boolean;
@@ -25,6 +27,7 @@ type Props = {
   week: ShareWeekPayload | null;
   badge?: ShareBadgePayload | null;
   initialTab?: ShareTab;
+  timeZone?: string | null;
 };
 
 type SharePerson = {
@@ -88,6 +91,7 @@ export function ShareStudio({
   week,
   badge,
   initialTab = 'linkedin',
+  timeZone,
 }: Props) {
   const [tab, setTab] = useState<ShareTab>(initialTab);
   const [busy, setBusy] = useState(false);
@@ -101,22 +105,30 @@ export function ShareStudio({
 
   if (!open) return null;
 
-  const tabs: Array<{ id: ShareTab; label: string; need: 'week' | 'badge' }> = [
+  const tabs: Array<{
+    id: ShareTab;
+    label: string;
+    need: 'week' | 'badge' | 'always';
+  }> = [
     { id: 'linkedin', label: 'LinkedIn', need: 'week' },
     { id: 'wrapped', label: 'Wrapped', need: 'week' },
     { id: 'story', label: 'Story', need: 'week' },
     { id: 'square', label: 'Square', need: 'week' },
     { id: 'badge', label: 'Badge', need: 'badge' },
+    { id: 'ai', label: 'Spotlight', need: 'always' },
   ];
 
-  const visible = tabs.filter((t) =>
-    t.need === 'badge' ? Boolean(badge) : Boolean(week),
-  );
+  const visible = tabs.filter((t) => {
+    if (t.need === 'always') return true;
+    if (t.need === 'badge') return Boolean(badge);
+    return Boolean(week);
+  });
   const active = visible.some((t) => t.id === tab)
     ? tab
-    : (visible[0]?.id ?? 'linkedin');
+    : (visible[0]?.id ?? 'ai');
 
   const onDownload = async () => {
+    if (active === 'ai') return;
     const node = stageRef.current?.querySelector(
       '[data-share-card]',
     ) as HTMLElement | null;
@@ -139,7 +151,7 @@ export function ShareStudio({
         <header className="share-studio-head">
           <div>
             <p className="share-kicker">Share</p>
-            <h2>Export a creative</h2>
+            <h2>{active === 'ai' ? 'AI brand post' : 'Export a creative'}</h2>
           </div>
           <button type="button" className="share-close" onClick={onClose}>
             <CloseIcon size={14} />
@@ -160,7 +172,7 @@ export function ShareStudio({
           ))}
         </nav>
 
-        <div className="share-stage" ref={stageRef}>
+        <div className={`share-stage${active === 'ai' ? ' is-ai' : ''}`} ref={stageRef}>
           {active === 'linkedin' && week ? (
             <LinkedInCard week={week} person={person} />
           ) : null}
@@ -176,20 +188,28 @@ export function ShareStudio({
           {active === 'badge' && badge ? (
             <BadgeCard badge={badge} person={person} />
           ) : null}
+          {active === 'ai' ? (
+            <AiBrandPanel
+              timeZone={timeZone}
+              anchorDate={week?.weekStart ?? null}
+            />
+          ) : null}
         </div>
 
-        <footer className="share-studio-foot">
-          {err ? <p className="share-err">{err}</p> : null}
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={busy}
-            onClick={() => void onDownload()}
-          >
-            <DownloadIcon size={15} />
-            {busy ? 'Preparing…' : 'Download PNG'}
-          </button>
-        </footer>
+        {active !== 'ai' ? (
+          <footer className="share-studio-foot">
+            {err ? <p className="share-err">{err}</p> : null}
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={() => void onDownload()}
+            >
+              <DownloadIcon size={15} />
+              {busy ? 'Preparing…' : 'Download PNG'}
+            </button>
+          </footer>
+        ) : null}
       </div>
     </div>
   );

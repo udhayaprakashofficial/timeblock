@@ -7,6 +7,8 @@ export type HintId =
   | 'nav.schedule'
   | 'nav.today'
   | 'nav.report'
+  | 'nav.history'
+  | 'nav.posts'
   | 'nav.badges'
   | 'nav.timesheet'
   | 'nav.settings'
@@ -28,6 +30,7 @@ export type HintId =
   | 'route.schedule'
   | 'route.today'
   | 'route.report'
+  | 'route.history'
   | 'route.timesheet'
   | 'route.settings'
   | 'route.badges'
@@ -47,13 +50,23 @@ export const HINTS: Record<HintId, HintCopy> = {
   },
   'nav.today': {
     id: 'nav.today',
-    title: 'Today',
-    body: 'Focus cockpit — start, pause, and finish the live block.',
+    title: 'Tasks',
+    body: 'Browse today’s work or jump to last week and any past date.',
   },
   'nav.report': {
     id: 'nav.report',
     title: 'Weekly report',
     body: 'Estimate vs actual, drift, and completion for the week.',
+  },
+  'nav.history': {
+    id: 'nav.history',
+    title: 'Homer',
+    body: 'Appraisal prep and interview pitches from your finished tasks.',
+  },
+  'nav.posts': {
+    id: 'nav.posts',
+    title: 'Spotlight',
+    body: 'Turn finished tasks into LinkedIn and X posts — saved with the work they came from.',
   },
   'nav.badges': {
     id: 'nav.badges',
@@ -152,13 +165,18 @@ export const HINTS: Record<HintId, HintCopy> = {
   },
   'route.today': {
     id: 'route.today',
-    title: 'Run one block at a time',
-    body: 'Start the live timer so hours show on your timesheet. Pause or Done when you switch.',
+    title: 'Browse tasks by date',
+    body: 'Use the date control for last week or any past day. Filter All / Open / Done in the Tasks panel.',
   },
   'route.report': {
     id: 'route.report',
     title: 'See estimate vs actual',
     body: 'Weekly drift and completion — share or export when you wrap the week.',
+  },
+  'route.history': {
+    id: 'route.history',
+    title: 'Homer',
+    body: 'Pick a date range, generate Appraisal or Interview from finished tasks, then copy or download.',
   },
   'route.timesheet': {
     id: 'route.timesheet',
@@ -188,6 +206,14 @@ export const ROUTE_HINTS: Array<{ match: (path: string) => boolean; id: HintId }
     { match: (p) => p === '/' || p.startsWith('/schedule'), id: 'route.schedule' },
     { match: (p) => p.startsWith('/today'), id: 'route.today' },
     { match: (p) => p.startsWith('/report'), id: 'route.report' },
+    {
+      match: (p) => p.startsWith('/history') || p.startsWith('/homer'),
+      id: 'route.history',
+    },
+    {
+      match: (p) => p.startsWith('/posts') || p.startsWith('/spotlight'),
+      id: 'nav.posts',
+    },
     { match: (p) => p.startsWith('/timesheet'), id: 'route.timesheet' },
     { match: (p) => p.startsWith('/settings'), id: 'route.settings' },
     { match: (p) => p.startsWith('/badges'), id: 'route.badges' },

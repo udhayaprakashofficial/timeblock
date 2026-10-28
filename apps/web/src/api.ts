@@ -69,31 +69,90 @@ async function fetchOnce(
   }
 }
 
+function requestTimeoutMs(path: string): number {
+  if (path.includes('finish-onboarding')) return 55_000;
+  // Gemini drafts/plans often need >30s through the Next→Nest proxy.
+  if (path.includes('/api/ai/')) return 120_000;
+  return 30_000;
+}
+
+function isProxyBlipStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+function isProxyBlipBody(text: string): boolean {
+  return (
+    /internal server error/i.test(text) ||
+    /^<!DOCTYPE/i.test(text) ||
+    /bad gateway/i.test(text) ||
+    /gateway timeout/i.test(text)
+  );
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
-  const timeoutMs = path.includes('finish-onboarding') ? 55_000 : 30_000;
+  const timeoutMs = requestTimeoutMs(path);
   const method = (init?.method ?? 'GET').toUpperCase();
-  const canRetry = method === 'GET' || method === 'HEAD';
+  const isAi = path.includes('/api/ai/');
+  // Nest --watch restarts drop in-flight AI POSTs; a couple of retries cover that blip.
+  const canRetry =
+    method === 'GET' || method === 'HEAD' || (isAi && method === 'POST');
+  const retryWait = (n: number) => (isAi ? 1200 * n : 400);
   try {
     try {
       res = await fetchOnce(path, init, timeoutMs);
     } catch (first) {
-      // Brief Nest/Next proxy blips during hot-reload; retry safe GETs once.
       if (!canRetry) throw first;
-      await new Promise((r) => setTimeout(r, 400));
-      res = await fetchOnce(path, init, timeoutMs);
+      await new Promise((r) => setTimeout(r, retryWait(1)));
+      try {
+        res = await fetchOnce(path, init, timeoutMs);
+      } catch {
+        if (!isAi) throw first;
+        await new Promise((r) => setTimeout(r, retryWait(2)));
+        res = await fetchOnce(path, init, timeoutMs);
+      }
     }
   } catch (err) {
     const raw = err instanceof Error ? err.message : '';
     if (/abort/i.test(raw)) {
       throw new Error(
-        'That took too long. Check your connection and try again.',
+        isAi
+          ? 'AI is still working — wait a moment and try again.'
+          : 'That took too long. Check your connection and try again.',
       );
     }
     throw new Error(
       'Cannot reach the server. Check your connection and try again.',
     );
   }
+
+  // Retry when Next's rewrite hits a restarting Nest (plain 5xx HTML/text).
+  if (
+    canRetry &&
+    !res.ok &&
+    (isProxyBlipStatus(res.status) ||
+      (res.status >= 500 && isProxyBlipBody(await res.clone().text())))
+  ) {
+    for (let attempt = 1; attempt <= (isAi ? 2 : 1); attempt++) {
+      await new Promise((r) => setTimeout(r, retryWait(attempt)));
+      try {
+        const again = await fetchOnce(path, init, timeoutMs);
+        res = again;
+        if (res.ok) break;
+        if (
+          !(
+            isProxyBlipStatus(res.status) ||
+            (res.status >= 500 && isProxyBlipBody(await res.clone().text()))
+          )
+        ) {
+          break;
+        }
+      } catch {
+        /* keep last res */
+      }
+    }
+  }
+
   if (!res.ok) {
     const text = await res.text();
     if (
@@ -125,11 +184,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // Next.js proxy often returns plain "Internal Server Error" when the API is down
     if (
       res.status >= 500 ||
-      /internal server error/i.test(text) ||
-      /^<!DOCTYPE/i.test(text)
+      isProxyBlipBody(text)
     ) {
       throw new Error(
-        'Server is temporarily unavailable. Please try again in a moment.',
+        isAi
+          ? 'AI server restarted mid-request. Please try again.'
+          : 'Server is temporarily unavailable. Please try again in a moment.',
       );
     }
     throw new Error((text || res.statusText).slice(0, 200));

@@ -101,16 +101,19 @@ function googleCallbackUrl(req?: Request): string {
   return `${primaryWebOrigin(req)}/api/auth/google/callback`;
 }
 
-function safeReturnPath(raw: string | undefined, fallback = '/'): string {
+function safeReturnPath(
+  raw: string | undefined,
+  fallback = '/schedule',
+): string {
   if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return fallback;
-  // Always land on dashboard after auth — drop auth UI query flags
+  // Always land on schedule after auth — drop auth UI query flags
   try {
     const u = new URL(raw, 'http://local');
     u.searchParams.delete('mode');
     u.searchParams.delete('authError');
     u.searchParams.delete('loginCode');
     const path = u.pathname + u.search;
-    return path === '' ? '/' : path;
+    return path === '' || path === '/' ? fallback : path;
   } catch {
     return fallback;
   }
@@ -323,15 +326,28 @@ export class AuthController {
     @Res() res: Response,
     @Next() next: NextFunction,
     @Query('returnTo') returnTo?: string,
+    @Query('intent') intent?: string,
   ) {
     if (!this.googleOAuth.isConfigured()) {
       return res.redirect(
-        `${primaryWebOrigin(req)}/?authError=google_not_configured`,
+        `${primaryWebOrigin(req)}/login?authError=google_not_configured`,
       );
     }
 
-    // Always return to dashboard after Google sign-in
-    req.session.oauthReturnTo = '/';
+    // Settings → Connect Google Calendar must request Calendar scopes.
+    // Plain login stays identity-only (works in Testing without Test users).
+    const wantCalendar =
+      intent === 'calendar' ||
+      Boolean(returnTo && returnTo.includes('/settings'));
+    // SessionData augmentation can lag Nest's watcher; cast keeps calendar connect compiling.
+    const sess = req.session as typeof req.session & {
+      oauthIntent?: 'login' | 'calendar';
+    };
+    sess.oauthIntent = wantCalendar ? 'calendar' : 'login';
+    req.session.oauthReturnTo = safeReturnPath(
+      returnTo,
+      wantCalendar ? '/settings?panel=account' : '/schedule',
+    );
     const originHeader = req.headers.origin;
     if (typeof originHeader === 'string' && originHeader) {
       req.session.oauthWebOrigin = originHeader;
@@ -346,23 +362,40 @@ export class AuthController {
     if (!req.session.oauthWebOrigin) {
       req.session.oauthWebOrigin = PROD_WEB_ORIGIN;
     }
-    void returnTo; // dashboard only
     const callbackURL = googleCallbackUrl(req);
+    const scope = wantCalendar
+      ? [
+          'email',
+          'profile',
+          'openid',
+          'https://www.googleapis.com/auth/calendar.readonly',
+        ]
+      : [
+          // Sign-in only. Calendar scopes are requested via intent=calendar.
+          'email',
+          'profile',
+          'openid',
+        ];
+    if (wantCalendar) {
+      const clientId = process.env.GOOGLE_CLIENT_ID?.trim() ?? '';
+      console.log(
+        `[auth/google] calendar connect client=${clientId.slice(0, 20)}… project=${clientId.split('-')[0] ?? '?'}`,
+      );
+    }
     req.session.save((err) => {
       if (err) {
-        return res.redirect(`${primaryWebOrigin(req)}/?authError=session`);
+        return res.redirect(
+          `${primaryWebOrigin(req)}/login?authError=session`,
+        );
       }
       passport.authenticate('google', {
         session: false,
         callbackURL,
-        scope: [
-          'email',
-          'profile',
-          'https://www.googleapis.com/auth/calendar.readonly',
-          'https://www.googleapis.com/auth/gmail.send',
-        ],
+        scope,
         accessType: 'offline',
-        prompt: 'consent',
+        // Calendar connect needs consent so refresh tokens + new scopes stick.
+        prompt: wantCalendar ? 'consent' : 'select_account',
+        includeGrantedScopes: true,
       } as passport.AuthenticateOptions)(req, res, next);
     });
   }
@@ -383,19 +416,34 @@ export class AuthController {
         _info?: unknown,
       ) => {
         const web = primaryWebOrigin(req);
+        const returnPath = safeReturnPath(
+          req.session.oauthReturnTo,
+          '/schedule',
+        );
+        delete req.session.oauthReturnTo;
+        delete (req.session as { oauthIntent?: string }).oauthIntent;
         if (err || !user || !user.id) {
-          console.error('[auth/google] callback failed', err?.message ?? _info);
+          console.error(
+            '[auth/google] callback failed',
+            err?.message || err || _info || 'no user',
+          );
           // Common when this host cannot reach oauth2.googleapis.com for token exchange
           const reason =
             err?.message?.includes('access token') ||
             String(_info ?? '').includes('access token')
               ? 'google_token'
               : 'google';
-          return res.redirect(`${web}/?authError=${reason}`);
+          const failPath = returnPath.startsWith('/settings')
+            ? returnPath
+            : '/login';
+          const sep = failPath.includes('?') ? '&' : '?';
+          return res.redirect(`${web}${failPath}${sep}authError=${reason}`);
         }
         const code = this.loginCodes.issue(user.id);
-        // Dashboard only
-        res.redirect(`${web}/?loginCode=${encodeURIComponent(code)}`);
+        const sep = returnPath.includes('?') ? '&' : '?';
+        res.redirect(
+          `${web}${returnPath}${sep}loginCode=${encodeURIComponent(code)}`,
+        );
       },
     )(req, res, next);
   }
@@ -416,7 +464,7 @@ export class AuthController {
       );
     }
 
-    req.session.oauthReturnTo = safeReturnPath(returnTo, '/');
+    req.session.oauthReturnTo = safeReturnPath(returnTo, '/schedule');
     if (typeof req.headers.referer === 'string') {
       try {
         req.session.oauthWebOrigin = new URL(req.headers.referer).origin;
@@ -426,7 +474,9 @@ export class AuthController {
     }
     req.session.save((err) => {
       if (err) {
-        return res.redirect(`${primaryWebOrigin(req)}/?authError=session`);
+        return res.redirect(
+          `${primaryWebOrigin(req)}/login?authError=session`,
+        );
       }
       passport.authenticate('microsoft', { session: false })(req, res, next);
     });
@@ -448,9 +498,12 @@ export class AuthController {
       ) => {
         const web = primaryWebOrigin(req);
         if (err || !user || !user.id) {
-          return res.redirect(`${web}/?authError=microsoft`);
+          return res.redirect(`${web}/login?authError=microsoft`);
         }
-        const returnPath = safeReturnPath(req.session.oauthReturnTo, '/');
+        const returnPath = safeReturnPath(
+          req.session.oauthReturnTo,
+          '/schedule',
+        );
         const code = this.loginCodes.issue(user.id);
         const sep = returnPath.includes('?') ? '&' : '?';
         res.redirect(

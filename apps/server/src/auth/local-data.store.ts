@@ -46,6 +46,11 @@ type LocalTask = {
   sourceProvider?: string | null;
   sourceExternalId?: string | null;
   notes?: string | null;
+  careerProject?: string | null;
+  careerResponsibility?: string | null;
+  careerAchievement?: string | null;
+  careerContribution?: string | null;
+  careerOutcome?: string | null;
   inBacklog?: boolean;
 };
 
@@ -207,6 +212,29 @@ export class LocalDataStore {
       this.upsertSchedule(userId, { ...dto, weekday });
     }
     return this.listSchedule(userId);
+  }
+
+  listTasksInRange(userId: string, from: string, to: string): TaskDto[] {
+    this.ensureDefaultSchedule(userId);
+    const db = this.read();
+    return db.tasks
+      .filter(
+        (t) =>
+          t.userId === userId &&
+          !t.inBacklog &&
+          t.date >= from &&
+          t.date <= to,
+      )
+      .sort((a, b) => a.date.localeCompare(b.date) || a.order - b.order)
+      .map((t) => this.toDto(t));
+  }
+
+  getTask(userId: string, taskId: string): TaskDto | null {
+    this.ensureDefaultSchedule(userId);
+    const t = this.read().tasks.find(
+      (x) => x.id === taskId && x.userId === userId,
+    );
+    return t ? this.toDto(t) : null;
   }
 
   listTasks(userId: string, dateStr: string): TaskDto[] {
@@ -669,6 +697,11 @@ export class LocalDataStore {
     taskId: string,
     patch: {
       notes?: string | null;
+      careerProject?: string | null;
+      careerResponsibility?: string | null;
+      careerAchievement?: string | null;
+      careerContribution?: string | null;
+      careerOutcome?: string | null;
       name?: string;
       estimatedMinutes?: number;
       startTime?: string | null;
@@ -685,6 +718,36 @@ export class LocalDataStore {
     if (!t) throw new Error('Task not found');
     const prevDate = t.date;
     if (patch.notes !== undefined) t.notes = patch.notes;
+    if (patch.careerProject !== undefined) {
+      t.careerProject =
+        patch.careerProject == null
+          ? null
+          : String(patch.careerProject).trim() || null;
+    }
+    if (patch.careerResponsibility !== undefined) {
+      t.careerResponsibility =
+        patch.careerResponsibility == null
+          ? null
+          : String(patch.careerResponsibility).trim() || null;
+    }
+    if (patch.careerAchievement !== undefined) {
+      t.careerAchievement =
+        patch.careerAchievement == null
+          ? null
+          : String(patch.careerAchievement).trim() || null;
+    }
+    if (patch.careerContribution !== undefined) {
+      t.careerContribution =
+        patch.careerContribution == null
+          ? null
+          : String(patch.careerContribution).trim() || null;
+    }
+    if (patch.careerOutcome !== undefined) {
+      t.careerOutcome =
+        patch.careerOutcome == null
+          ? null
+          : String(patch.careerOutcome).trim() || null;
+    }
     if (patch.name !== undefined) t.name = patch.name.trim();
     if (patch.estimatedMinutes !== undefined) {
       t.estimatedMinutes = Math.round(patch.estimatedMinutes);
@@ -1124,6 +1187,11 @@ export class LocalDataStore {
       sourceProvider: t.sourceProvider ?? null,
       sourceExternalId: t.sourceExternalId ?? null,
       notes: t.notes ?? null,
+      careerProject: t.careerProject ?? null,
+      careerResponsibility: t.careerResponsibility ?? null,
+      careerAchievement: t.careerAchievement ?? null,
+      careerContribution: t.careerContribution ?? null,
+      careerOutcome: t.careerOutcome ?? null,
       inBacklog: Boolean(t.inBacklog),
     };
   }

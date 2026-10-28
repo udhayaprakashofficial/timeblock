@@ -16,100 +16,133 @@ import './pricing.css';
 
 const FREE_FEATURES = [
   'Google and Outlook calendars',
-  'Brain-dump with time costs',
+  'Tasks with a time cost',
   'The 80% cap and its warnings',
   'Start / stop timing',
-  'Estimate against actual',
-  'Day close and the Friday sheet',
-  'Streaks and badges',
+  '5 AI credits (one-time)',
+  'Spotlight — tasks to LinkedIn & X',
+  'Homer — appraisal & interview pitch',
 ];
 
 const PRO_FEATURES = [
   'Everything in Free',
+  '50 AI credits every month',
   'Searchable history of finished work',
-  'AI work summary for appraisals',
-  'A record of a whole role, for interviews',
-  'Finished tasks turned into posts',
+  'Unlimited exports (Excel, PDF) & share links',
   'Priority support',
 ];
 
 const ANNUAL_FEATURES = [
   'Everything in Pro, for a year',
-  'Every AI feature the day it ships',
+  'Price held while you stay subscribed',
   'Lock in $29/year for founding members',
   'Your name in the founding list',
-  'A say in what gets built next',
 ];
 
-const COMPARE_ROWS: Array<{
-  label: string;
-  free: boolean;
-  pro: boolean;
-  annual: boolean;
-  emphasize?: boolean;
-}> = [
+type CompareCell = boolean | string;
+
+type CompareRow =
+  | { kind: 'section'; label: string }
+  | {
+      kind: 'feature';
+      label: string;
+      free: CompareCell;
+      pro: CompareCell;
+      annual: CompareCell;
+      emphasize?: boolean;
+    };
+
+const COMPARE_ROWS: CompareRow[] = [
+  { kind: 'section', label: 'Planner' },
   {
+    kind: 'feature',
     label: 'Google and Outlook calendar sync',
     free: true,
     pro: true,
     annual: true,
   },
   {
-    label: 'Brain-dump with a time cost per task',
+    kind: 'feature',
+    label: 'Tasks with a time cost',
     free: true,
     pro: true,
     annual: true,
   },
   {
+    kind: 'feature',
     label: 'The 80% cap and overcommit warnings',
     free: true,
     pro: true,
     annual: true,
   },
   {
-    label: 'Start / stop timing, estimate against actual',
+    kind: 'feature',
+    label: 'Start and stop timing, estimate vs actual',
     free: true,
     pro: true,
     annual: true,
   },
   {
-    label: 'Day close and the printable Friday sheet',
+    kind: 'feature',
+    label: 'Day close, streaks and badges',
     free: true,
     pro: true,
     annual: true,
   },
   {
-    label: 'Streaks, badges and shareable weeks',
+    kind: 'feature',
+    label: 'Weekly timesheet in the app',
     free: true,
     pro: true,
     annual: true,
   },
   {
-    label: 'Searchable history of everything you finished',
+    kind: 'feature',
+    label: 'Unlimited exports (Excel, PDF) and share links',
+    free: false,
+    pro: true,
+    annual: true,
+  },
+  { kind: 'section', label: 'AI' },
+  {
+    kind: 'feature',
+    label: 'AI credits',
+    free: '5 one-time',
+    pro: '50 / month',
+    annual: '50 / month',
+  },
+  {
+    kind: 'feature',
+    label: 'Spotlight: tasks to LinkedIn and X posts',
+    free: true,
+    pro: true,
+    annual: true,
+  },
+  {
+    kind: 'feature',
+    label: 'Homer: appraisal prep and interview pitch',
+    free: true,
+    pro: true,
+    annual: true,
+  },
+  {
+    kind: 'feature',
+    label: 'Searchable history of finished work',
+    free: false,
+    pro: true,
+    annual: true,
+  },
+  { kind: 'section', label: 'Extras' },
+  {
+    kind: 'feature',
+    label: 'Priority support',
     free: false,
     pro: true,
     annual: true,
   },
   {
-    label: 'AI work summary for appraisals',
-    free: false,
-    pro: true,
-    annual: true,
-  },
-  {
-    label: 'A record of a whole role, written for interviews',
-    free: false,
-    pro: true,
-    annual: true,
-  },
-  {
-    label: 'Finished tasks turned into post-ready recaps',
-    free: false,
-    pro: true,
-    annual: true,
-  },
-  {
-    label: 'Price held for a year at the $29 founding rate',
+    kind: 'feature',
+    label: 'Price held while you stay subscribed',
     free: false,
     pro: false,
     annual: true,
@@ -192,6 +225,19 @@ function Dot({ tone }: { tone: 'ink' | 'accent' | 'empty' }) {
       aria-hidden
     />
   );
+}
+
+function CompareCellValue({
+  value,
+  accent,
+}: {
+  value: CompareCell;
+  accent?: boolean;
+}) {
+  if (typeof value === 'string') {
+    return <span className="pricing-cell-note">{value}</span>;
+  }
+  return <Dot tone={value ? (accent ? 'accent' : 'ink') : 'empty'} />;
 }
 
 export function PricingPage({
@@ -529,8 +575,8 @@ export function PricingPage({
           </h1>
           <p className="pricing-lede">
             {embedded
-              ? 'Free covers planning forever. Pro locks AI receipts and work history — billing starts when those features ship.'
-              : 'Everything you need to plan a finishable day costs nothing, forever. Pro is the layer that turns the work you finished into something you can hand to a manager, or an interviewer.'}
+              ? 'Free covers planning, Spotlight, and Homer with 5 one-time AI credits. Pro adds monthly credits, searchable history, and unlimited exports.'
+              : 'Everything you need to plan a finishable day costs nothing, forever. Pro adds monthly AI credits, searchable history, and unlimited exports.'}
           </p>
 
           <div className="pricing-plans">
@@ -691,24 +737,37 @@ export function PricingPage({
                 Annual welcome
               </span>
             </div>
-            {COMPARE_ROWS.map((row) => (
-              <div
-                key={row.label}
-                className={`pricing-table-row${row.emphasize ? ' is-em' : ''}`}
-                role="row"
-              >
-                <span role="cell">{row.label}</span>
-                <span role="cell">
-                  <Dot tone={row.free ? 'ink' : 'empty'} />
-                </span>
-                <span role="cell">
-                  <Dot tone={row.pro ? 'ink' : 'empty'} />
-                </span>
-                <span role="cell">
-                  <Dot tone={row.annual ? 'accent' : 'empty'} />
-                </span>
-              </div>
-            ))}
+            {COMPARE_ROWS.map((row) =>
+              row.kind === 'section' ? (
+                <div
+                  key={`sec-${row.label}`}
+                  className="pricing-table-row is-section"
+                  role="row"
+                >
+                  <span role="cell">{row.label}</span>
+                  <span role="cell" />
+                  <span role="cell" />
+                  <span role="cell" />
+                </div>
+              ) : (
+                <div
+                  key={row.label}
+                  className={`pricing-table-row${row.emphasize ? ' is-em' : ''}`}
+                  role="row"
+                >
+                  <span role="cell">{row.label}</span>
+                  <span role="cell">
+                    <CompareCellValue value={row.free} accent={false} />
+                  </span>
+                  <span role="cell">
+                    <CompareCellValue value={row.pro} accent={false} />
+                  </span>
+                  <span role="cell">
+                    <CompareCellValue value={row.annual} accent />
+                  </span>
+                </div>
+              ),
+            )}
           </div>
         </div>
       </section>

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Google Meet">
+  <!-- Google Meet mark: frame + lens (brand colors) -->
+  <path fill="#1A73E8" d="M6.5 15.2c0-2 1.6-3.7 3.7-3.7H16v7.4H6.5v-3.7z"/>
+  <path fill="#EA4335" d="M6.5 15.2v3.7H16V11.5H10.2c-2.1 0-3.7 1.6-3.7 3.7z"/>
+  <path fill="#FBBC04" d="M16 11.5h14.8c2 0 3.7 1.6 3.7 3.7v3.7H16v-7.4z"/>
+  <path fill="#34A853" d="M16 29.1h14.8c2 0 3.7-1.6 3.7-3.7v-3.7H16v7.4zm18.5-11.1v11.1L42.8 33c.6.4 1.5-.1 1.5-.8V14.9c0-.7-.9-1.2-1.5-.8l-8.3 4z"/>
+  <path fill="#188038" d="M34.5 18v11.1l-4.2 2.1V15.9L34.5 18z"/>
+  <path fill="#1A73E8" d="M6.5 18.9H16v10.2H10.2c-2.1 0-3.7-1.6-3.7-3.7v-6.5z"/>
+  <path fill="#34A853" d="M16 29.1v3.7h11.1c2.1 0 3.7-1.6 3.7-3.7H16z"/>
+  <!-- Screen cutout -->
+  <rect x="16" y="18.9" width="14.8" height="10.2" fill="#fff"/>
+</svg>

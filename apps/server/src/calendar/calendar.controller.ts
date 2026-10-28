@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   Get,
   Post,
@@ -38,6 +39,31 @@ export class CalendarController {
       return await this.syncService.listEvents(id, date);
     } catch {
       return [];
+    }
+  }
+
+  @Get('feed')
+  async feedStatus(@CurrentUserId() userId: string) {
+    const id = await this.resolve(userId);
+    return this.syncService.feedStatus(id);
+  }
+
+  @Post('feed')
+  async saveFeed(
+    @CurrentUserId() userId: string,
+    @Body() body: { icsUrl?: string },
+  ) {
+    const id = await this.resolve(userId);
+    const icsUrl = body.icsUrl?.trim() ?? '';
+    if (!icsUrl) {
+      throw new BadRequestException('Missing calendar feed URL');
+    }
+    try {
+      return await this.syncService.saveFeed(id, icsUrl);
+    } catch (err) {
+      throw new BadRequestException(
+        err instanceof Error ? err.message : 'Could not connect calendar',
+      );
     }
   }
 

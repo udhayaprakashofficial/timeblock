@@ -1355,11 +1355,19 @@ export class UsersService {
     proPaidAt?: Date | string | null;
     proActivatedAt?: Date | string | null;
     dodoPaymentId?: string | null;
-    oauthAccounts: Array<{ provider: string }>;
+    oauthAccounts: Array<{ provider: string; scope?: string | null }>;
   }): UserDto {
-    return this.dtoFromParts(
-      user,
-      user.oauthAccounts.map((a) => a.provider),
-    );
+    const providers = user.oauthAccounts
+      .filter((a) => {
+        if (a.provider !== 'google') return true;
+        const s = (a.scope ?? '').toLowerCase();
+        return (
+          s.includes('calendar.readonly') ||
+          s.includes('calendar.events') ||
+          s.includes('/auth/calendar')
+        );
+      })
+      .map((a) => a.provider);
+    return this.dtoFromParts(user, providers);
   }
 }

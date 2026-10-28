@@ -8,6 +8,17 @@ import { SchedulerService } from '../tasks/scheduler.service';
 import { SupabaseRestService } from '../supabase/supabase-rest.service';
 import { formatDateInTimeZone, dayBoundsInTimeZone, todayInTimeZone, minutesInTimeZone, normalizeTimeZone, dateOnly } from '../common/time.util';
 import { createId } from '../supabase/create-id';
+import { CalendarFeedsStore } from './calendar-feeds.store';
+import { isLikelyIcsUrl, parseIcsEvents } from './ics-parse';
+
+function hasGoogleCalendarScope(scope: string | null | undefined): boolean {
+  const s = (scope ?? '').toLowerCase();
+  return (
+    s.includes('calendar.readonly') ||
+    s.includes('calendar.events') ||
+    s.includes('/auth/calendar')
+  );
+}
 
 function parseGraphDateTime(dateTime: string, _timeZone?: string): Date {
   // Graph often returns local wall time without offset; treat as UTC-ish ISO if Z/offset present
@@ -23,6 +34,12 @@ function humanizeCalendarError(provider: string, raw: string): string {
       'Google Calendar API is disabled for this Cloud project. Enable it at ' +
       'https://console.developers.google.com/apis/api/calendar-json.googleapis.com/overview?project=1021749382427 ' +
       'then wait 1–2 minutes and sync again.'
+    );
+  }
+  if (/Insufficient Permission|ACCESS_TOKEN_SCOPE|insufficient authentication scopes/i.test(raw)) {
+    return (
+      'Google Calendar permission missing. Click “Reconnect Google Calendar” in Settings, ' +
+      'allow Calendar access, then sync again.'
     );
   }
   if (/invalid_grant|Token has been expired|invalid authentication/i.test(raw)) {
@@ -53,14 +70,19 @@ export class CalendarSyncService {
     private readonly authService: AuthService,
     private readonly scheduler: SchedulerService,
     private readonly supabase: SupabaseRestService,
+    private readonly feeds: CalendarFeedsStore,
   ) {}
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async pollAllUsers() {
-    let accounts: Array<{ userId: string; provider: CalendarProvider }> = [];
+    let accounts: Array<{
+      userId: string;
+      provider: CalendarProvider;
+      scope?: string | null;
+    }> = [];
     try {
       accounts = await this.prisma.oAuthAccount.findMany({
-        select: { userId: true, provider: true },
+        select: { userId: true, provider: true, scope: true },
       });
     } catch {
       if (this.supabase.isConfigured()) {
@@ -68,15 +90,33 @@ export class CalendarSyncService {
         accounts = rows.map((r) => ({
           userId: r.userId,
           provider: r.provider as CalendarProvider,
+          scope: (r as { scope?: string | null }).scope,
         }));
       }
     }
     for (const account of accounts) {
+      if (
+        account.provider === CalendarProvider.google &&
+        !hasGoogleCalendarScope(account.scope)
+      ) {
+        continue;
+      }
       try {
         await this.syncUserProvider(account.userId, account.provider);
       } catch (err) {
         this.logger.warn(
           `Sync failed for ${account.userId}/${account.provider}: ${String(err)}`,
+        );
+      }
+    }
+    for (const feed of this.feeds.all()) {
+      try {
+        await this.fetchAndApplyIcs(feed.userId, feed.icsUrl);
+        const tz = await this.resolveTimeZone(feed.userId);
+        await this.scheduler.rescheduleDay(feed.userId, todayInTimeZone(tz));
+      } catch (err) {
+        this.logger.warn(
+          `ICS sync failed for ${feed.userId}: ${String(err)}`,
         );
       }
     }
@@ -110,37 +150,93 @@ export class CalendarSyncService {
     await this.scheduler.rescheduleDay(userId, today);
   }
 
+  feedStatus(userId: string) {
+    return { connected: Boolean(this.feeds.get(userId)) };
+  }
+
+  async saveFeed(userId: string, icsUrl: string) {
+    const url = icsUrl.trim();
+    if (!isLikelyIcsUrl(url)) {
+      throw new Error(
+        'Use the Secret address in iCal format from Google Calendar → Settings → Integrate calendar.',
+      );
+    }
+    await this.fetchAndApplyIcs(userId, url);
+    this.feeds.set(userId, url);
+    const tz = await this.resolveTimeZone(userId);
+    await this.scheduler.rescheduleDay(userId, todayInTimeZone(tz));
+    return { ok: true as const, synced: ['google'] };
+  }
+
   async syncNow(userId: string) {
-    let providers: CalendarProvider[] = [];
+    type Acc = { provider: CalendarProvider; scope?: string | null };
+    let accounts: Acc[] = [];
     try {
-      const accounts = await this.prisma.oAuthAccount.findMany({
+      accounts = await this.prisma.oAuthAccount.findMany({
         where: { userId },
+        select: { provider: true, scope: true },
       });
-      providers = accounts.map((a) => a.provider);
-      if (!providers.length && this.supabase.isConfigured()) {
+      if (!accounts.length && this.supabase.isConfigured()) {
         const rows = await this.supabase.listOAuthAccounts(userId);
-        providers = rows.map((r) => r.provider as CalendarProvider);
+        accounts = rows.map((r) => ({
+          provider: r.provider as CalendarProvider,
+          scope: (r as { scope?: string | null }).scope,
+        }));
       }
     } catch {
       if (this.supabase.isConfigured()) {
         const rows = await this.supabase.listOAuthAccounts(userId);
-        providers = rows.map((r) => r.provider as CalendarProvider);
+        accounts = rows.map((r) => ({
+          provider: r.provider as CalendarProvider,
+          scope: (r as { scope?: string | null }).scope,
+        }));
       }
     }
-    if (!providers.length) {
+
+    const providers = accounts
+      .filter(
+        (a) =>
+          a.provider !== CalendarProvider.google ||
+          hasGoogleCalendarScope(a.scope),
+      )
+      .map((a) => a.provider);
+
+    const feedUrl = this.feeds.get(userId);
+    if (!providers.length && !feedUrl) {
       throw new Error(
-        'No calendar connected. Click “Connect Google Calendar” first (enable offline access).',
+        'No calendar connected. Click “Connect Google Calendar” first.',
       );
     }
     const synced: string[] = [];
     const errors: string[] = [];
+
+    if (feedUrl) {
+      try {
+        await this.fetchAndApplyIcs(userId, feedUrl);
+        const tz = await this.resolveTimeZone(userId);
+        await this.scheduler.rescheduleDay(userId, todayInTimeZone(tz));
+        synced.push('google');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`ICS sync failed for ${userId}: ${msg}`);
+        errors.push(msg.slice(0, 220));
+      }
+    }
+
     for (const provider of providers) {
       try {
         await this.syncUserProvider(userId, provider);
-        synced.push(provider);
+        if (!synced.includes(provider)) synced.push(provider);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         this.logger.warn(`Sync failed for ${userId}/${provider}: ${msg}`);
+        if (
+          provider === CalendarProvider.google &&
+          /Insufficient Permission|ACCESS_TOKEN_SCOPE/i.test(msg) &&
+          feedUrl
+        ) {
+          continue;
+        }
         errors.push(humanizeCalendarError(provider, msg));
       }
     }
@@ -148,6 +244,52 @@ export class CalendarSyncService {
       throw new Error(errors.join(' · '));
     }
     return { synced, ...(errors.length ? { warning: errors.join(' · ') } : {}) };
+  }
+
+  private async fetchAndApplyIcs(userId: string, icsUrl: string) {
+    const res = await fetch(icsUrl, {
+      headers: { 'User-Agent': 'CupkeyCalendarSync/1.0' },
+      redirect: 'follow',
+    });
+    if (!res.ok) {
+      throw new Error(
+        `Could not fetch calendar (${res.status}). Check the secret iCal URL.`,
+      );
+    }
+    const text = await res.text();
+    if (!/BEGIN:VCALENDAR/i.test(text)) {
+      throw new Error(
+        'That URL is not an iCal feed. Copy Secret address in iCal format from Google Calendar settings.',
+      );
+    }
+
+    const events = parseIcsEvents(text);
+    const windowStart = new Date();
+    windowStart.setDate(windowStart.getDate() - 1);
+    const windowEnd = new Date();
+    windowEnd.setDate(windowEnd.getDate() + 14);
+
+    const seenIds = new Set<string>();
+    for (const ev of events) {
+      if (ev.end < windowStart || ev.start > windowEnd) continue;
+      seenIds.add(ev.uid);
+      await this.saveEvent({
+        userId,
+        provider: CalendarProvider.google,
+        externalId: ev.uid,
+        title: ev.title,
+        start: ev.start,
+        end: ev.end,
+        meetLink: ev.meetLink,
+      });
+    }
+    await this.purgeMissingEvents(
+      userId,
+      CalendarProvider.google,
+      windowStart,
+      windowEnd,
+      seenIds,
+    );
   }
 
   async listEvents(userId: string, dateStr: string) {

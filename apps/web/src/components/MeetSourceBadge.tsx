@@ -42,31 +42,18 @@ const LABELS: Record<MeetTool, string> = {
   generic: 'Meeting',
 };
 
+/** Official Google Meet camera mark (brand colors). */
 function GoogleMeetIcon({ size }: { size: number }) {
-  // Simplified Google Meet camera mark (brand colors).
   return (
-    <svg
+    <img
+      src="/google-meet.svg"
+      alt=""
       width={size}
       height={size}
-      viewBox="0 0 24 24"
+      draggable={false}
       aria-hidden
-      focusable="false"
-    >
-      <path
-        fill="#00832D"
-        d="M12 7.5v9H4.75A1.75 1.75 0 0 1 3 14.75v-5.5C3 8.28 3.78 7.5 4.75 7.5H12z"
-      />
-      <path
-        fill="#0066DA"
-        d="M12 7.5h5.25c.97 0 1.75.78 1.75 1.75v5.5c0 .97-.78 1.75-1.75 1.75H12v-9z"
-      />
-      <path
-        fill="#E37400"
-        d="M17.25 9.2 21.1 7.05c.42-.23.9.08.9.56v8.78c0 .48-.48.79-.9.56L17.25 14.8V9.2z"
-      />
-      <path fill="#C5221F" d="M12 12.75H3v2c0 .97.78 1.75 1.75 1.75H12v-3.75z" />
-      <path fill="#188038" d="M12 7.5H4.75C3.78 7.5 3 8.28 3 9.25v2H12V7.5z" />
-    </svg>
+      style={{ display: 'block', objectFit: 'contain' }}
+    />
   );
 }
 

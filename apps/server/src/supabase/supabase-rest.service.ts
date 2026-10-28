@@ -987,6 +987,11 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
     dto: {
       name?: string;
       notes?: string | null;
+      careerProject?: string | null;
+      careerResponsibility?: string | null;
+      careerAchievement?: string | null;
+      careerContribution?: string | null;
+      careerOutcome?: string | null;
       estimatedMinutes?: number;
       startTime?: string | null;
       endTime?: string | null;
@@ -1010,6 +1015,19 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
     if (dto.notes !== undefined) {
       patch.notes =
         dto.notes == null ? null : String(dto.notes).trim() || null;
+    }
+    const careerKeys = [
+      'careerProject',
+      'careerResponsibility',
+      'careerAchievement',
+      'careerContribution',
+      'careerOutcome',
+    ] as const;
+    for (const key of careerKeys) {
+      if (dto[key] !== undefined) {
+        patch[key] =
+          dto[key] == null ? null : String(dto[key]).trim() || null;
+      }
     }
     if (dto.estimatedMinutes !== undefined) {
       patch.estimatedMinutes = Math.round(Number(dto.estimatedMinutes));
@@ -1407,8 +1425,9 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       throw new Error('Pause the current session before starting another');
     }
     const now = new Date().toISOString();
+    const entryId = createId();
     await this.insert('TimeEntry', {
-      id: createId(),
+      id: entryId,
       taskId,
       startedAt: now,
       endedAt: null,
@@ -1419,9 +1438,18 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       status: 'in_progress',
       updatedAt: now,
     });
-    return (await this.listTasks(userId, taskDate)).find(
+    const listed = (await this.listTasks(userId, taskDate)).find(
       (t) => t.id === taskId,
     );
+    // Guarantee live timer fields even if the follow-up list omits the open entry.
+    if (!listed) return listed;
+    if (listed.activeEntryId && listed.timerStartedAt) return listed;
+    return {
+      ...listed,
+      status: 'in_progress',
+      activeEntryId: listed.activeEntryId ?? entryId,
+      timerStartedAt: listed.timerStartedAt ?? now,
+    };
   }
 
   async stopTimer(userId: string, taskId: string) {
@@ -1517,7 +1545,11 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       (sum, e) => sum + entryActualMinutes(e),
       0,
     );
-    const active = entries.find((e) => !e.endedAt);
+    const isOpenEntry = (e: Record<string, unknown>) => {
+      const ended = e.endedAt;
+      return ended == null || ended === '' || ended === undefined;
+    };
+    const active = entries.find(isOpenEntry);
     const status = String(t.status) as 'pending' | 'in_progress' | 'completed';
     const estimatedMinutes = Number(t.estimatedMinutes);
     // Pending: timer only. Completed with no timer sessions: assigned time.
@@ -1555,6 +1587,18 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
         ? String(t.sourceExternalId)
         : null,
       notes: t.notes != null ? String(t.notes) : null,
+      careerProject:
+        t.careerProject != null ? String(t.careerProject) : null,
+      careerResponsibility:
+        t.careerResponsibility != null
+          ? String(t.careerResponsibility)
+          : null,
+      careerAchievement:
+        t.careerAchievement != null ? String(t.careerAchievement) : null,
+      careerContribution:
+        t.careerContribution != null ? String(t.careerContribution) : null,
+      careerOutcome:
+        t.careerOutcome != null ? String(t.careerOutcome) : null,
       inBacklog: Boolean(t.inBacklog),
     };
   }
