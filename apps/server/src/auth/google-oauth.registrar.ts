@@ -33,15 +33,25 @@ export class GoogleOAuthRegistrar implements OnModuleInit {
   }
 
   register(clientID: string, clientSecret: string) {
-    // Prefer app.cupkey.io in production. Stale timeblock-web-ashy URLs cause
-    // Google Error 400: redirect_uri_mismatch for live Cupkey.
+    // Prefer app.cupkey.io in production. Stale timeblock-web-ashy / localhost /
+    // marketing cupkey.io URLs cause redirect_uri_mismatch or lost sessions.
     const fromEnv = process.env.GOOGLE_CALLBACK_URL?.trim() ?? '';
-    const callbackURL =
-      fromEnv && !fromEnv.includes('timeblock-web-ashy.vercel.app')
+    const isProd = Boolean(
+      process.env.VERCEL ||
+        process.env.VERCEL_ENV ||
+        process.env.NODE_ENV === 'production',
+    );
+    const prodCallback = 'https://app.cupkey.io/api/auth/google/callback';
+    const callbackURL = isProd
+      ? fromEnv.startsWith('https://app.cupkey.io/') &&
+        fromEnv.includes('/api/auth/google/callback')
         ? fromEnv
-        : process.env.VERCEL || process.env.NODE_ENV === 'production'
-          ? 'https://app.cupkey.io/api/auth/google/callback'
-          : 'http://localhost:3001/api/auth/google/callback';
+        : prodCallback
+      : fromEnv &&
+          !fromEnv.includes('timeblock-web-ashy.vercel.app') &&
+          !fromEnv.includes('cupkey.io')
+        ? fromEnv
+        : 'http://localhost:3001/api/auth/google/callback';
 
     // Passport requires non-empty strings; real values checked at request time
     const id = clientID || 'not-configured';

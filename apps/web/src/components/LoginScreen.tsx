@@ -91,7 +91,7 @@ function AuthCard({
   const onGoogleClick = () => {
     setError(null);
     setBusy(true);
-    window.location.href = `/api/auth/google?returnTo=${encodeURIComponent('/')}`;
+    window.location.href = `/api/auth/google?returnTo=${encodeURIComponent('/schedule')}`;
   };
 
   const onSubmit = async (e: FormEvent) => {

@@ -27,6 +27,64 @@ export class AuthService {
     /** If already logged in, attach this calendar to the current user */
     linkToUserId?: string;
   }) {
+    // Prefer Supabase REST on Vercel — Prisma :5432 is often unreachable from serverless.
+    if (
+      this.supabase?.isConfigured() &&
+      input.provider === CalendarProvider.google
+    ) {
+      try {
+        await this.supabase.ping();
+        const email = input.email.trim().toLowerCase();
+        const prior = await this.supabase.getUserByEmail(email);
+        const isNew = !prior;
+        const user = await this.supabase.upsertGoogleUser({
+          email,
+          name: input.name,
+          googleId: input.providerAccountId,
+          accessTokenEncrypted: this.crypto.encrypt(input.accessToken),
+          refreshTokenEncrypted: input.refreshToken
+            ? this.crypto.encrypt(input.refreshToken)
+            : null,
+        });
+        if (input.scope) {
+          try {
+            const rows = await this.supabase.select<{ id: string }>(
+              'OAuthAccount',
+              'id',
+              {
+                filter: `userId=eq.${user.id}&provider=eq.google`,
+                limit: 1,
+              },
+            );
+            if (rows[0]?.id) {
+              await this.supabase.patch('OAuthAccount', `id=eq.${rows[0].id}`, {
+                scope: input.scope,
+                updatedAt: new Date().toISOString(),
+              });
+            }
+          } catch {
+            /* scope is best-effort */
+          }
+        }
+        if (isNew) {
+          await this.users.deliverWelcomeEmail(user.id, email, input.name, {
+            firstSignup: true,
+          });
+        }
+        return {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          onboardingCompleted: user.onboardingCompleted ?? false,
+        };
+      } catch (restErr) {
+        console.warn(
+          '[auth] Supabase OAuth upsert failed — trying Prisma',
+          restErr instanceof Error ? restErr.message : restErr,
+        );
+      }
+    }
+
     const existingAccount = await this.prisma.oAuthAccount.findUnique({
       where: {
         provider_providerAccountId: {

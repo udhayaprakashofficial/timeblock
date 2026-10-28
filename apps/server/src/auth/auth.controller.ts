@@ -19,19 +19,34 @@ import { UsersService } from '../users/users.service';
 import { CalendarSyncService } from '../calendar/calendar-sync.service';
 
 const PROD_WEB_ORIGIN = 'https://app.cupkey.io';
+const PROD_GOOGLE_CALLBACK = `${PROD_WEB_ORIGIN}/api/auth/google/callback`;
+
+function isMarketingOrigin(origin: string): boolean {
+  try {
+    const host = new URL(origin).hostname.toLowerCase();
+    return host === 'cupkey.io' || host === 'www.cupkey.io';
+  } catch {
+    return false;
+  }
+}
+
+/** Marketing cupkey.io has no app session — always send auth back to the app host. */
+function normalizeWebOrigin(origin: string): string {
+  if (isMarketingOrigin(origin)) return PROD_WEB_ORIGIN;
+  return origin;
+}
 
 function isAllowedWebOrigin(origin: string, allowed: string[]): boolean {
-  if (allowed.includes(origin)) return true;
+  const normalized = normalizeWebOrigin(origin);
+  if (allowed.includes(normalized) || allowed.includes(origin)) return true;
   try {
-    const host = new URL(origin).hostname;
+    const host = new URL(normalized).hostname;
     // Nest API host is not a web origin (OAuth must return to the Next app)
     if (host === 'timeblock-server.vercel.app' || host.startsWith('timeblock-server-')) {
       return false;
     }
     return (
       host === 'app.cupkey.io' ||
-      host === 'cupkey.io' ||
-      host === 'www.cupkey.io' ||
       host.endsWith('.cupkey.io') ||
       host === 'timeblock-web-ashy.vercel.app' ||
       (host.endsWith('.vercel.app') && host.includes('timeblock-web'))
@@ -82,23 +97,41 @@ function primaryWebOrigin(req?: Request): string {
   ].filter(Boolean) as string[];
 
   for (const c of candidates) {
-    if (isAllowedWebOrigin(c, allowed)) return c;
+    if (isAllowedWebOrigin(c, allowed)) return normalizeWebOrigin(c);
   }
   return fallback;
 }
 
+function isProdRuntime(): boolean {
+  return Boolean(
+    process.env.VERCEL ||
+      process.env.VERCEL_ENV ||
+      process.env.NODE_ENV === 'production',
+  );
+}
+
 /** Must match an Authorized redirect URI in Google Cloud Console. */
-function googleCallbackUrl(req?: Request): string {
+function googleCallbackUrl(_req?: Request): string {
+  if (isProdRuntime()) {
+    const fromEnv = process.env.GOOGLE_CALLBACK_URL?.trim() ?? '';
+    // Never use localhost / marketing / stale preview callbacks in production.
+    if (
+      fromEnv.startsWith(PROD_WEB_ORIGIN) &&
+      fromEnv.includes('/api/auth/google/callback')
+    ) {
+      return fromEnv;
+    }
+    return PROD_GOOGLE_CALLBACK;
+  }
   const fromEnv = process.env.GOOGLE_CALLBACK_URL?.trim() ?? '';
-  // Stale Vercel web URL breaks Google login on app.cupkey.io
   if (
     fromEnv &&
     !fromEnv.includes('timeblock-web-ashy.vercel.app') &&
-    !(process.env.VERCEL && fromEnv.includes('localhost'))
+    !fromEnv.includes('cupkey.io')
   ) {
     return fromEnv;
   }
-  return `${primaryWebOrigin(req)}/api/auth/google/callback`;
+  return 'http://localhost:3001/api/auth/google/callback';
 }
 
 function safeReturnPath(
@@ -348,19 +381,26 @@ export class AuthController {
       returnTo,
       wantCalendar ? '/settings?panel=account' : '/schedule',
     );
-    const originHeader = req.headers.origin;
-    if (typeof originHeader === 'string' && originHeader) {
-      req.session.oauthWebOrigin = originHeader;
-    } else if (typeof req.headers.referer === 'string') {
-      try {
-        req.session.oauthWebOrigin = new URL(req.headers.referer).origin;
-      } catch {
-        /* ignore */
-      }
-    }
-    // Same-origin /api rewrite: prefer Cupkey host over Nest's own Host header
-    if (!req.session.oauthWebOrigin) {
+    // Always land on the app host after OAuth — never marketing cupkey.io
+    // (middleware on app.cupkey.io `/` redirects home and drops the session UX).
+    if (isProdRuntime()) {
       req.session.oauthWebOrigin = PROD_WEB_ORIGIN;
+    } else {
+      const originHeader = req.headers.origin;
+      if (typeof originHeader === 'string' && originHeader) {
+        req.session.oauthWebOrigin = normalizeWebOrigin(originHeader);
+      } else if (typeof req.headers.referer === 'string') {
+        try {
+          req.session.oauthWebOrigin = normalizeWebOrigin(
+            new URL(req.headers.referer).origin,
+          );
+        } catch {
+          /* ignore */
+        }
+      }
+      if (!req.session.oauthWebOrigin) {
+        req.session.oauthWebOrigin = 'http://localhost:5173';
+      }
     }
     const callbackURL = googleCallbackUrl(req);
     const scope = wantCalendar
@@ -415,7 +455,8 @@ export class AuthController {
         user: { id: string } | false | undefined,
         _info?: unknown,
       ) => {
-        const web = primaryWebOrigin(req);
+        // Never bounce OAuth back to marketing cupkey.io (no app shell / session).
+        const web = isProdRuntime() ? PROD_WEB_ORIGIN : primaryWebOrigin(req);
         const returnPath = safeReturnPath(
           req.session.oauthReturnTo,
           '/schedule',
@@ -439,11 +480,34 @@ export class AuthController {
           const sep = failPath.includes('?') ? '&' : '?';
           return res.redirect(`${web}${failPath}${sep}authError=${reason}`);
         }
+
+        const finishRedirect = (withCode?: string) => {
+          if (withCode) {
+            const sep = returnPath.includes('?') ? '&' : '?';
+            return res.redirect(
+              `${web}${returnPath}${sep}loginCode=${encodeURIComponent(withCode)}`,
+            );
+          }
+          return res.redirect(`${web}${returnPath}`);
+        };
+
+        // Production: same-origin /api rewrite — set the session cookie here.
+        // Login codes are in-memory and break across Vercel serverless instances.
+        if (isProdRuntime()) {
+          req.session.userId = user.id;
+          return req.session.save((saveErr) => {
+            if (saveErr) {
+              console.error('[auth/google] session save failed', saveErr);
+              const code = this.loginCodes.issue(user.id);
+              return finishRedirect(code);
+            }
+            void this.calendarSync.syncNow(user.id).catch(() => undefined);
+            return finishRedirect();
+          });
+        }
+
         const code = this.loginCodes.issue(user.id);
-        const sep = returnPath.includes('?') ? '&' : '?';
-        res.redirect(
-          `${web}${returnPath}${sep}loginCode=${encodeURIComponent(code)}`,
-        );
+        return finishRedirect(code);
       },
     )(req, res, next);
   }
