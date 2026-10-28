@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
+  AuthConfigDto,
   DailyScheduleTemplateDto,
   UpsertScheduleTemplateDto,
   UserDto,
@@ -11,6 +12,7 @@ import type {
 } from '@timeblock/shared-types';
 import { api, detectBrowserTimeZone } from '../api';
 import { DemoVideoCard } from '../components/ui-hints';
+import { signInWithGoogleGis } from '../lib/google-gis-login';
 import {
   fileToAvatar,
   onAvatarChange,
@@ -228,6 +230,31 @@ export function SettingsPage({ user }: { user: UserDto }) {
         qc.invalidateQueries({ queryKey: ['tasks'] }),
         qc.invalidateQueries({ queryKey: ['stats'] }),
         qc.invalidateQueries({ queryKey: ['me'] }),
+      ]);
+    },
+  });
+
+  const authConfig = useQuery({
+    queryKey: ['auth-config'],
+    queryFn: () => api.get<AuthConfigDto>('/api/users/auth-config'),
+    staleTime: 60_000,
+  });
+
+  const connectGoogle = useMutation({
+    mutationFn: async () => {
+      const clientId = authConfig.data?.googleClientId?.trim();
+      if (!clientId) {
+        throw new Error('Google is not configured');
+      }
+      return signInWithGoogleGis({ clientId, calendar: true });
+    },
+    onSuccess: async (next) => {
+      qc.setQueryData(['me'], next);
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['me'] }),
+        qc.invalidateQueries({ queryKey: ['events'] }),
+        qc.invalidateQueries({ queryKey: ['tasks'] }),
+        sync.mutateAsync().catch(() => undefined),
       ]);
     },
   });
@@ -620,12 +647,25 @@ export function SettingsPage({ user }: { user: UserDto }) {
                   </div>
                 </div>
                 <div className="settings-connect-row">
-                  <a
+                  <button
+                    type="button"
                     className="btn btn-primary"
-                    href={`/api/auth/google?intent=calendar&returnTo=${encodeURIComponent('/settings?panel=account')}`}
+                    disabled={
+                      connectGoogle.isPending || !authConfig.data?.googleClientId
+                    }
+                    onClick={() => connectGoogle.mutate()}
                   >
-                    Connect Google Calendar
-                  </a>
+                    {connectGoogle.isPending
+                      ? 'Connecting…'
+                      : 'Connect Google Calendar'}
+                  </button>
+                  {connectGoogle.isError ? (
+                    <p className="settings-meta" role="alert">
+                      {connectGoogle.error instanceof Error
+                        ? connectGoogle.error.message
+                        : 'Google Calendar connect failed'}
+                    </p>
+                  ) : null}
                   <div className="settings-outlook-soon">
                     <button
                       type="button"

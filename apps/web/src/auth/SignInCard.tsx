@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { AuthConfigDto, UserDto } from '@timeblock/shared-types';
 import { api } from '../api';
 import { CupkeyLogo } from '../components/CupkeyLogo';
+import { signInWithGoogleGis } from '../lib/google-gis-login';
 import './auth.css'; // LAYOUT_FIX_V1
 
 type AuthMode = 'signin' | 'signup';
@@ -74,6 +75,7 @@ export function LoginScreen({
   return (
     <AuthCard
       googleEnabled={Boolean(authConfig.data?.googleSignIn)}
+      googleClientId={authConfig.data?.googleClientId ?? null}
       authError={authError}
       onSignedIn={onSignedIn}
     />
@@ -149,10 +151,12 @@ const socialBtnStyle: CSSProperties = {
 
 function AuthCard({
   googleEnabled,
+  googleClientId,
   authError,
   onSignedIn,
 }: {
   googleEnabled: boolean;
+  googleClientId: string | null;
   authError: string | null;
   onSignedIn: (user: UserDto) => void;
 }) {
@@ -189,10 +193,21 @@ function AuthCard({
     window.history.replaceState({}, '', url.pathname + url.search);
   };
 
-  const onGoogleClick = () => {
+  const onGoogleClick = async () => {
     setError(null);
     setBusy(true);
-    window.location.href = `/api/auth/google?returnTo=${encodeURIComponent('/schedule')}`;
+    try {
+      if (googleClientId) {
+        const user = await signInWithGoogleGis({ clientId: googleClientId });
+        onSignedIn(user);
+        return;
+      }
+      // Fallback: server redirect flow
+      window.location.href = `/api/auth/google?returnTo=${encodeURIComponent('/schedule')}`;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Google sign-in failed');
+      setBusy(false);
+    }
   };
 
   const onSubmit = async (e: FormEvent) => {
