@@ -224,9 +224,12 @@ export function PostsPage({ timeZone }: { timeZone?: string | null }) {
 
       {postsQ.isError ? (
         <p className="posts-status is-error">
-          {postsQ.error instanceof Error
-            ? postsQ.error.message
-            : 'Could not load Spotlight drafts.'}
+          {postsQ.error instanceof Error &&
+          /Cannot GET|404|Not Found/i.test(postsQ.error.message)
+            ? 'No Spotlight drafts yet. Generate one from a finished task.'
+            : postsQ.error instanceof Error
+              ? postsQ.error.message
+              : 'Could not load Spotlight drafts.'}
         </p>
       ) : null}
 
