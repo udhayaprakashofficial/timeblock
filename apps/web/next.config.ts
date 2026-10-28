@@ -52,23 +52,25 @@ const nextConfig: NextConfig = {
     position: 'bottom-right',
   },
   async rewrites() {
-    // Browser stays on https://app.cupkey.io/api/* (first-party cookies).
-    // Next rewrites server-side to Nest — users never see timeblock-server.
-    return [
-      {
-        // Dodo dashboard endpoint configured as https://app.cupkey.io/webhook
-        source: '/webhook',
-        destination: `${apiOrigin}/api/billing/webhook`,
-      },
-      {
-        source: '/api/billing/webhook',
-        destination: `${apiOrigin}/api/billing/webhook`,
-      },
-      {
-        source: '/api/:path*',
-        destination: `${apiOrigin}/api/:path*`,
-      },
-    ];
+    // afterFiles: App Router handlers (e.g. /api/auth/google) win first.
+    // Everything else proxies to Nest — browser stays on app.cupkey.io.
+    return {
+      afterFiles: [
+        {
+          // Dodo dashboard endpoint configured as https://app.cupkey.io/webhook
+          source: '/webhook',
+          destination: `${apiOrigin}/api/billing/webhook`,
+        },
+        {
+          source: '/api/billing/webhook',
+          destination: `${apiOrigin}/api/billing/webhook`,
+        },
+        {
+          source: '/api/:path*',
+          destination: `${apiOrigin}/api/:path*`,
+        },
+      ],
+    };
   },
 };
 
