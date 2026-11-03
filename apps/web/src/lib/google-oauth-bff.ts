@@ -26,15 +26,38 @@ export function googleCallbackUrl(appOrigin: string): string {
   return `${appOrigin}/api/auth/google/callback`;
 }
 
+function isEphemeralVercelHost(origin: string): boolean {
+  try {
+    const host = new URL(origin).hostname;
+    // Hashed preview URLs are SSO-protected — server-side fetch gets 401 HTML.
+    return (
+      host.endsWith('.vercel.app') &&
+      host !== 'timeblock-server.vercel.app' &&
+      host !== 'timeblock-web-ashy.vercel.app'
+    );
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Nest base URL for server-side BFF fetches.
+ * Must match next.config rewrites — production always uses the public alias.
+ */
 export function nestApiOrigin(): string {
   if (!process.env.VERCEL) {
     return (
       process.env.API_ORIGIN?.replace(/\/$/, '') || 'http://127.0.0.1:3001'
     );
   }
-  return (
-    process.env.API_ORIGIN?.replace(/\/$/, '') || PROD_API_ORIGIN
-  ).replace(/\/$/, '');
+  const fromEnv = process.env.API_ORIGIN?.replace(/\/$/, '') ?? '';
+  if (process.env.VERCEL_ENV === 'production' || !fromEnv) {
+    return PROD_API_ORIGIN;
+  }
+  if (isEphemeralVercelHost(fromEnv)) {
+    return PROD_API_ORIGIN;
+  }
+  return fromEnv;
 }
 
 export function googleClientConfig(): { id: string; secret: string } | null {

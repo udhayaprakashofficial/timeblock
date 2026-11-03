@@ -164,10 +164,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const text = await res.text();
+    // AI BFF stubs can 401 while Nest is stale — never treat that as a logout.
     if (
       res.status === 401 &&
       !path.includes('/users/me') &&
-      !path.includes('/auth/')
+      !path.includes('/auth/') &&
+      !path.includes('/api/ai/')
     ) {
       notifyAuthLost();
     }

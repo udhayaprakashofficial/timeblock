@@ -18,22 +18,48 @@ function store(): StoreFile {
   return g.__cupkeyTaskAiPosts;
 }
 
+function meUrls(req: Request): string[] {
+  const urls = [`${nestApiOrigin()}/api/users/me`];
+  // Same-host /api rewrite — identical to the browser path when Nest alias mis-resolves.
+  try {
+    const self = new URL('/api/users/me', req.url).toString();
+    if (!urls.includes(self)) urls.push(self);
+  } catch {
+    /* ignore */
+  }
+  return urls;
+}
+
 export async function requireSessionUser(req: Request): Promise<UserDto> {
   const cookie = req.headers.get('cookie') ?? '';
-  const res = await fetch(`${nestApiOrigin()}/api/users/me`, {
-    headers: {
-      Accept: 'application/json',
-      Cookie: cookie,
-    },
-    cache: 'no-store',
-  });
-  if (!res.ok) {
+  if (!cookie.trim()) {
     throw new Response(JSON.stringify({ error: 'Not authenticated' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' },
     });
   }
-  return (await res.json()) as UserDto;
+
+  for (const url of meUrls(req)) {
+    try {
+      const res = await fetch(url, {
+        headers: {
+          Accept: 'application/json',
+          Cookie: cookie,
+        },
+        cache: 'no-store',
+      });
+      if (!res.ok) continue;
+      const body = (await res.json()) as UserDto | null;
+      if (body && typeof body.id === 'string') return body;
+    } catch {
+      /* try next candidate */
+    }
+  }
+
+  throw new Response(JSON.stringify({ error: 'Not authenticated' }), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 export function listTaskPosts(
