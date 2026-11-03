@@ -983,12 +983,19 @@ function AppWithSearchParams({ children }: { children: ReactNode }) {
   const handleSignedIn = useCallback(
     (next: UserDto) => {
       const normalized = normalizeUser(next);
-      trackSignupIfNew(normalized, { isNew: needsOnboarding(normalized) });
-      identifyUser(normalized);
+      // Session / navigation first — never let analytics throw and strand login.
       setLoggingOut(false);
       writeCachedUser(normalized);
       setSessionUser(normalized);
       qc.setQueryData(['me'], normalized);
+      try {
+        trackSignupIfNew(normalized, {
+          isNew: needsOnboarding(normalized),
+        });
+        identifyUser(normalized);
+      } catch {
+        /* tracking is best-effort */
+      }
 
       const returnTo = new URLSearchParams(window.location.search).get(
         'returnTo',

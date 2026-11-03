@@ -199,12 +199,11 @@ export class AuthController {
           return res.status(500).json({ error: 'Failed to save session' });
         }
         const me = await this.usersService.getMe(user.id);
-        await this.usersService.deliverWelcomeEmail(
-          me.id,
-          me.email,
-          me.name,
-          { signInRetry: true },
-        );
+        void this.usersService
+          .deliverWelcomeEmail(me.id, me.email, me.name, {
+            signInRetry: true,
+          })
+          .catch(() => undefined);
         return res.json(me);
       });
     } catch (e) {
@@ -267,17 +266,17 @@ export class AuthController {
         password: body.password ?? '',
         name: body.name,
       });
-      // One awaited send (internal Brevo retries). Outbox + cron + /me cover misses.
-      await this.usersService.deliverWelcomeEmail(
-        me.id,
-        me.email,
-        me.name,
-        { firstSignup: true, maxAttempts: 3 },
-      );
+      // Session first — never block signup on Brevo latency. Cron + /me retry mail.
       setSessionUser(req, res, me.id, (err) => {
         if (err) {
           return res.status(500).json({ error: 'Failed to save session' });
         }
+        void this.usersService
+          .deliverWelcomeEmail(me.id, me.email, me.name, {
+            firstSignup: true,
+            maxAttempts: 3,
+          })
+          .catch(() => undefined);
         return res.json(me);
       });
     } catch (e) {
@@ -371,12 +370,11 @@ export class AuthController {
       }
       try {
         const me = await this.usersService.getMe(userId);
-        await this.usersService.deliverWelcomeEmail(
-          me.id,
-          me.email,
-          me.name,
-          { signInRetry: true },
-        );
+        void this.usersService
+          .deliverWelcomeEmail(me.id, me.email, me.name, {
+            signInRetry: true,
+          })
+          .catch(() => undefined);
         this.loginCodes.invalidate(code);
         void this.calendarSync.syncNow(userId).catch(() => undefined);
         return res.json(me);

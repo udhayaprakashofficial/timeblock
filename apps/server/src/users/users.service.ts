@@ -393,20 +393,28 @@ export class UsersService {
       return { dto: this.dtoFromParts(user, providers), isNew };
     };
 
+    const queueWelcome = (
+      id: string,
+      opts: { firstSignup?: boolean; signInRetry?: boolean },
+    ) => {
+      void this.deliverWelcomeEmail(id, email, name, opts).catch((err) => {
+        console.warn(
+          '[mail] welcome after Google login',
+          err instanceof Error ? err.message : err,
+        );
+      });
+    };
+
     // Prefer Supabase HTTPS REST when keys are set (works without Postgres :5432)
     if (this.supabase.isConfigured()) {
       try {
         const { dto, isNew } = await viaRest();
         if (isNew) {
-          await this.deliverWelcomeEmail(dto.id, email, name, {
-            firstSignup: true,
-          });
+          queueWelcome(dto.id, { firstSignup: true });
           return { ...dto, onboardingCompleted: false };
         }
         const returning = await this.markReturningUserOnboarded(dto);
-        await this.deliverWelcomeEmail(returning.id, email, name, {
-          signInRetry: true,
-        });
+        queueWelcome(returning.id, { signInRetry: true });
         return returning;
       } catch (restErr) {
         console.warn(
@@ -429,15 +437,14 @@ export class UsersService {
         scope: 'calendar.readonly gmail.send email profile',
       });
       if (isNew) {
-        // Welcome sent in AuthService.upsertOAuthUser (awaited for Vercel).
+        // Welcome may also be queued in AuthService.upsertOAuthUser — keep auth fast.
+        queueWelcome(user.id, { firstSignup: true });
         return { ...(await this.getMe(user.id)), onboardingCompleted: false };
       }
       const returning = await this.markReturningUserOnboarded(
         await this.getMe(user.id),
       );
-      await this.deliverWelcomeEmail(returning.id, email, name, {
-        signInRetry: true,
-      });
+      queueWelcome(returning.id, { signInRetry: true });
       return returning;
     } catch (err) {
       console.error(
@@ -908,13 +915,19 @@ export class UsersService {
   }
 
   /**
-   * Founder welcome email — sent once per account. Sign-in retries if signup
-   * mail failed (Vercel must await Brevo; no fire-and-forget).
+   * Founder welcome email — sent once per account. Never await Brevo on the
+   * auth response path (timeouts / IP blips were blocking password + Google login).
+   * Cron + /me ensureWelcomeEmail cover retries.
    */
   private async afterPasswordSignIn(dto: UserDto): Promise<UserDto> {
     const me = await this.markReturningUserOnboarded(dto);
-    await this.deliverWelcomeEmail(me.id, me.email, me.name, {
+    void this.deliverWelcomeEmail(me.id, me.email, me.name, {
       signInRetry: true,
+    }).catch((err) => {
+      console.warn(
+        '[mail] welcome after sign-in',
+        err instanceof Error ? err.message : err,
+      );
     });
     return me;
   }

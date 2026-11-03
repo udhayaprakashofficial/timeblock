@@ -217,7 +217,14 @@
       if (c.analytics || c.marketing) saveAttribution();
       loadPixels(c);
     } else {
-      openBanner(false);
+      // Never cover sign-in / reset / onboarding CTAs with the cookie sheet.
+      var path = location.pathname || '';
+      var isAuth =
+        path === '/login' ||
+        path.indexOf('/forgot-password') === 0 ||
+        path.indexOf('/reset-password') === 0 ||
+        path.indexOf('/onboarding') === 0;
+      if (!isAuth) openBanner(false);
     }
     loadGA4();
   }

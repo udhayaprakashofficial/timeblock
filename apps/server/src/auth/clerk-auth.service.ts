@@ -83,12 +83,11 @@ export class ClerkAuthService {
         onboardingCompleted: false,
       },
     });
-    await this.users.deliverWelcomeEmail(
-      created.id,
-      created.email,
-      created.name,
-      { firstSignup: true },
-    );
+    void this.users
+      .deliverWelcomeEmail(created.id, created.email, created.name, {
+        firstSignup: true,
+      })
+      .catch(() => undefined);
     return created;
   }
 }

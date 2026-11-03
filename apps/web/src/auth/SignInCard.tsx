@@ -211,6 +211,7 @@ function AuthCard({
       window.location.href = `/api/auth/google?returnTo=${encodeURIComponent('/schedule')}`;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Google sign-in failed');
+    } finally {
       setBusy(false);
     }
   };

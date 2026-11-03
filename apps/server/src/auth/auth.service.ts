@@ -67,9 +67,11 @@ export class AuthService {
           }
         }
         if (isNew) {
-          await this.users.deliverWelcomeEmail(user.id, email, input.name, {
-            firstSignup: true,
-          });
+          void this.users
+            .deliverWelcomeEmail(user.id, email, input.name, {
+              firstSignup: true,
+            })
+            .catch(() => undefined);
         }
         return {
           id: user.id,
@@ -157,9 +159,11 @@ export class AuthService {
     });
 
     if (isNew) {
-      await this.users.deliverWelcomeEmail(user.id, input.email, input.name, {
-        firstSignup: true,
-      });
+      void this.users
+        .deliverWelcomeEmail(user.id, input.email, input.name, {
+          firstSignup: true,
+        })
+        .catch(() => undefined);
     }
 
     return user;

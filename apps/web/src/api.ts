@@ -73,6 +73,15 @@ function requestTimeoutMs(path: string): number {
   if (path.includes('finish-onboarding')) return 55_000;
   // Gemini drafts/plans often need >30s through the Next→Nest proxy.
   if (path.includes('/api/ai/')) return 120_000;
+  // Auth must stay snappy; give a little headroom for cold Nest starts.
+  if (
+    path.includes('/api/auth/signin') ||
+    path.includes('/api/auth/signup') ||
+    path.includes('/api/auth/google/browser') ||
+    path.includes('/api/auth/exchange')
+  ) {
+    return 45_000;
+  }
   return 30_000;
 }
 
