@@ -43,7 +43,11 @@ export function aiAccessDeniedReason(opts?: {
 }
 
 export function buildAiAccessDto(input: {
-  user: { plan?: string | null; planStatus?: string | null };
+  user: {
+    email?: string | null;
+    plan?: string | null;
+    planStatus?: string | null;
+  };
   used: number;
   month: string;
 }): AiAccessDto {

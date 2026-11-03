@@ -1,0 +1,6 @@
+.vercel
+# Local JSON stores / session blobs — never commit
+/data/
+.env
+.env.*
+!.env.example

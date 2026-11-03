@@ -9,13 +9,15 @@ import { CupkeyLogo } from '../components/CupkeyLogo';
 import { signInWithGoogleGis } from '../lib/google-gis-login';
 import './auth.css'; // LAYOUT_FIX_V1
 
-type AuthMode = 'signin' | 'signup';
+type AuthMode = 'signin' | 'signup' | 'forgot';
 
 function initialMode(): AuthMode {
   const path = window.location.pathname;
   if (path.includes('signup') || path.includes('sign-up')) return 'signup';
+  if (path.includes('forgot-password')) return 'forgot';
   const q = new URLSearchParams(window.location.search).get('mode');
   if (q === 'signup') return 'signup';
+  if (q === 'forgot') return 'forgot';
   return 'signin';
 }
 
@@ -165,6 +167,7 @@ function AuthCard({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(() => {
     if (authError === 'google' || authError === 'google_token') {
       return 'Google sign-in failed. Try again.';
@@ -187,7 +190,9 @@ function AuthCard({
   const switchMode = (next: AuthMode) => {
     setMode(next);
     setError(null);
+    setNotice(null);
     const url = new URL(window.location.href);
+    url.pathname = next === 'forgot' ? '/forgot-password' : '/login';
     if (next === 'signup') url.searchParams.set('mode', 'signup');
     else url.searchParams.delete('mode');
     window.history.replaceState({}, '', url.pathname + url.search);
@@ -213,8 +218,16 @@ function AuthCard({
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
+    setNotice(null);
     setBusy(true);
     try {
+      if (mode === 'forgot') {
+        await api.post<{ ok: true }>('/api/auth/forgot-password', { email });
+        setNotice(
+          'If an account exists for that email, we sent a reset link. Check your inbox.',
+        );
+        return;
+      }
       const path = mode === 'signup' ? '/api/auth/signup' : '/api/auth/signin';
       const body =
         mode === 'signup'
@@ -230,13 +243,17 @@ function AuthCard({
   };
 
   const title =
-    mode === 'signin'
-      ? 'Put your work where the time actually is.'
-      : 'Build the day. Then stand in it.';
+    mode === 'forgot'
+      ? 'Reset your password.'
+      : mode === 'signin'
+        ? 'Put your work where the time actually is.'
+        : 'Build the day. Then stand in it.';
   const subtitle =
-    mode === 'signin'
-      ? 'Cupkey reads your calendars, packs your tasks into the gaps, and tells you at 6pm what really happened.'
-      : 'Create an account, connect a calendar, and get a week you can hand to a lead.';
+    mode === 'forgot'
+      ? 'Enter the email on your Cupkey account. We will send a one-hour reset link.'
+      : mode === 'signin'
+        ? 'Cupkey reads your calendars, packs your tasks into the gaps, and tells you at 6pm what really happened.'
+        : 'Create an account, connect a calendar, and get a week you can hand to a lead.';
 
   return (
     <div className="auth-kit">
@@ -250,7 +267,7 @@ function AuthCard({
         <h1>{title}</h1>
         <p className="auth-kit-lede">{subtitle}</p>
 
-        {googleEnabled ? (
+        {googleEnabled && mode !== 'forgot' ? (
           <div className="auth-kit-social">
             <button
               type="button"
@@ -286,27 +303,41 @@ function AuthCard({
               value={email}
               onChange={(ev) => setEmail(ev.target.value)}
             />
-            <input
-              type="password"
-              autoComplete={
-                mode === 'signup' ? 'new-password' : 'current-password'
-              }
-              required
-              minLength={6}
-              placeholder="Password"
-              value={password}
-              onChange={(ev) => setPassword(ev.target.value)}
-            />
+            {mode !== 'forgot' ? (
+              <input
+                type="password"
+                autoComplete={
+                  mode === 'signup' ? 'new-password' : 'current-password'
+                }
+                required
+                minLength={6}
+                placeholder="Password"
+                value={password}
+                onChange={(ev) => setPassword(ev.target.value)}
+              />
+            ) : null}
+            {mode === 'signin' ? (
+              <button
+                type="button"
+                className="auth-kit-forgot"
+                onClick={() => switchMode('forgot')}
+              >
+                Forgot password?
+              </button>
+            ) : null}
             <button type="submit" className="btn btn-primary" disabled={busy}>
               {busy
                 ? '…'
-                : mode === 'signup'
-                  ? 'Create account'
-                  : 'Continue'}
+                : mode === 'forgot'
+                  ? 'Send reset link'
+                  : mode === 'signup'
+                    ? 'Create account'
+                    : 'Continue'}
             </button>
           </div>
         </form>
 
+        {notice ? <p className="auth-kit-notice">{notice}</p> : null}
         {error ? <p className="auth-kit-error">{error}</p> : null}
 
         <p className="auth-kit-switch">
@@ -315,6 +346,13 @@ function AuthCard({
               New here?{' '}
               <button type="button" onClick={() => switchMode('signup')}>
                 Create an account
+              </button>
+            </>
+          ) : mode === 'forgot' ? (
+            <>
+              Remembered it?{' '}
+              <button type="button" onClick={() => switchMode('signin')}>
+                Back to sign in
               </button>
             </>
           ) : (

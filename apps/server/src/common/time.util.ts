@@ -46,7 +46,11 @@ export function toUtcIso(value: string | Date | null | undefined): string | null
   return d.toISOString();
 }
 
-/** Elapsed whole minutes between two DB timestamps (UTC-safe). */
+/**
+ * Elapsed whole minutes between two DB timestamps (UTC-safe).
+ * Accidental / sub-15s sessions credit 0 so rapid Start→Pause doesn't inflate.
+ * Real sessions (≥15s) round normally and credit at least 1 minute.
+ */
 export function elapsedMinutes(
   startedAt: string | Date,
   endedAt: string | Date = new Date(),
@@ -54,9 +58,11 @@ export function elapsedMinutes(
   const s = parseUtcInstant(startedAt);
   const e = parseUtcInstant(endedAt);
   if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime()) || e.getTime() <= s.getTime()) {
-    return 1;
+    return 0;
   }
-  return Math.max(1, Math.round((e.getTime() - s.getTime()) / 60000));
+  const elapsedMs = e.getTime() - s.getTime();
+  if (elapsedMs < 15_000) return 0;
+  return Math.max(1, Math.round(elapsedMs / 60000));
 }
 
 /**

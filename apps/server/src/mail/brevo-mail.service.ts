@@ -462,6 +462,77 @@ This link works for 30 days.
     });
   }
 
+  /** Password reset link — expires in one hour. */
+  async sendPasswordResetEmail(input: {
+    toEmail: string;
+    toName?: string;
+    resetUrl: string;
+  }): Promise<BrevoSendResult> {
+    if (!this.isConfigured()) {
+      return { ok: false, error: 'Brevo is not configured' };
+    }
+    const firstName = firstNameFrom(input.toName, input.toEmail);
+    const safeName = escapeHtml(firstName);
+    const url = input.resetUrl.trim();
+    const textContent = `Hey ${firstName},
+
+Reset your Cupkey password with this link (expires in 1 hour):
+
+${url}
+
+If you did not ask for this, you can ignore the email.
+
+— Cupkey`;
+
+    const htmlContent = `<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background:#f4f4f5;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f4f5;padding:28px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" style="max-width:520px;background:#ffffff;border:1px solid #e4e4e7;border-radius:12px;padding:32px 28px;">
+          <tr>
+            <td style="color:#ff5722;font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;padding-bottom:12px;">Cupkey</td>
+          </tr>
+          <tr>
+            <td style="color:#18181b;font-size:20px;font-weight:800;padding-bottom:12px;">Reset your password</td>
+          </tr>
+          <tr>
+            <td style="color:#3f3f46;font-size:15px;line-height:1.55;padding-bottom:20px;">
+              Hey ${safeName} — use the button below to choose a new password. The link expires in one hour.
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding-bottom:18px;">
+              <a href="${escapeHtml(url)}"
+                 style="display:inline-block;background:#ff5722;color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;padding:12px 24px;border-radius:999px;">
+                Choose a new password
+              </a>
+            </td>
+          </tr>
+          <tr>
+            <td style="color:#71717a;font-size:12px;line-height:1.5;">
+              If you did not request a reset, you can ignore this email.
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+    return this.sendTransactional({
+      toEmail: input.toEmail,
+      toName: input.toName || firstName,
+      subject: 'Reset your Cupkey password',
+      htmlContent,
+      textContent,
+      tags: ['password-reset'],
+      replyToSender: true,
+    });
+  }
+
   private async sendTransactional(input: {
     toEmail: string;
     toName?: string;

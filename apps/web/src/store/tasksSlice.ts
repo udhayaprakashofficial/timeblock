@@ -215,6 +215,40 @@ const completeChainById = new Map<string, Promise<unknown>>();
 /** Latest patch generation — stale update responses must not clobber Redux. */
 const updateEpochById = new Map<string, number>();
 
+/** Serialize start/stop per task so double-clicks can't race. */
+const timerChainById = new Map<string, Promise<unknown>>();
+
+/** Snapshot taken before optimistic Pause — used to restore if stop fails. */
+const timerStopSnapshotById = new Map<
+  string,
+  {
+    activeEntryId: string;
+    timerStartedAt: string;
+    actualMinutes: number;
+    status: TaskDto['status'];
+  }
+>();
+
+/** In-flight start/stop keys — RTK condition uses these to drop duplicates. */
+const timerInFlight = new Set<string>();
+
+function timerOpKey(op: 'start' | 'stop', taskId: string) {
+  return `${op}:${taskId}`;
+}
+
+function enqueueTimer<T>(taskId: string, run: () => Promise<T>): Promise<T> {
+  const prev = timerChainById.get(taskId) ?? Promise.resolve();
+  const next = prev.then(run, run);
+  timerChainById.set(
+    taskId,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
+}
+
 /** Call before optimisticComplete + completeTaskOptimistic. */
 export function beginCompleteIntent(
   taskId: string,
@@ -414,32 +448,84 @@ export const completeTaskOptimistic = createAsyncThunk(
 export const startTimerOptimistic = createAsyncThunk(
   'tasks/startTimer',
   async (payload: { taskId: string; date: string }, { rejectWithValue }) => {
+    const key = timerOpKey('start', payload.taskId);
     try {
-      const task = await api.post<TaskDto>(
-        `/api/timer/${payload.taskId}/start`,
-      );
-      return { date: payload.date, task };
-    } catch (err) {
-      return rejectWithValue({
-        date: payload.date,
-        message: err instanceof Error ? err.message : 'Could not start timer',
-      });
+      try {
+        const task = await enqueueTimer(payload.taskId, () =>
+          api.post<TaskDto>(`/api/timer/${payload.taskId}/start`),
+        );
+        return { date: payload.date, task };
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Could not start timer';
+        // Server already has this task live (race / double-click) — keep UI.
+        if (/already running/i.test(message)) {
+          return {
+            date: payload.date,
+            task: null as TaskDto | null,
+            keepLocal: true as const,
+          };
+        }
+        return rejectWithValue({
+          date: payload.date,
+          taskId: payload.taskId,
+          message,
+        });
+      }
+    } finally {
+      timerInFlight.delete(key);
     }
+  },
+  {
+    condition: (payload) => {
+      const startKey = timerOpKey('start', payload.taskId);
+      // Drop duplicate Starts; Pause→Start is serialized via enqueueTimer.
+      if (timerInFlight.has(startKey)) return false;
+      timerInFlight.add(startKey);
+      return true;
+    },
   },
 );
 
 export const stopTimerOptimistic = createAsyncThunk(
   'tasks/stopTimer',
   async (payload: { taskId: string; date: string }, { rejectWithValue }) => {
+    const key = timerOpKey('stop', payload.taskId);
     try {
-      const task = await api.post<TaskDto>(`/api/timer/${payload.taskId}/stop`);
-      return { date: payload.date, task };
-    } catch (err) {
-      return rejectWithValue({
-        date: payload.date,
-        message: err instanceof Error ? err.message : 'Could not stop timer',
-      });
+      try {
+        const task = await enqueueTimer(payload.taskId, () =>
+          api.post<TaskDto>(`/api/timer/${payload.taskId}/stop`),
+        );
+        return { date: payload.date, task };
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Could not stop timer';
+        // Already paused on server — treat as success (UI already banked).
+        if (/no active/i.test(message)) {
+          return {
+            date: payload.date,
+            task: null as TaskDto | null,
+            keepLocal: true as const,
+          };
+        }
+        return rejectWithValue({
+          date: payload.date,
+          taskId: payload.taskId,
+          message,
+        });
+      }
+    } finally {
+      timerInFlight.delete(key);
     }
+  },
+  {
+    condition: (payload) => {
+      const stopKey = timerOpKey('stop', payload.taskId);
+      if (timerInFlight.has(stopKey)) return false;
+      // Claim the stop slot so duplicate Pauses are dropped.
+      timerInFlight.add(stopKey);
+      return true;
+    },
   },
 );
 
@@ -717,6 +803,11 @@ const tasksSlice = createSlice({
       const idx = list.findIndex((t) => t.id === hit.task.id);
       if (idx < 0) return;
       const t = list[idx]!;
+      // Idempotent: already live — don't reset the clock on double Start.
+      if (t.activeEntryId && t.timerStartedAt) {
+        pushPending(state, `start:${hit.task.id}`);
+        return;
+      }
       // Keep banked actualMinutes — resume continues from last pause.
       const startedAt = new Date().toISOString();
       writeTimerAnchor(t.id, startedAt);
@@ -735,8 +826,17 @@ const tasksSlice = createSlice({
       const list = dayList(state, hit.date);
       const idx = list.findIndex((t) => t.id === hit.task.id);
       if (idx < 0) return;
+      const current = list[idx]!;
+      if (current.activeEntryId && current.timerStartedAt) {
+        timerStopSnapshotById.set(current.id, {
+          activeEntryId: current.activeEntryId,
+          timerStartedAt: current.timerStartedAt,
+          actualMinutes: Math.max(0, Number(current.actualMinutes) || 0),
+          status: current.status,
+        });
+      }
       // Fold live elapsed into actualMinutes so Pause/Start doesn't reset to 0.
-      list[idx] = withBankedLiveSession(list[idx]!);
+      list[idx] = withBankedLiveSession(current);
       state.byDate[hit.date] = sortDayTasks(list);
       pushPending(state, `stop:${hit.task.id}`);
     },
@@ -1052,9 +1152,15 @@ const tasksSlice = createSlice({
       })
       .addCase(startTimerOptimistic.fulfilled, (state, action) => {
         popPending(state, `start:${action.meta.arg.taskId}`);
-        const server = action.payload.task;
-        if (!server?.id) return;
-        const current = dayList(state, action.payload.date).find(
+        const payload = action.payload as {
+          date: string;
+          task: TaskDto | null;
+          keepLocal?: boolean;
+        };
+        // Soft-success (already running) — leave optimistic live session alone.
+        if (payload.keepLocal || !payload.task?.id) return;
+        const server = payload.task;
+        const current = dayList(state, payload.date).find(
           (t) => t.id === server.id,
         );
         // Keep the earliest start so a slow API response doesn't reset elapsed.
@@ -1085,36 +1191,56 @@ const tasksSlice = createSlice({
           timerStartedAt,
           status: 'in_progress',
         });
-        state.byDate[action.payload.date] = sortDayTasks(
-          upsertTask(dayList(state, action.payload.date), merged),
+        state.byDate[payload.date] = sortDayTasks(
+          upsertTask(dayList(state, payload.date), merged),
         );
       })
       .addCase(startTimerOptimistic.rejected, (state, action) => {
+        // Duplicate Start skipped by condition — do not wipe a live timer.
+        if (action.meta.condition) return;
         const taskId = action.meta.arg.taskId;
         popPending(state, `start:${taskId}`);
-        writeTimerAnchor(taskId, null);
+        const message =
+          (action.payload as { message?: string } | undefined)?.message ??
+          'Start failed';
+        // "Already running" should never clear — keep the live UI.
+        if (/already running/i.test(message)) {
+          state.error = null;
+          return;
+        }
         const date = action.meta.arg.date;
         const list = dayList(state, date);
         const idx = list.findIndex((t) => t.id === taskId);
         if (idx >= 0) {
           const t = list[idx]!;
-          list[idx] = {
-            ...t,
-            activeEntryId: null,
-            timerStartedAt: null,
-            status: t.status === 'in_progress' ? 'pending' : t.status,
-          };
-          state.byDate[date] = sortDayTasks(list);
+          // Only roll back our optimistic entry — never clear a real server id.
+          const isOptimistic = String(t.activeEntryId ?? '').startsWith('opt_');
+          if (isOptimistic || !t.activeEntryId) {
+            writeTimerAnchor(taskId, null);
+            list[idx] = {
+              ...t,
+              activeEntryId: null,
+              timerStartedAt: null,
+              status: t.status === 'in_progress' ? 'pending' : t.status,
+            };
+            state.byDate[date] = sortDayTasks(list);
+          }
         }
-        state.error =
-          (action.payload as { message?: string } | undefined)?.message ??
-          'Start failed';
+        state.error = message;
       })
       .addCase(stopTimerOptimistic.fulfilled, (state, action) => {
         const taskId = action.meta.arg.taskId;
         popPending(state, `stop:${taskId}`);
-        const server = action.payload.task;
-        const current = dayList(state, action.payload.date).find(
+        timerStopSnapshotById.delete(taskId);
+        const payload = action.payload as {
+          date: string;
+          task: TaskDto | null;
+          keepLocal?: boolean;
+        };
+        // Soft-success (already paused) — UI already banked; nothing to merge.
+        if (payload.keepLocal || !payload.task?.id) return;
+        const server = payload.task;
+        const current = dayList(state, payload.date).find(
           (t) => t.id === taskId,
         );
         // If the user already hit Start again, keep the live session and only
@@ -1141,14 +1267,36 @@ const tasksSlice = createSlice({
                 Number(server.actualMinutes) || 0,
                 Number(current?.actualMinutes) || 0,
               ),
+              activeEntryId: null,
+              timerStartedAt: null,
             };
-        state.byDate[action.payload.date] = sortDayTasks(
-          upsertTask(dayList(state, action.payload.date), merged),
+        state.byDate[payload.date] = sortDayTasks(
+          upsertTask(dayList(state, payload.date), merged),
         );
       })
       .addCase(stopTimerOptimistic.rejected, (state, action) => {
+        if (action.meta.condition) return;
         const taskId = action.meta.arg.taskId;
         popPending(state, `stop:${taskId}`);
+        const snap = timerStopSnapshotById.get(taskId);
+        timerStopSnapshotById.delete(taskId);
+        // Restore live session so UI matches server (still running).
+        if (snap) {
+          const date = action.meta.arg.date;
+          const list = dayList(state, date);
+          const idx = list.findIndex((t) => t.id === taskId);
+          if (idx >= 0) {
+            writeTimerAnchor(taskId, snap.timerStartedAt);
+            list[idx] = {
+              ...list[idx]!,
+              activeEntryId: snap.activeEntryId,
+              timerStartedAt: snap.timerStartedAt,
+              actualMinutes: snap.actualMinutes,
+              status: 'in_progress',
+            };
+            state.byDate[date] = sortDayTasks(list);
+          }
+        }
         state.error =
           (action.payload as { message?: string } | undefined)?.message ??
           'Stop failed';

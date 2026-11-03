@@ -313,6 +313,41 @@ export class AuthController {
     }
   }
 
+  /** Request a password-reset email. Always 200 when email looks valid. */
+  @Post('forgot-password')
+  async forgotPassword(
+    @Res() res: Response,
+    @Body() body: { email?: string },
+  ) {
+    try {
+      const result = await this.usersService.requestPasswordReset(
+        body.email ?? '',
+      );
+      return res.json(result);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Could not start reset';
+      return res.status(400).json({ error: msg });
+    }
+  }
+
+  /** Set a new password using the emailed one-time link. */
+  @Post('reset-password')
+  async resetPassword(
+    @Res() res: Response,
+    @Body() body: { token?: string; password?: string; newPassword?: string },
+  ) {
+    try {
+      const result = await this.usersService.resetPasswordWithToken({
+        token: body.token,
+        newPassword: body.password ?? body.newPassword,
+      });
+      return res.json(result);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Could not reset password';
+      return res.status(400).json({ error: msg });
+    }
+  }
+
   /**
    * Finish Google OAuth: one-time code → session cookie via Vite proxy → dashboard.
    */

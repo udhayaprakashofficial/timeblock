@@ -1416,8 +1416,23 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
     const entries = await this.select<Record<string, unknown>>('TimeEntry', '*', {
       filter: `taskId=eq.${taskId}`,
     });
-    if (entries.some((e) => !e.endedAt)) {
-      throw new Error('Timer already running for this task');
+    const open = entries.find((e) => !e.endedAt);
+    // Idempotent: a second Start on the same live task returns the running session.
+    if (open) {
+      const listed = (await this.listTasks(userId, taskDate)).find(
+        (t) => t.id === taskId,
+      );
+      if (!listed) return listed;
+      const startedAt =
+        listed.timerStartedAt ??
+        toUtcIso(String(open.startedAt)) ??
+        String(open.startedAt);
+      return {
+        ...listed,
+        status: 'in_progress',
+        activeEntryId: listed.activeEntryId ?? String(open.id),
+        timerStartedAt: startedAt,
+      };
     }
     // One live session at a time — require Pause before starting another.
     const otherOpen = await this.findOtherOpenTimer(userId, taskId);
@@ -1458,11 +1473,15 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       limit: 1,
     });
     if (!rows[0]) throw new Error('Task not found');
+    const taskDate = String(rows[0].date).slice(0, 10);
     const entries = await this.select<Record<string, unknown>>('TimeEntry', '*', {
       filter: `taskId=eq.${taskId}`,
     });
     const active = entries.find((e) => !e.endedAt);
-    if (!active) throw new Error('No active timer');
+    // Idempotent: Pause when nothing is live is a no-op success.
+    if (!active) {
+      return (await this.listTasks(userId, taskDate)).find((t) => t.id === taskId);
+    }
     const endedAt = new Date();
     const actualMinutes = elapsedMinutes(String(active.startedAt), endedAt);
     await this.patch('TimeEntry', `id=eq.${active.id}`, {
@@ -1474,9 +1493,7 @@ export class SupabaseRestService implements OnModuleInit, OnModuleDestroy {
       status: keepCompleted ? 'completed' : 'pending',
       updatedAt: endedAt.toISOString(),
     });
-    return (await this.listTasks(userId, String(rows[0].date).slice(0, 10))).find(
-      (t) => t.id === taskId,
-    );
+    return (await this.listTasks(userId, taskDate)).find((t) => t.id === taskId);
   }
 
   /** Close open TimeEntries for a task (used by complete). */

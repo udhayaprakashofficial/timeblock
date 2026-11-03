@@ -106,13 +106,25 @@ export function deleteTaskPost(userId: string, postId: string): boolean {
   return data.items.length < before;
 }
 
+/** Mirror of server AI_CREDITS_EMAIL_OVERRIDES — keep in sync. */
+const EMAIL_CREDIT_OVERRIDES: Readonly<Record<string, number>> = {
+  'hello@cupkey.io': 50,
+};
+
 export function buildAccessDto(user: UserDto): AiAccessDto {
+  const email = (user.email ?? '').trim().toLowerCase();
   const isPro =
     user.plan === 'pro' &&
     (user.planStatus === 'active' ||
       user.planStatus === 'trialing' ||
       !user.planStatus);
-  const limit = isPro ? 50 : 5;
+  const override = EMAIL_CREDIT_OVERRIDES[email];
+  const limit =
+    typeof override === 'number' && override > 0
+      ? override
+      : isPro
+        ? 50
+        : 5;
   return {
     enabled: true,
     requirePro: true,

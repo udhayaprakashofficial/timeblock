@@ -1,28 +1,77 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import type { AiAccessDto } from '@timeblock/shared-types';
+import type { AiAccessDto, UserDto } from '@timeblock/shared-types';
 import { api } from '../../api';
+import { useAppUserOptional } from '../../user-context';
 
 const REFRESH_EVENT = 'tb:ai-credits-refresh';
+
+/** Keep in sync with server AI_CREDITS_EMAIL_OVERRIDES / ai-bff. */
+const EMAIL_CREDIT_OVERRIDES: Readonly<Record<string, number>> = {
+  'hello@cupkey.io': 50,
+};
 
 export function refreshAiCreditsBadge() {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new CustomEvent(REFRESH_EVENT));
 }
 
+function fallbackAccess(user: UserDto | null | undefined): AiAccessDto {
+  const email = (user?.email ?? '').trim().toLowerCase();
+  const isPro =
+    user?.plan === 'pro' &&
+    (user.planStatus === 'active' ||
+      user.planStatus === 'trialing' ||
+      !user.planStatus);
+  const override = EMAIL_CREDIT_OVERRIDES[email];
+  const limit =
+    typeof override === 'number' && override > 0
+      ? override
+      : isPro
+        ? 50
+        : 5;
+  return {
+    enabled: true,
+    requirePro: true,
+    hasAccess: true,
+    reason: null,
+    creditsRemaining: limit,
+    creditsLimit: limit,
+    creditsUsed: 0,
+    creditsMonth: isPro
+      ? new Date().toISOString().slice(0, 7)
+      : 'lifetime',
+    isPro: Boolean(isPro),
+    refillLabel: isPro ? 'next month' : 'when you upgrade to Pro',
+    freeCreditsMonthly: 5,
+    proCreditsMonthly: 50,
+  };
+}
+
 /** Compact AI credit meter — left sidebar rail only. */
 export function AiCreditsBadge() {
-  const [access, setAccess] = useState<AiAccessDto | null>(null);
+  const user = useAppUserOptional();
+  const [access, setAccess] = useState<AiAccessDto | null>(() =>
+    fallbackAccess(user),
+  );
 
   const load = useCallback(() => {
     void api
       .get<AiAccessDto>('/api/ai/access')
-      .then(setAccess)
-      .catch(() => setAccess(null));
-  }, []);
+      .then((dto) => {
+        if (dto && typeof dto.creditsLimit === 'number') {
+          setAccess(dto);
+        }
+      })
+      .catch(() => {
+        // Nest may 404 in prod while API is stale — keep a visible fallback.
+        setAccess((prev) => prev ?? fallbackAccess(user));
+      });
+  }, [user]);
 
   useEffect(() => {
+    setAccess((prev) => prev ?? fallbackAccess(user));
     load();
     const onRefresh = () => load();
     window.addEventListener(REFRESH_EVENT, onRefresh);
@@ -31,7 +80,7 @@ export function AiCreditsBadge() {
       window.removeEventListener(REFRESH_EVENT, onRefresh);
       window.removeEventListener('focus', onRefresh);
     };
-  }, [load]);
+  }, [load, user]);
 
   if (!access) return null;
 

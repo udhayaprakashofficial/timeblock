@@ -40,10 +40,12 @@ import {
 } from './components/NavIcons';
 import { onAvatarChange, readAvatar } from './components/user-avatar';
 import { LoginScreen } from './auth/SignInCard';
+import { ResetPasswordCard } from './auth/ResetPasswordCard';
 import { UserProvider } from './user-context';
 import { DataBootstrap } from './store/DataBootstrap';
 import { useAppSelector } from './store/hooks';
 import { OnboardingFlow } from './views/OnboardingFlow';
+import { identifyUser, trackPageView, trackSignupIfNew } from './lib/tracking';
 import './auth/auth.css';
 
 /** Survives React StrictMode remounts — one exchange per loginCode. */
@@ -913,7 +915,8 @@ function AppWithSearchParams({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const isLanding = pathname === '/';
-  const isLogin = pathname === '/login';
+  const isLogin = pathname === '/login' || pathname === '/forgot-password';
+  const isResetPassword = pathname === '/reset-password';
   const isOnboarding = pathname.startsWith('/onboarding');
   const isSharedTimesheet = pathname.startsWith('/share/');
   const isPricing = pathname.startsWith('/pricing');
@@ -922,7 +925,11 @@ function AppWithSearchParams({ children }: { children: ReactNode }) {
     (pathname.startsWith('/settings') &&
       searchParams.get('panel') === 'subscription');
   const isPublic =
-    isLanding || isLogin || isSharedTimesheet || isPricing;
+    isLanding ||
+    isLogin ||
+    isResetPassword ||
+    isSharedTimesheet ||
+    isPricing;
   const [sessionUser, setSessionUser] = useState<UserDto | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [exchanging, setExchanging] = useState(false);
@@ -955,6 +962,15 @@ function AppWithSearchParams({ children }: { children: ReactNode }) {
     enabled: hydrated && !exchanging && !loggingOut,
   });
 
+  // Tracking: Meta PageView on client-side route changes (GA4 handles history changes itself).
+  useEffect(() => {
+    trackPageView();
+  }, [pathname]);
+
+  useEffect(() => {
+    if (me.data?.id) identifyUser(me.data);
+  }, [me.data?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Never treat sessionStorage alone as auth — that caused "logged in UI" + 401 APIs.
   const user = loggingOut
     ? null
@@ -967,6 +983,8 @@ function AppWithSearchParams({ children }: { children: ReactNode }) {
   const handleSignedIn = useCallback(
     (next: UserDto) => {
       const normalized = normalizeUser(next);
+      trackSignupIfNew(normalized, { isNew: needsOnboarding(normalized) });
+      identifyUser(normalized);
       setLoggingOut(false);
       writeCachedUser(normalized);
       setSessionUser(normalized);
@@ -1130,7 +1148,7 @@ function AppWithSearchParams({ children }: { children: ReactNode }) {
     // Finished users: leave landing/login. Never auto-leave /onboarding —
     // only Build day / Skip navigates via onFinished → handleSignedIn.
     // Pricing stays reachable while signed in (Settings → Subscription).
-    if (!needsOnboarding(user) && (isLanding || isLogin)) {
+    if (!needsOnboarding(user) && (isLanding || isLogin || isResetPassword)) {
       router.replace('/schedule');
     }
   }, [
@@ -1140,6 +1158,7 @@ function AppWithSearchParams({ children }: { children: ReactNode }) {
     user,
     isLanding,
     isLogin,
+    isResetPassword,
     isOnboarding,
     isSharedTimesheet,
     isPricing,
@@ -1179,6 +1198,8 @@ function AppWithSearchParams({ children }: { children: ReactNode }) {
   } else if (!user) {
     if (isLanding || isSharedTimesheet || isPricing) {
       body = children;
+    } else if (isResetPassword) {
+      body = <ResetPasswordCard />;
     } else if (isLogin) {
       body = <LoginScreen onSignedIn={handleSignedIn} />;
     } else if (me.isError) {

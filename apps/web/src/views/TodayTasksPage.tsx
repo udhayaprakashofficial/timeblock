@@ -340,6 +340,9 @@ export function TodayTasksPage({ timeZone }: { timeZone?: string | null }) {
               key={activeTask.id}
               task={activeTask}
               timeZone={timeZone}
+              otherSessionLive={allTasks.some(
+                (t) => t.activeEntryId && t.id !== activeTask.id,
+              )}
               onChanged={invalidate}
               onDeleted={() => {
                 setActiveId(null);
@@ -356,17 +359,21 @@ export function TodayTasksPage({ timeZone }: { timeZone?: string | null }) {
 function TaskDetail({
   task,
   timeZone,
+  otherSessionLive,
   onChanged,
   onDeleted,
 }: {
   task: TaskDto;
   timeZone?: string | null;
+  otherSessionLive?: boolean;
   onChanged: () => void;
   onDeleted: () => void;
 }) {
   const locked = Boolean(task.scheduleLocked);
   const done = task.status === 'completed';
   const running = Boolean(task.activeEntryId);
+  const isFutureDay = task.date > todayISO(timeZone);
+  const canStart = !done && !running && !isFutureDay && !otherSessionLive;
   const [nameDraft, setNameDraft] = useState(task.name);
   const [minsDraft, setMinsDraft] = useState(String(task.estimatedMinutes));
   const [notesDraft, setNotesDraft] = useState(task.notes ?? '');
@@ -404,10 +411,21 @@ function TaskDetail({
   const start = useMutation({
     mutationFn: () => api.post<TaskDto>(`/api/timer/${task.id}/start`),
     onSuccess: () => onChanged(),
+    onError: (err) => {
+      // Idempotent server: refresh if the session is already live.
+      if (/already running/i.test(err instanceof Error ? err.message : '')) {
+        onChanged();
+      }
+    },
   });
   const stop = useMutation({
     mutationFn: () => api.post<TaskDto>(`/api/timer/${task.id}/stop`),
     onSuccess: () => onChanged(),
+    onError: (err) => {
+      if (/no active/i.test(err instanceof Error ? err.message : '')) {
+        onChanged();
+      }
+    },
   });
 
   const busy =
@@ -575,14 +593,24 @@ function TaskDetail({
                 disabled={busy}
                 onClick={() => stop.mutate()}
               >
-                Stop
+                Pause
               </button>
             ) : (
               <button
                 type="button"
                 className="btn btn-outline btn-pill"
-                disabled={busy}
-                onClick={() => start.mutate()}
+                disabled={busy || !canStart}
+                title={
+                  isFutureDay
+                    ? 'Timer unlocks on that day'
+                    : otherSessionLive
+                      ? 'Pause the current session first'
+                      : undefined
+                }
+                onClick={() => {
+                  if (!canStart) return;
+                  start.mutate();
+                }}
               >
                 Start
               </button>

@@ -359,6 +359,57 @@ const CATALOG = {
   ],
 };
 
+/**
+ * Extra tasks that unlock effort badges (Daily Learner, AI Spark, Focus Zone).
+ * Only used by this hello@ seed — never applied to other accounts.
+ */
+const BADGE_SAMPLE = {
+  learning: {
+    name: 'Study competitor onboarding flows',
+    minutes: 40,
+    notes:
+      'Read how Sunsama and Motion walk a first-week user. Note where Cupkey should stay quieter.',
+    career: {
+      careerProject: 'Cupkey',
+      careerResponsibility: 'Founder — daily learning',
+      careerAchievement: 'Captured three onboarding lessons',
+      careerContribution: 'Compared first-session friction points',
+      careerOutcome: 'Clearer activation checklist for Cupkey',
+    },
+  },
+  ai: {
+    name: 'Practice AI prompt for Spotlight drafts',
+    minutes: 45,
+    notes:
+      'Iterate prompts until Spotlight sounds like a person who shipped, not a press release.',
+    career: {
+      careerProject: 'Cupkey',
+      careerResponsibility: 'Founder — AI craft',
+      careerAchievement: 'Locked a reusable Spotlight prompt',
+      careerContribution: 'Banned filler phrases in the draft rules',
+      careerOutcome: 'AI posts that builders will actually share',
+    },
+  },
+  reading: {
+    name: 'Read customer notes from last demo',
+    minutes: 30,
+    notes:
+      'Re-read objections about empty Spotlight and auth bounce. Turn them into today’s fix list.',
+    career: {
+      careerProject: 'Cupkey',
+      careerResponsibility: 'Founder — learning loop',
+      careerAchievement: 'Closed the loop from demo → product work',
+      careerContribution: 'Tagged three fixable drop-off moments',
+      careerOutcome: 'Next outreach hits fewer broken edges',
+    },
+  },
+};
+
+/** Available work minutes for a weekday template (09:00–18:00 − lunch). */
+const DAY_AVAILABLE_MIN = 9 * 60 - 30; // 510
+/** Target utilization band for Focus Zone badge (40–80%). */
+const FOCUS_ZONE_TARGET_MIN = Math.round(DAY_AVAILABLE_MIN * 0.58); // ~60%
+
 function tasksForDate(date) {
   const wd = weekdayUtcNoon(date);
   // Weekends: lighter founder catch-up (Sat only), skip Sunday
@@ -373,8 +424,56 @@ function tasksForDate(date) {
   const picks = [];
   for (let i = 0; i < count; i++) {
     const item = pool[(dayIndex + i) % pool.length];
-    picks.push({ ...item, order: i });
+    // Lock the first two weekday blocks → AI Spark path (2+ locked this week).
+    const scheduleLocked = wd !== 6 && i < 2;
+    picks.push({ ...item, order: i, scheduleLocked });
   }
+
+  // Badge sample inject — weekdays only, last 10 days through today.
+  if (wd !== 6 && date >= addDays(RANGE_END, -10) && date <= RANGE_END) {
+    const startOrder = picks.length;
+    const learning =
+      dayIndex % 2 === 0 ? BADGE_SAMPLE.learning : BADGE_SAMPLE.reading;
+    picks.push({ ...learning, order: startOrder, scheduleLocked: false });
+    if (date === RANGE_END || dayIndex % 3 === 0) {
+      picks.push({
+        ...BADGE_SAMPLE.ai,
+        order: startOrder + 1,
+        scheduleLocked: false,
+      });
+    }
+  }
+
+  // Keep today inside Focus Zone (40–80% of available minutes).
+  if (date === RANGE_END && wd !== 0) {
+    let total = picks.reduce((s, t) => s + t.minutes, 0);
+    while (total > Math.round(DAY_AVAILABLE_MIN * 0.78) && picks.length > 3) {
+      const dropped = picks.pop();
+      total -= dropped.minutes;
+    }
+    while (total < Math.round(DAY_AVAILABLE_MIN * 0.42)) {
+      const filler = {
+        ...BADGE_SAMPLE.learning,
+        name: 'Practice deep-work block for Cupkey roadmap',
+        minutes: 50,
+        order: picks.length,
+        scheduleLocked: false,
+      };
+      picks.push(filler);
+      total += filler.minutes;
+      if (picks.length > 8) break;
+    }
+    // Nudge the last task so we land near the 58% target without blowing the band.
+    if (picks.length && total < FOCUS_ZONE_TARGET_MIN - 20) {
+      const last = picks[picks.length - 1];
+      const bump = Math.min(
+        40,
+        FOCUS_ZONE_TARGET_MIN - total,
+      );
+      last.minutes += bump;
+    }
+  }
+
   return picks;
 }
 
@@ -485,9 +584,16 @@ async function insertTasks(userId) {
         .replace(/[^a-z0-9]+/g, '-')
         .slice(0, 40)}`;
       const { start, end } = scheduleForTask(date, t.order, t.minutes);
-      // Past days completed; today/future: mix of completed + pending
+      // Past days completed; today: complete badge sample + first block, leave rest pending.
       const isPast = date < RANGE_END;
-      const status = isPast || t.order === 0 ? 'completed' : 'pending';
+      const isBadgeSample =
+        /\b(learn|learning|study|studying|read|reading|practice|ai|prompt)\b/i.test(
+          t.name,
+        );
+      const status =
+        isPast || t.order === 0 || (date === RANGE_END && isBadgeSample)
+          ? 'completed'
+          : 'pending';
       const taskId = createId();
       await rest('Task', {
         method: 'POST',
@@ -504,7 +610,7 @@ async function insertTasks(userId) {
           scheduledEnd: end,
           sourceProvider: SEED_PROVIDER,
           sourceExternalId: externalId,
-          scheduleLocked: false,
+          scheduleLocked: Boolean(t.scheduleLocked),
           inBacklog: false,
           notes: t.notes,
           careerProject: t.career.careerProject,
@@ -518,8 +624,11 @@ async function insertTasks(userId) {
       });
 
       if (status === 'completed') {
+        // Prefer ≥45m on today's badge blocks so AI Spark / Timekeeper look real.
+        const floor =
+          date === RANGE_END && isBadgeSample ? 45 : 20;
         const actual = Math.max(
-          20,
+          floor,
           Math.round(t.minutes * (0.85 + ((t.order + date.length) % 3) * 0.1)),
         );
         const startedAt = start;
@@ -569,7 +678,12 @@ async function main() {
   await clearPriorSeedTasks(userId);
   console.log('Cleared prior demo_seed tasks for this user only');
   const n = await insertTasks(userId);
-  console.log(`Inserted ${n} founder tasks (idea → sales). Done.`);
+  console.log(
+    `Inserted ${n} founder tasks (idea → sales) with badge sample for ${TARGET_EMAIL} only. Done.`,
+  );
+  console.log(
+    'Badges covered: Planner, On Track, streaks, Timekeeper, Week Warrior, Record Keeper, Daily Learner, AI Spark, Focus Zone (when util lands 40–80%).',
+  );
 }
 
 main().catch((err) => {

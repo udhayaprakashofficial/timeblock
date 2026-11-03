@@ -107,13 +107,22 @@ export class TimerService {
         include: { timeEntries: true },
       });
       if (!task) throw new NotFoundException('Task not found');
+      const date = task.date.toISOString().slice(0, 10);
       const tz = await this.resolveTimeZone(userId);
-      this.assertNotFutureDay(task.date.toISOString().slice(0, 10), tz);
+      this.assertNotFutureDay(date, tz);
       if (task.status === 'completed') {
         throw new BadRequestException('Task already completed');
       }
+      // Idempotent: already live on this task → return current session.
       if (task.timeEntries.some((e) => !e.endedAt)) {
-        throw new BadRequestException('Timer already running for this task');
+        if (task.status !== 'in_progress') {
+          await this.prisma.task.update({
+            where: { id: taskId },
+            data: { status: 'in_progress' },
+          });
+        }
+        const tasks = await this.tasksService.list(userId, date);
+        return tasks.find((t) => t.id === taskId);
       }
 
       const otherOpen = await this.prisma.timeEntry.findFirst({
@@ -137,7 +146,6 @@ export class TimerService {
         data: { status: 'in_progress' },
       });
 
-      const date = task.date.toISOString().slice(0, 10);
       const tasks = await this.tasksService.list(userId, date);
       return tasks.find((t) => t.id === taskId);
     } catch (err) {
@@ -159,9 +167,6 @@ export class TimerService {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes('not found')) throw new NotFoundException('Task not found');
-        if (msg.includes('No active')) {
-          throw new BadRequestException('No active timer');
-        }
         console.warn('[timer] DB stop failed', msg);
       }
     }
@@ -169,11 +174,7 @@ export class TimerService {
     if (userId.startsWith('local_')) {
       try {
         return this.local.stopTimer(userId, taskId);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes('No active')) {
-          throw new BadRequestException('No active timer');
-        }
+      } catch {
         throw new NotFoundException('Task not found');
       }
     }
@@ -183,14 +184,23 @@ export class TimerService {
         include: { timeEntries: true },
       });
       if (!task) throw new NotFoundException('Task not found');
+      const date = task.date.toISOString().slice(0, 10);
       const active = task.timeEntries.find((e) => !e.endedAt);
-      if (!active) throw new BadRequestException('No active timer');
+      // Idempotent: nothing live → return current task.
+      if (!active) {
+        const tasks = await this.tasksService.list(userId, date);
+        return tasks.find((t) => t.id === taskId);
+      }
 
       const endedAt = new Date();
-      const actualMinutes = Math.max(
-        1,
-        Math.round((endedAt.getTime() - active.startedAt.getTime()) / 60000),
+      const elapsedMs = Math.max(
+        0,
+        endedAt.getTime() - active.startedAt.getTime(),
       );
+      const rounded = Math.max(0, Math.round(elapsedMs / 60000));
+      // Credit ≥1m only when the session ran ≥15s (avoids double-click inflation).
+      const actualMinutes =
+        elapsedMs >= 15_000 ? Math.max(1, rounded) : rounded;
       await this.prisma.timeEntry.update({
         where: { id: active.id },
         data: { endedAt, actualMinutes },
@@ -202,7 +212,6 @@ export class TimerService {
         },
       });
 
-      const date = task.date.toISOString().slice(0, 10);
       const tasks = await this.tasksService.list(userId, date);
       return tasks.find((t) => t.id === taskId);
     } catch (err) {

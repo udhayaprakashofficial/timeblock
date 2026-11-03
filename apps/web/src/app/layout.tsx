@@ -77,6 +77,15 @@ export default function RootLayout({
           href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700;800&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap"
           rel="stylesheet"
         />
+        {/* Consent Mode v2 defaults: must run before any Google tag. Same defaults as cupkey.io. */}
+        <Script
+          id="ck-consent-default"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{
+            __html: `window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}
+gtag('consent','default',{ad_storage:'denied',ad_user_data:'denied',ad_personalization:'denied',analytics_storage:'granted',wait_for_update:500});`,
+          }}
+        />
         <Script
           id="microsoft-clarity"
           strategy="beforeInteractive"
@@ -94,6 +103,8 @@ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
           src="https://accounts.google.com/gsi/client"
           strategy="afterInteractive"
         />
+        {/* Cookie banner, GA4, Google Ads, Meta, LinkedIn, X pixels + attribution (public/ck-tracking.js) */}
+        <Script src="/ck-tracking.js" strategy="afterInteractive" />
         <Providers>{children}</Providers>
       </body>
     </html>

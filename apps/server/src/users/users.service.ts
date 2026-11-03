@@ -645,6 +645,176 @@ export class UsersService {
     }
   }
 
+  /**
+   * Always returns ok — does not reveal whether the email exists.
+   * Sends a reset link when the account can use email/password.
+   */
+  async requestPasswordReset(emailRaw: string): Promise<{ ok: true }> {
+    const email = emailRaw.trim().toLowerCase();
+    if (!email || !email.includes('@')) {
+      throw new BadRequestException('Enter a valid email');
+    }
+
+    const { issuePasswordResetToken } = await import(
+      '../auth/password-reset.util'
+    );
+
+    type Row = {
+      id: string;
+      email: string;
+      name: string;
+      passwordHash?: string | null;
+    };
+
+    let user: Row | null = null;
+    try {
+      const row = await this.prisma.user.findUnique({
+        where: { email },
+        select: { id: true, email: true, name: true, passwordHash: true },
+      });
+      if (row) user = row;
+    } catch {
+      /* try REST / local */
+    }
+
+    if (!user && this.supabase.isConfigured()) {
+      try {
+        const rows = await this.supabase.select<Row>(
+          'User',
+          'id,email,name,passwordHash',
+          { filter: `email=eq.${encodeURIComponent(email)}`, limit: 1 },
+        );
+        user = rows[0] ?? null;
+      } catch {
+        /* local */
+      }
+    }
+
+    if (!user) {
+      const local = this.localUsers.findByEmail(email);
+      if (local) {
+        user = {
+          id: local.id,
+          email: local.email,
+          name: local.name,
+          passwordHash: local.passwordHash ?? null,
+        };
+      }
+    }
+
+    // No account, or Google-only with no way to set password via this path yet —
+    // still return ok. If they have an account we email them (including Google
+    // users so they can attach a password).
+    if (!user) return { ok: true };
+
+    const token = issuePasswordResetToken({
+      userId: user.id,
+      passwordHash: user.passwordHash,
+    });
+    const resetUrl = `${this.mail.appPublicUrl()}/reset-password?token=${encodeURIComponent(token)}`;
+    const sent = await this.mail.sendPasswordResetEmail({
+      toEmail: user.email,
+      toName: user.name,
+      resetUrl,
+    });
+    if (!sent.ok) {
+      console.warn('[auth] password reset email failed', sent.error);
+      // Local/dev without Brevo: log the link so QA is not blocked
+      if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+        console.info('[auth] password reset URL (dev):', resetUrl);
+      }
+    }
+    return { ok: true };
+  }
+
+  async resetPasswordWithToken(input: {
+    token?: string;
+    newPassword?: string;
+  }): Promise<{ ok: true }> {
+    const token = String(input.token ?? '').trim();
+    const next = String(input.newPassword ?? '').trim();
+    if (!token) throw new BadRequestException('Reset link is missing or invalid');
+    if (next.length < 8) {
+      throw new BadRequestException('Password must be at least 8 characters');
+    }
+
+    const {
+      parsePasswordResetToken,
+      passwordFingerprint,
+    } = await import('../auth/password-reset.util');
+
+    const parsed = parsePasswordResetToken(token);
+    if (!parsed) {
+      throw new BadRequestException('Reset link is invalid or expired');
+    }
+    const userId = parsed.userId;
+
+    type Found = { passwordHash: string | null };
+    const loadUser = async (): Promise<Found | null> => {
+      if (userId.startsWith('local_')) {
+        const local = this.localUsers.findById(userId);
+        if (!local) return null;
+        return { passwordHash: local.passwordHash ?? null };
+      }
+      try {
+        const row = await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { passwordHash: true },
+        });
+        if (row) return { passwordHash: row.passwordHash };
+      } catch {
+        /* REST */
+      }
+      if (this.supabase.isConfigured()) {
+        const rows = await this.supabase.select<{
+          id: string;
+          passwordHash?: string | null;
+        }>('User', 'id,passwordHash', {
+          filter: `id=eq.${userId}`,
+          limit: 1,
+        });
+        if (rows[0]) {
+          return { passwordHash: rows[0].passwordHash ?? null };
+        }
+      }
+      return null;
+    };
+
+    const found = await loadUser();
+    if (!found) {
+      throw new BadRequestException('Reset link is invalid or expired');
+    }
+    if (parsed.fingerprint !== passwordFingerprint(found.passwordHash)) {
+      throw new BadRequestException('Reset link is invalid or expired');
+    }
+
+    const hashed = this.crypto.hashPassword(next);
+    if (userId.startsWith('local_')) {
+      const local = this.localUsers.findById(userId);
+      if (!local) throw new BadRequestException('Reset link is invalid or expired');
+      local.passwordHash = hashed;
+      this.localUsers.save(local);
+      return { ok: true };
+    }
+
+    try {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { passwordHash: hashed },
+      });
+      return { ok: true };
+    } catch {
+      if (!this.supabase.isConfigured()) {
+        throw new BadRequestException('Could not update password');
+      }
+      await this.supabase.patch('User', `id=eq.${userId}`, {
+        passwordHash: hashed,
+        updatedAt: new Date().toISOString(),
+      });
+      return { ok: true };
+    }
+  }
+
   async changePassword(
     userId: string,
     body: { currentPassword?: string; newPassword?: string },

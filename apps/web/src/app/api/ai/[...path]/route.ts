@@ -11,6 +11,7 @@ import {
   saveTaskPost,
   updateTaskPost,
 } from '../../../../lib/ai-bff';
+import { nestApiOrigin } from '../../../../lib/google-oauth-bff';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,6 +37,19 @@ async function handle(req: Request, ctx: Ctx): Promise<Response> {
 
   try {
     if (head === 'access' && method === 'GET') {
+      // Prefer Nest metering when available; otherwise stub (same as /api/ai/access).
+      try {
+        const cookie = req.headers.get('cookie') ?? '';
+        const nest = await fetch(`${nestApiOrigin()}/api/ai/access`, {
+          headers: { Accept: 'application/json', Cookie: cookie },
+          cache: 'no-store',
+        });
+        if (nest.ok) {
+          return NextResponse.json(await nest.json());
+        }
+      } catch {
+        /* fall through to stub */
+      }
       return NextResponse.json(buildAccessDto(user));
     }
 

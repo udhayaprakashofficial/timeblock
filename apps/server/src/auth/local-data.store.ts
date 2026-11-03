@@ -817,7 +817,12 @@ export class LocalDataStore {
     const t = db.tasks.find((x) => x.id === taskId && x.userId === userId);
     if (!t) throw new Error('Task not found');
     if (t.status === 'completed') throw new Error('Task already completed');
-    if (t.activeEntryId) throw new Error('Timer already running for this task');
+    // Idempotent: second Start on the same live task returns current state.
+    if (t.activeEntryId && t.timerStartedAt) {
+      if (t.status === 'pending') t.status = 'in_progress';
+      this.write(db);
+      return this.toDto(t);
+    }
     // Block timers for future civil days (UTC fallback — local store has no user TZ)
     const todayUtc = new Date().toISOString().slice(0, 10);
     if (t.date > todayUtc) throw new Error('Cannot start a timer on a future day');
@@ -831,7 +836,7 @@ export class LocalDataStore {
     if (otherLive) {
       throw new Error('Pause the current session before starting another');
     }
-    // Strip leftover estimate credit so the clock starts at 0 / prior timer log.
+    // Keep prior timer log; strip leftover estimate credit so the clock resumes cleanly.
     const logged = Math.max(0, t.timerLoggedMinutes ?? 0);
     t.timerLoggedMinutes = logged;
     t.actualMinutes = logged;
@@ -846,15 +851,16 @@ export class LocalDataStore {
     const db = this.read();
     const t = db.tasks.find((x) => x.id === taskId && x.userId === userId);
     if (!t) throw new Error('Task not found');
+    // Idempotent: Pause with nothing live is a no-op success.
     if (!t.activeEntryId || !t.timerStartedAt) {
-      throw new Error('No active timer');
+      return this.toDto(t);
     }
     const started = new Date(t.timerStartedAt).getTime();
-    const elapsed = Math.max(
-      1,
-      Math.round((Date.now() - started) / 60000),
-    );
-    t.timerLoggedMinutes = Math.max(0, t.timerLoggedMinutes ?? 0) + elapsed;
+    const elapsedMs = Math.max(0, Date.now() - (Number.isFinite(started) ? started : Date.now()));
+    const elapsed = Math.max(0, Math.round(elapsedMs / 60000));
+    // Credit at least 1 minute only when the session ran ≥ 15s (avoids double-click inflation).
+    const credit = elapsedMs >= 15_000 ? Math.max(1, elapsed) : elapsed;
+    t.timerLoggedMinutes = Math.max(0, t.timerLoggedMinutes ?? 0) + credit;
     t.actualMinutes = t.timerLoggedMinutes;
     t.activeEntryId = null;
     t.timerStartedAt = null;

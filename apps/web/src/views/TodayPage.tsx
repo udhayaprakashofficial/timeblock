@@ -27,6 +27,7 @@ import {
 import type { AiEstimateDto } from '@timeblock/shared-types';
 import { TaskAiPostPanel } from '../components/share/TaskAiPostPanel';
 import { HintMark, UiTooltip } from '../components/ui-hints';
+import { PlanDateNav } from '../components/PlanDateNav';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import {
   createTaskOptimistic,
@@ -1551,15 +1552,6 @@ export function TodayPage({
     });
   };
 
-  const dateLabel = useMemo(() => {
-    const d = new Date(`${date}T12:00:00`);
-    return d.toLocaleDateString(undefined, {
-      weekday: 'long',
-      month: 'long',
-      day: 'numeric',
-    });
-  }, [date]);
-
   const liveTask = useMemo(
     () => tasks.find((t) => t.activeEntryId) ?? null,
     [tasks],
@@ -1649,40 +1641,17 @@ export function TodayPage({
 
       <div className="dash-grid">
         <section className="dash-col dash-plan">
-          <div className="dash-col-head">
-            <div>
-              <h2 className="dash-col-title">
-                The plan <HintMark id="dash.plan" placement="bottom" />
-              </h2>
-              <p className="dash-col-sub">{dateLabel}</p>
-            </div>
-            <div className="date-nav">
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm date-nav-btn"
-                aria-label="Previous day"
-                onClick={() => setDate((d) => shiftDateISO(d, -1))}
-              >
-                ‹
-              </button>
-              {!isToday && (
-                <button
-                  type="button"
-                  className="btn btn-outline btn-pill btn-sm"
-                  onClick={() => setDate(today)}
-                >
-                  Today
-                </button>
-              )}
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm date-nav-btn"
-                aria-label="Next day"
-                onClick={() => setDate((d) => shiftDateISO(d, 1))}
-              >
-                ›
-              </button>
-            </div>
+          <div className="dash-col-head dash-col-head--plan">
+            <PlanDateNav
+              date={date}
+              timeZone={timeZone}
+              onChange={setDate}
+              title={
+                <>
+                  The plan <HintMark id="dash.plan" placement="bottom" />
+                </>
+              }
+            />
           </div>
 
           <div className="schedule-board schedule-board--fill plan-board">
@@ -2583,6 +2552,18 @@ function SessionBanner({
   const dispatch = useAppDispatch();
   const [busy, setBusy] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const otherSessionLive = useAppSelector((s) => {
+    for (const list of Object.values(s.tasks.byDate)) {
+      if (!Array.isArray(list)) continue;
+      if (list.some((t) => t.activeEntryId && t.id !== task.id)) return true;
+    }
+    return false;
+  });
+  const canStart =
+    mode !== 'live' &&
+    task.status !== 'completed' &&
+    !(task.date > todayISO(timeZone)) &&
+    !otherSessionLive;
 
   useEffect(() => {
     if (mode !== 'live') return;
@@ -2683,10 +2664,16 @@ function SessionBanner({
           <button
             type="button"
             className="btn btn-outline btn-pill session-pause"
-            disabled={busy || task.status === 'completed' || isFutureDay}
-            title={isFutureDay ? 'Timer unlocks on that day' : undefined}
+            disabled={busy || !canStart}
+            title={
+              isFutureDay
+                ? 'Timer unlocks on that day'
+                : otherSessionLive
+                  ? 'Pause the current session first'
+                  : undefined
+            }
             onClick={() => {
-              if (isFutureDay) return;
+              if (!canStart) return;
               void run(async () => {
                 dispatch(tasksActions.optimisticStart({ taskId: task.id }));
                 await dispatch(

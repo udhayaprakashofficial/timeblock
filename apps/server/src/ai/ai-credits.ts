@@ -5,12 +5,29 @@ export const AI_CREDITS_FREE = 5;
 /** Active Pro / Annual: monthly pool (UTC calendar month). */
 export const AI_CREDITS_PRO = 50;
 
+/**
+ * Per-email credit limit overrides (founder / demo seats).
+ * Applied on top of plan — hello@ gets a 50 pool without requiring Pro.
+ */
+export const AI_CREDITS_EMAIL_OVERRIDES: Readonly<Record<string, number>> = {
+  'hello@cupkey.io': AI_CREDITS_PRO,
+};
+
 /** Bucket key for Free one-time credits (never rotates with the month). */
 export const AI_CREDITS_FREE_BUCKET = 'lifetime';
 
 /** When AI_REQUIRE_PRO=false, skip metering (local testing). */
 export function aiCreditsUnlimited(): boolean {
   return process.env.AI_REQUIRE_PRO === 'false';
+}
+
+export function aiCreditsEmailOverride(
+  email?: string | null,
+): number | null {
+  const key = (email ?? '').trim().toLowerCase();
+  if (!key) return null;
+  const n = AI_CREDITS_EMAIL_OVERRIDES[key];
+  return typeof n === 'number' && n > 0 ? n : null;
 }
 
 export function currentAiCreditsMonth(d = new Date()): string {
@@ -55,9 +72,12 @@ export function isActiveProUser(user: {
 }
 
 export function aiCreditsLimitForUser(user: {
+  email?: string | null;
   plan?: string | null;
   planStatus?: string | null;
 }): number {
   if (aiCreditsUnlimited()) return 1_000_000;
+  const override = aiCreditsEmailOverride(user.email);
+  if (override != null) return override;
   return isActiveProUser(user) ? AI_CREDITS_PRO : AI_CREDITS_FREE;
 }
