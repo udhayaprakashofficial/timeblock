@@ -184,11 +184,20 @@ export async function loadTask(
   taskId: string,
 ): Promise<TaskRow | null> {
   const cookie = req.headers.get('cookie') ?? '';
-  // Try history window then today list
-  const urls = [
-    `${nestApiOrigin()}/api/tasks?from=2020-01-01&to=2099-12-31`,
-    `${nestApiOrigin()}/api/tasks`,
+  const origins = [nestApiOrigin()];
+  try {
+    const self = new URL(req.url).origin;
+    if (self && !origins.includes(self)) origins.push(self);
+  } catch {
+    /* ignore */
+  }
+  const paths = [
+    '/api/tasks?from=2020-01-01&to=2099-12-31',
+    '/api/tasks',
   ];
+  const urls = origins.flatMap((origin) =>
+    paths.map((p) => `${origin}${p}`),
+  );
   for (const url of urls) {
     try {
       const res = await fetch(url, {

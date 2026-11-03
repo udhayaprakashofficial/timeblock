@@ -7,6 +7,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** Stable Nest production host — never a hashed preview URL (those are SSO-protected). */
 const PROD_API_ORIGIN = 'https://timeblock-server.vercel.app';
 
+/**
+ * Nest controller prefixes proxied from the web host.
+ * `/api/ai/*` is intentionally excluded — Next App Router owns the AI BFF
+ * (including the dynamic `[...path]` catch-all). `afterFiles` rewrites run
+ * *before* dynamic routes, so a blanket `/api/:path*` rewrite was sending
+ * Spotlight calls to stale Nest and returning `Cannot POST /api/ai/task-post`.
+ */
+const NEST_API_PREFIX =
+  'auth|users|tasks|calendar|billing|admin|timer|stats|schedule|health|internal|public';
+
 function isEphemeralVercelHost(origin: string): boolean {
   try {
     const host = new URL(origin).hostname;
@@ -52,8 +62,8 @@ const nextConfig: NextConfig = {
     position: 'bottom-right',
   },
   async rewrites() {
-    // afterFiles: App Router handlers (e.g. /api/auth/google) win first.
-    // Everything else proxies to Nest — browser stays on app.cupkey.io.
+    // afterFiles: static App Router handlers (e.g. /api/auth/google) win first.
+    // Dynamic catch-alls do NOT — so never blanket-proxy `/api/ai/*` to Nest.
     return {
       afterFiles: [
         {
@@ -66,8 +76,12 @@ const nextConfig: NextConfig = {
           destination: `${apiOrigin}/api/billing/webhook`,
         },
         {
-          source: '/api/:path*',
-          destination: `${apiOrigin}/api/:path*`,
+          source: `/api/:nest(${NEST_API_PREFIX})/:path*`,
+          destination: `${apiOrigin}/api/:nest/:path*`,
+        },
+        {
+          source: `/api/:nest(${NEST_API_PREFIX})`,
+          destination: `${apiOrigin}/api/:nest`,
         },
       ],
     };
