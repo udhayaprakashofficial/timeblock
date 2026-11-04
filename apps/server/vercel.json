@@ -17,7 +17,7 @@
   "crons": [
     {
       "path": "/api/internal/cron/welcome-emails",
-      "schedule": "*/5 * * * *"
+      "schedule": "0 12 * * *"
     }
   ]
 }
